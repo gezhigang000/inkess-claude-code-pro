@@ -265,15 +265,36 @@ function pushClashNode(nodes: ProxyNode[], obj: Record<string, string>): void {
 
 function parseInlineYaml(str: string): Record<string, string> {
   const obj: Record<string, string> = {}
-  // Simple key: value parser for inline YAML
-  const pairs = str.split(',')
-  for (const pair of pairs) {
-    const colonIdx = pair.indexOf(':')
-    if (colonIdx > 0) {
-      const key = pair.slice(0, colonIdx).trim()
-      const val = pair.slice(colonIdx + 1).trim().replace(/^["']|["']$/g, '')
-      obj[key] = val
+  // Quote-aware key: value parser — handles commas inside quoted strings
+  let i = 0
+  while (i < str.length) {
+    // Skip whitespace
+    while (i < str.length && str[i] === ' ') i++
+    // Find key
+    const colonIdx = str.indexOf(':', i)
+    if (colonIdx < 0) break
+    const key = str.slice(i, colonIdx).trim()
+    i = colonIdx + 1
+    // Skip whitespace after colon
+    while (i < str.length && str[i] === ' ') i++
+    // Parse value (respect quotes)
+    let val = ''
+    if (str[i] === '"' || str[i] === "'") {
+      const quote = str[i]
+      i++ // skip opening quote
+      const endQuote = str.indexOf(quote, i)
+      if (endQuote >= 0) {
+        val = str.slice(i, endQuote)
+        i = endQuote + 1
+      }
+    } else {
+      const commaIdx = str.indexOf(',', i)
+      val = (commaIdx >= 0 ? str.slice(i, commaIdx) : str.slice(i)).trim()
+      i = commaIdx >= 0 ? commaIdx : str.length
     }
+    if (key) obj[key] = val
+    // Skip comma
+    if (i < str.length && str[i] === ',') i++
   }
   return obj
 }
@@ -291,7 +312,11 @@ export async function fetchSubscription(url: string, timeout = 15000): Promise<P
       },
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const text = await res.text()
+    const buffer = await res.arrayBuffer()
+    if (buffer.byteLength > 2 * 1024 * 1024) {
+      throw new Error('Subscription response too large (>2MB)')
+    }
+    const text = new TextDecoder().decode(buffer)
     return parseSubscription(text)
   } finally {
     clearTimeout(timer)

@@ -226,6 +226,9 @@ function buildProxyEnv(url: string): Record<string, string> {
 ipcMain.handle('proxy:getSettings', () => proxySettings)
 
 ipcMain.handle('proxy:fetchSubscription', async (_event, url: string) => {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    return { success: false, error: 'Only http/https URLs are supported', nodes: [] }
+  }
   try {
     const { fetchSubscription } = require('./proxy/subscription') as typeof import('./proxy/subscription')
     const nodes = await fetchSubscription(url)
@@ -445,7 +448,8 @@ ipcMain.handle('browser:open', async (_event, url: string) => {
     await browserSession.setProxy({
       proxyRules: proxySettings.url,
     })
-    log.info(`browser:open proxy set to: ${proxySettings.url}`)
+    const redacted = proxySettings.url.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')
+    log.info(`browser:open proxy set to: ${redacted}`)
   }
 
   const win = new BrowserWindow({

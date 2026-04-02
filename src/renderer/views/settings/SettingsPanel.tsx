@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSettingsStore } from '../../stores/settings'
 import { useI18n } from '../../i18n'
 
@@ -122,17 +122,18 @@ interface SubNode {
 function NetworkSection() {
   const { t } = useI18n()
   const {
-    proxyEnabled, proxyMode, proxyUrl, proxySubUrl, proxySelectedNode, proxyRegion,
-    setProxyEnabled, setProxyMode, setProxyUrl, setProxySubUrl, setProxySelectedNode, setProxyRegion
+    proxyEnabled, proxyMode, proxyUrl, proxySubUrl, proxySubNodeUrl, proxySelectedNode, proxyRegion,
+    setProxyEnabled, setProxyMode, setProxyUrl, setProxySubUrl, setProxySubNodeUrl, setProxySelectedNode, setProxyRegion
   } = useSettingsStore()
   const [nodes, setNodes] = useState<SubNode[]>([])
   const [subLoading, setSubLoading] = useState(false)
   const [subError, setSubError] = useState<string | null>(null)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
+  const fetchIdRef = useRef(0)
 
-  // Determine active proxy URL (from direct input or selected subscription node)
+  // Determine active proxy URL (from direct input or persisted subscription node URL)
   const activeUrl = proxyMode === 'subscription'
-    ? (nodes.find(n => n.name === proxySelectedNode)?.url || '')
+    ? (nodes.find(n => n.name === proxySelectedNode)?.url || proxySubNodeUrl)
     : proxyUrl
 
   const isSocks = activeUrl && /^socks[45s]?:\/\//i.test(activeUrl)
@@ -152,9 +153,11 @@ function NetworkSection() {
 
   const handleFetchSubscription = async () => {
     if (!proxySubUrl) return
+    const myId = ++fetchIdRef.current
     setSubLoading(true)
     setSubError(null)
     const result = await window.api.proxy.fetchSubscription(proxySubUrl)
+    if (fetchIdRef.current !== myId) return // stale
     setSubLoading(false)
     if (result.success) {
       setNodes(result.nodes)
@@ -165,6 +168,7 @@ function NetworkSection() {
       }
     } else {
       setSubError(result.error || 'Failed to fetch subscription')
+      setSubLoading(false)
     }
   }
 
@@ -172,9 +176,9 @@ function NetworkSection() {
     setProxySelectedNode(node.name)
     // Auto-set region from node
     if (node.region !== 'auto') setProxyRegion(node.region)
-    // If node is directly usable, sync to main
+    // Persist the node's URL separately (don't overwrite direct-mode proxyUrl)
     if (node.usable && node.url) {
-      useSettingsStore.getState().setProxyUrl(node.url)
+      setProxySubNodeUrl(node.url)
     }
   }
 
