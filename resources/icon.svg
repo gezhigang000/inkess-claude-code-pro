@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Inkess Claude Code — App Icon v2
+    Ink drop (cocoa brown) with terminal prompt >_
+    Background: inkess dark #1A1A2E
+    Drop: cocoa brown gradient (#8B7355 → #6B5640)
+    Chevron >: dark cutout
+    Cursor _: amber gold #C4A35A
+    Ripples: cocoa brown, low opacity
+  -->
+  <defs>
+    <clipPath id="icon-clip">
+      <rect width="1024" height="1024" rx="220" ry="220"/>
+    </clipPath>
+    <linearGradient id="drop-grad" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#A08968"/>
+      <stop offset="50%" stop-color="#8B7355"/>
+      <stop offset="100%" stop-color="#6B5640"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#icon-clip)">
+    <!-- Background -->
+    <rect width="1024" height="1024" fill="#1A1A2E" rx="220" ry="220"/>
+
+    <!-- Ink drop — cocoa brown gradient -->
+    <path d="
+      M 512 148
+      C 512 148, 364 378, 364 493
+      C 364 579, 430 648, 512 648
+      C 594 648, 660 579, 660 493
+      C 660 378, 512 148, 512 148Z
+    " fill="url(#drop-grad)"/>
+
+    <!-- Terminal prompt >_ inside the drop -->
+    <!-- > chevron — dark cutout -->
+    <polyline
+      points="440,470 500,520 440,570"
+      fill="none" stroke="#1A1A2E" stroke-width="40"
+      stroke-linecap="round" stroke-linejoin="round"
+    />
+    <!-- _ cursor — amber gold accent -->
+    <line
+      x1="530" y1="570" x2="605" y2="570"
+      stroke="#C4A35A" stroke-width="40"
+      stroke-linecap="round"
+    />
+
+    <!-- Splash ripples ��� cocoa brown -->
+    <ellipse cx="512" cy="720" rx="115" ry="28" fill="none" stroke="#8B7355" stroke-width="14" opacity="0.35"/>
+    <ellipse cx="512" cy="720" rx="66" ry="16" fill="none" stroke="#8B7355" stroke-width="10" opacity="0.2"/>
+  </g>
+</svg>

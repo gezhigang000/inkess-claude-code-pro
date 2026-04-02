@@ -1,0 +1,73 @@
+name: Build Windows
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build & Package
+        run: npm run dist:win
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-x64
+          path: |
+            release/*.exe
+            release/*.exe.blockmap
+            release/latest.yml
+          retention-days: 30
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.exe
+            release/*.exe.blockmap
+            release/latest.yml
+
+      - name: Upload to OSS
+        if: always() && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          pip install oss2
+          python -c "
+          import oss2, os, glob
+          auth = oss2.Auth(os.environ['OSS_ACCESS_KEY_ID'], os.environ['OSS_ACCESS_KEY_SECRET'])
+          bucket = oss2.Bucket(auth, 'https://oss-cn-beijing.aliyuncs.com', 'inkess-install-file')
+          for f in glob.glob('release/*.exe') + glob.glob('release/*.exe.blockmap') + glob.glob('release/latest.yml'):
+              name = os.path.basename(f)
+              key = f'app-releases/{name}'
+              print(f'Uploading {key}...')
+              oss2.resumable_upload(bucket, key, f, part_size=10*1024*1024, num_threads=2)
+              print(f'Done: {name}')
+          # Create latest/ copy for permanent download URL
+          exe_files = glob.glob('release/*.exe')
+          if exe_files:
+              exe_name = os.path.basename(exe_files[0])
+              src_key = f'app-releases/{exe_name}'
+              bucket.copy_object(bucket.bucket_name, src_key, 'app-releases/latest/windows-x64.exe')
+              print(f'latest/ <- {exe_name}')
+          print('OSS upload complete.')
+          "

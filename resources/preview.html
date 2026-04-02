@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Inkess Claude Code — Icon Preview</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 48px; background: #111; font-family: -apple-system, sans-serif; color: #ccc; }
+  h1 { font-size: 18px; font-weight: 400; letter-spacing: 0.5px; }
+  .row { display: flex; gap: 40px; align-items: end; }
+  .item { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .item span { font-size: 12px; color: #666; }
+  .light { background: #FAF8F5; padding: 24px; border-radius: 16px; }
+</style>
+</head>
+<body>
+
+<h1>Inkess Claude Code — App Icon</h1>
+
+<div class="row">
+  <div class="item">
+    <img src="icon.svg" width="512" height="512">
+    <span>512px — App Icon</span>
+  </div>
+  <div class="item">
+    <img src="icon.svg" width="256" height="256">
+    <span>256px</span>
+  </div>
+  <div class="item">
+    <img src="icon.svg" width="128" height="128">
+    <span>128px</span>
+  </div>
+  <div class="item">
+    <img src="icon.svg" width="64" height="64">
+    <span>64px</span>
+  </div>
+  <div class="item">
+    <img src="icon.svg" width="32" height="32">
+    <span>32px</span>
+  </div>
+  <div class="item">
+    <img src="icon.svg" width="16" height="16">
+    <span>16px</span>
+  </div>
+</div>
+
+<div class="row">
+  <div class="item light">
+    <img src="icon.svg" width="128" height="128">
+    <span style="color:#999">On light bg</span>
+  </div>
+  <div class="item" style="background:#1A1A2E; padding:24px; border-radius:16px;">
+    <img src="icon.svg" width="128" height="128">
+    <span>On app bg</span>
+  </div>
+  <div class="item" style="background:#000; padding:24px; border-radius:16px;">
+    <img src="icon.svg" width="128" height="128">
+    <span>On black</span>
+  </div>
+</div>
+
+<!-- Color palette reference -->
+<div style="display:flex; gap:16px; margin-top:16px;">
+  <div style="display:flex; align-items:center; gap:8px;">
+    <div style="width:24px; height:24px; border-radius:4px; background:#1A1A2E; border:1px solid #333;"></div>
+    <span style="font-size:11px;">#1A1A2E bg</span>
+  </div>
+  <div style="display:flex; align-items:center; gap:8px;">
+    <div style="width:24px; height:24px; border-radius:4px; background:#8B7355;"></div>
+    <span style="font-size:11px;">#8B7355 cocoa</span>
+  </div>
+  <div style="display:flex; align-items:center; gap:8px;">
+    <div style="width:24px; height:24px; border-radius:4px; background:#C4A35A;"></div>
+    <span style="font-size:11px;">#C4A35A amber</span>
+  </div>
+  <div style="display:flex; align-items:center; gap:8px;">
+    <div style="width:24px; height:24px; border-radius:4px; background:#F0EDE8; border:1px solid #333;"></div>
+    <span style="font-size:11px;">#F0EDE8 warm white</span>
+  </div>
+</div>
+
+</body>
+</html>

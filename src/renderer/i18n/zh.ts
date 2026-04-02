@@ -1,0 +1,149 @@
+import type { TranslationKey } from './en'
+
+export const zh: Record<TranslationKey, string> = {
+  // App
+  'app.title': 'Inkess Claude Code Pro',
+  'app.connected': '已连接',
+
+  // Tab context menu
+  'tab.openInFinder': '在 Finder 中打开',
+  'tab.openInExplorer': '在资源管理器中打开',
+  'tab.openInIde': '在 {ide} 中打开',
+  'tab.copyPath': '复制路径',
+  'tab.closeTab': '关闭标签页',
+
+  // Setup
+  'setup.checking': '检查环境中...',
+  'setup.settingUp': '正在安装 Claude Code CLI',
+  'setup.verifying': '正在验证 Claude Code CLI 安装',
+  'setup.firstTime': '首次安装 — 只需片刻',
+  'setup.checkEnv': '检查环境',
+  'setup.downloading': '下载 Claude Code CLI...',
+  'setup.verifyInstall': '验证安装',
+  'setup.downloadComplete': '下载完成',
+  'setup.verifyingInstall': '正在验证安装...',
+  'setup.installComplete': '安装完成',
+  'setup.retry': '重试',
+  'setup.checkingTools': '检查开发工具中...',
+  'setup.installingTools': '正在安装开发工具',
+  'setup.downloadingTools': '下载开发工具...',
+  'setup.toolsDownloadComplete': '开发工具下载完成',
+  'setup.verifyingTools': '正在验证开发工具...',
+  'setup.toolsReady': '开发工具就绪',
+  'setup.toolsSkipped': '开发工具（可选，已跳过）',
+
+  // Settings
+  'settings.title': '设置',
+  'settings.network': '网络',
+  'settings.appearance': '外观',
+  'settings.language': '语言',
+  'settings.terminalFontSize': '终端字体大小',
+  'settings.theme': '主题',
+  'settings.themeAuto': '自动（跟随系统）',
+  'settings.themeDark': '深色',
+  'settings.themeLight': '浅色',
+  'settings.languageAuto': '自动（跟随系统）',
+  'settings.languageZh': '中文',
+  'settings.languageEn': 'English',
+  'settings.languageLabel': '界面语言',
+  'settings.languageHint': '选择应用的显示语言',
+  'settings.about': '关于',
+  'settings.version': '版本',
+  'settings.diagnostics': '诊断',
+  'settings.diagnosticsHint': '上传运行日志帮助排查问题',
+  'settings.uploadLogs': '上传日志',
+  'settings.uploadingLogs': '上传中...',
+  'settings.logsUploaded': '上传成功',
+  'settings.logsUploadFailed': '上传失败',
+  'settings.notifications': '通知',
+  'settings.notificationsEnabled': '桌面通知',
+  'settings.sleepInhibitor': '防休眠',
+  'settings.sleepInhibitorEnabled': '任务执行时阻止系统休眠',
+
+  // Proxy
+  'settings.proxyToggle': '代理',
+  'settings.proxyEnabled': '启用网络代理',
+  'settings.proxyUrl': '代理地址',
+  'settings.proxyUrlHint': '支持 http://, https://, socks5://, socks4:// — 可带认证 (user:pass@host:port)',
+  'settings.proxyStatus': '生效的环境变量',
+  'settings.proxyApplyHint': '仅对新建的终端标签页生效，已有标签页不受影响。',
+
+  // Welcome
+  'welcome.openFolder': '打开工作目录',
+  'welcome.recentProjects': '最近项目',
+  'welcome.noRecent': '打开一个工作目录开始使用',
+  'welcome.letsBuild': '开始构建',
+  'welcome.openProject': '打开项目',
+  'welcome.cardRecent': '打开最近项目',
+  'welcome.cardRecentDesc': '继续上次的工作',
+  'welcome.cardNew': '打开文件夹',
+  'welcome.cardNewDesc': '开始一个项目',
+  'welcome.hintCommands': '命令面板',
+  'welcome.hintMode': '切换模式',
+  'welcome.hintSearch': '终端搜索',
+
+  // Sidebar
+  'sidebar.recentProjects': '最近项目',
+  'sidebar.noProjects': '暂无项目',
+  'sidebar.settings': '设置',
+  'sidebar.cliStatus': 'Claude Code CLI',
+  'sidebar.sessions': '会话',
+  'sidebar.active': '活跃',
+  'sidebar.recent': '最近',
+  'sidebar.yesterday': '昨天',
+  'sidebar.newSession': '新建会话',
+  'sidebar.commands': '命令',
+  'sidebar.projects': '项目',
+  'sidebar.collapse': '收起侧边栏',
+  'sidebar.expand': '展开侧边栏',
+  'sidebar.pinned': '固定项目',
+
+  // StatusBar
+  'statusbar.preventingSleep': '阻止休眠中',
+
+  // Close Tab
+  'tab.pressAgainToClose': '再次点击关闭',
+
+  // Command Palette
+  'cmdPalette.placeholder': '输入命令, / 输入 Claude 命令, ⇧Tab 切换模式',
+  'cmdPalette.noResults': '没有匹配的命令',
+  'cmdPalette.newTab': '新建标签页',
+  'cmdPalette.settings': '设置',
+  'cmdPalette.toggleTheme': '切换主题',
+  'cmdPalette.modeSuggest': '模式: 建议',
+  'cmdPalette.modeAutoEdit': '模式: 自动编辑',
+  'cmdPalette.modeFullAuto': '模式: 完全自动',
+
+  // File Preview
+  'preview.notFound': '文件不存在或太大无法预览',
+  'preview.copyPath': '复制路径',
+
+  // Session History
+  'history.title': '会话历史',
+  'history.back': '返回',
+  'history.search': '搜索历史...',
+  'history.empty': '暂无会话历史',
+  'history.noResults': '没有匹配的会话',
+  'history.selectSession': '选择一个会话查看',
+  'history.today': '今天',
+  'history.yesterday': '昨天',
+  'history.openInTerminal': '在终端中打开',
+  'history.copyAll': '复制全部',
+
+  // Drag & Drop
+  'drag.dropToOpen': '拖放以打开',
+  'drag.hint': '拖入文件夹打开项目，拖入文件插入路径',
+
+  // Update
+  'update.available': '有可用更新',
+  'update.description': 'Claude Code CLI {latest} 可用（当前: {current}）',
+  'update.now': '立即更新',
+  'update.updating': '更新中...',
+  'update.later': '稍后',
+
+  // App Update
+  'appUpdate.ready': 'v{version} 已准备好安装',
+  'appUpdate.available': '应用更新 v{version} 可用',
+  'appUpdate.restartUpdate': '重启并更新',
+  'appUpdate.download': '下载',
+}
