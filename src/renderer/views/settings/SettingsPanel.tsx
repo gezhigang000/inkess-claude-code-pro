@@ -114,19 +114,35 @@ const REGION_OPTIONS = [
   { id: 'auto', label: '🖥 System (no mask)', tz: '' },
 ]
 
+interface SubNode {
+  name: string; type: string; server: string; port: number; url: string;
+  region: string; regionFlag: string; usable: boolean
+}
+
 function NetworkSection() {
   const { t } = useI18n()
-  const { proxyEnabled, proxyUrl, proxyRegion, setProxyEnabled, setProxyUrl, setProxyRegion } = useSettingsStore()
+  const {
+    proxyEnabled, proxyMode, proxyUrl, proxySubUrl, proxySelectedNode, proxyRegion,
+    setProxyEnabled, setProxyMode, setProxyUrl, setProxySubUrl, setProxySelectedNode, setProxyRegion
+  } = useSettingsStore()
+  const [nodes, setNodes] = useState<SubNode[]>([])
+  const [subLoading, setSubLoading] = useState(false)
+  const [subError, setSubError] = useState<string | null>(null)
+  const [hoveredNode, setHoveredNode] = useState<string | null>(null)
 
-  const isSocks = proxyUrl && /^socks[45s]?:\/\//i.test(proxyUrl)
+  // Determine active proxy URL (from direct input or selected subscription node)
+  const activeUrl = proxyMode === 'subscription'
+    ? (nodes.find(n => n.name === proxySelectedNode)?.url || '')
+    : proxyUrl
+
+  const isSocks = activeUrl && /^socks[45s]?:\/\//i.test(activeUrl)
   const region = REGION_OPTIONS.find(r => r.id === proxyRegion) || REGION_OPTIONS[0]
 
-  // Build preview of all env vars that will be injected
   const envVars: string[] = []
-  if (proxyEnabled && proxyUrl) {
-    if (isSocks) envVars.push(`ALL_PROXY=${proxyUrl}`)
-    envVars.push(`HTTP_PROXY=${proxyUrl}`)
-    envVars.push(`HTTPS_PROXY=${proxyUrl}`)
+  if (proxyEnabled && activeUrl) {
+    if (isSocks) envVars.push(`ALL_PROXY=${activeUrl}`)
+    envVars.push(`HTTP_PROXY=${activeUrl}`)
+    envVars.push(`HTTPS_PROXY=${activeUrl}`)
   }
   if (proxyEnabled && proxyRegion !== 'auto' && region.tz) {
     envVars.push(`TZ=${region.tz}`)
@@ -134,41 +150,140 @@ function NetworkSection() {
     envVars.push(`LANG=${lang}.UTF-8`)
   }
 
+  const handleFetchSubscription = async () => {
+    if (!proxySubUrl) return
+    setSubLoading(true)
+    setSubError(null)
+    const result = await window.api.proxy.fetchSubscription(proxySubUrl)
+    setSubLoading(false)
+    if (result.success) {
+      setNodes(result.nodes)
+      if (result.nodes.length > 0 && !proxySelectedNode) {
+        const first = result.nodes.find(n => n.usable) || result.nodes[0]
+        setProxySelectedNode(first.name)
+        if (first.region !== 'auto') setProxyRegion(first.region)
+      }
+    } else {
+      setSubError(result.error || 'Failed to fetch subscription')
+    }
+  }
+
+  const handleSelectNode = (node: SubNode) => {
+    setProxySelectedNode(node.name)
+    // Auto-set region from node
+    if (node.region !== 'auto') setProxyRegion(node.region)
+    // If node is directly usable, sync to main
+    if (node.usable && node.url) {
+      useSettingsStore.getState().setProxyUrl(node.url)
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       <SettingsGroup title={t('settings.proxyToggle')}>
-        <ToggleRow
-          label={t('settings.proxyEnabled')}
-          checked={proxyEnabled}
-          onChange={setProxyEnabled}
-        />
+        <ToggleRow label={t('settings.proxyEnabled')} checked={proxyEnabled} onChange={setProxyEnabled} />
       </SettingsGroup>
 
       {proxyEnabled && (
         <>
-          <SettingsGroup title={t('settings.proxyUrl')}>
-            <FocusInput
-              value={proxyUrl}
-              onChange={e => setProxyUrl(e.target.value)}
-              placeholder="socks5://user:pass@host:port"
-            />
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-              {t('settings.proxyUrlHint')}
-            </div>
+          {/* Mode selector */}
+          <SettingsGroup title={t('settings.proxyMode')}>
+            {(['direct', 'subscription'] as const).map(mode => (
+              <div key={mode} onClick={() => setProxyMode(mode)} style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
+                borderRadius: 6, cursor: 'pointer', fontSize: 13,
+                background: proxyMode === mode ? 'var(--accent-subtle)' : 'transparent',
+              }}>
+                <div style={{
+                  width: 8, height: 8, borderRadius: '50%',
+                  background: proxyMode === mode ? 'var(--accent)' : 'transparent',
+                  border: proxyMode === mode ? 'none' : '2px solid var(--text-muted)',
+                }} />
+                <span style={{ color: 'var(--text-primary)' }}>
+                  {mode === 'direct' ? t('settings.proxyModeDirect') : t('settings.proxyModeSub')}
+                </span>
+              </div>
+            ))}
           </SettingsGroup>
 
+          {/* Direct mode */}
+          {proxyMode === 'direct' && (
+            <SettingsGroup title={t('settings.proxyUrl')}>
+              <FocusInput value={proxyUrl} onChange={e => setProxyUrl(e.target.value)} placeholder="socks5://user:pass@host:port" />
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyUrlHint')}</div>
+            </SettingsGroup>
+          )}
+
+          {/* Subscription mode */}
+          {proxyMode === 'subscription' && (
+            <>
+              <SettingsGroup title={t('settings.proxySubUrl')}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <FocusInput value={proxySubUrl} onChange={e => setProxySubUrl(e.target.value)} placeholder="https://panel.xxx/api/sub/..." style={{ flex: 1 }} />
+                  <button onClick={handleFetchSubscription} disabled={subLoading || !proxySubUrl} style={{
+                    padding: '6px 14px', background: 'var(--accent)', color: '#fff', border: 'none',
+                    borderRadius: 6, fontSize: 12, cursor: subLoading ? 'not-allowed' : 'pointer',
+                    opacity: subLoading ? 0.6 : 1, whiteSpace: 'nowrap', flexShrink: 0,
+                  }}>
+                    {subLoading ? '...' : '🔄'}
+                  </button>
+                </div>
+                {subError && <div style={{ fontSize: 12, color: 'var(--error-text)', marginTop: 4 }}>{subError}</div>}
+              </SettingsGroup>
+
+              {nodes.length > 0 && (
+                <SettingsGroup title={`${t('settings.proxyNodes')} (${nodes.length})`}>
+                  <div style={{ maxHeight: 200, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    {nodes.map(node => {
+                      const isSelected = proxySelectedNode === node.name
+                      const isHovered = hoveredNode === node.name
+                      return (
+                        <div
+                          key={node.name + node.server}
+                          onClick={() => handleSelectNode(node)}
+                          onMouseEnter={() => setHoveredNode(node.name)}
+                          onMouseLeave={() => setHoveredNode(null)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px',
+                            borderRadius: 6, cursor: 'pointer', fontSize: 12,
+                            background: isSelected ? 'var(--accent-subtle)' : isHovered ? 'var(--bg-hover)' : 'transparent',
+                            borderLeft: isSelected ? '2px solid var(--accent)' : '2px solid transparent',
+                            opacity: node.usable ? 1 : 0.5,
+                          }}
+                        >
+                          <span style={{ fontSize: 14 }}>{node.regionFlag}</span>
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>
+                            {node.name}
+                          </span>
+                          <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', flexShrink: 0 }}>
+                            {node.type}
+                          </span>
+                          {!node.usable && (
+                            <span style={{ fontSize: 9, color: 'var(--warning)', flexShrink: 0 }} title="Requires local proxy client (Clash/V2Ray)">⚠</span>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {nodes.some(n => !n.usable) && (
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                      {t('settings.proxyNodesHint')}
+                    </div>
+                  )}
+                </SettingsGroup>
+              )}
+            </>
+          )}
+
+          {/* Region selector */}
           <SettingsGroup title={t('settings.proxyRegion')}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               {REGION_OPTIONS.map(r => (
-                <div
-                  key={r.id}
-                  onClick={() => setProxyRegion(r.id)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
-                    borderRadius: 6, cursor: 'pointer', fontSize: 13,
-                    background: proxyRegion === r.id ? 'var(--accent-subtle)' : 'transparent',
-                  }}
-                >
+                <div key={r.id} onClick={() => setProxyRegion(r.id)} style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
+                  borderRadius: 6, cursor: 'pointer', fontSize: 13,
+                  background: proxyRegion === r.id ? 'var(--accent-subtle)' : 'transparent',
+                }}>
                   <div style={{
                     width: 8, height: 8, borderRadius: '50%',
                     background: proxyRegion === r.id ? 'var(--accent)' : 'transparent',
@@ -179,11 +294,10 @@ function NetworkSection() {
                 </div>
               ))}
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-              {t('settings.proxyRegionHint')}
-            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyRegionHint')}</div>
           </SettingsGroup>
 
+          {/* Env preview */}
           {envVars.length > 0 && (
             <SettingsGroup title={t('settings.proxyStatus')}>
               <div style={{
@@ -193,9 +307,7 @@ function NetworkSection() {
               }}>
                 {envVars.map(v => <div key={v}>{v}</div>)}
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-                {t('settings.proxyApplyHint')}
-              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyApplyHint')}</div>
             </SettingsGroup>
           )}
         </>

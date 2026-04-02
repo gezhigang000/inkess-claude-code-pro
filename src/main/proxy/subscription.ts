@@ -1,0 +1,299 @@
+import log from '../logger'
+
+export interface ProxyNode {
+  name: string
+  type: 'socks5' | 'http' | 'https' | 'ss' | 'ssr' | 'vmess' | 'vless' | 'trojan' | 'unknown'
+  server: string
+  port: number
+  url: string         // full proxy URL for direct use (socks5/http only)
+  region: string      // auto-detected region code: 'us', 'jp', 'sg', etc.
+  regionFlag: string  // emoji flag
+  usable: boolean     // true if can be used directly (socks5/http/https)
+  raw: string         // original line/config for debugging
+}
+
+const REGION_DETECT: [RegExp, string, string][] = [
+  [/\b(US|美国|United\s*States|America|Los\s*Angeles|San\s*Jose|New\s*York|Chicago|Dallas|Seattle|Silicon|Washington)/i, 'us', '🇺🇸'],
+  [/\b(JP|日本|Japan|Tokyo|Osaka)/i, 'jp', '🇯🇵'],
+  [/\b(SG|新加坡|Singapore)/i, 'sg', '🇸🇬'],
+  [/\b(HK|香港|Hong\s*Kong)/i, 'hk', '🇭🇰'],
+  [/\b(TW|台湾|Taiwan|Taipei)/i, 'tw', '🇹🇼'],
+  [/\b(KR|韩国|Korea|Seoul)/i, 'kr', '🇰🇷'],
+  [/\b(DE|德国|Germany|Frankfurt|Berlin)/i, 'de', '🇩🇪'],
+  [/\b(GB|UK|英国|United\s*Kingdom|London)/i, 'gb', '🇬🇧'],
+  [/\b(AU|澳大利亚|Australia|Sydney)/i, 'au', '🇦🇺'],
+  [/\b(CA|加拿大|Canada|Toronto|Vancouver)/i, 'us', '🇨🇦'],
+  [/\b(FR|法国|France|Paris)/i, 'de', '🇫🇷'],
+  [/\b(IN|印度|India|Mumbai)/i, 'sg', '🇮🇳'],
+  [/\b(RU|俄罗斯|Russia|Moscow)/i, 'de', '🇷🇺'],
+]
+
+function detectRegion(name: string): { region: string; flag: string } {
+  for (const [re, region, flag] of REGION_DETECT) {
+    if (re.test(name)) return { region, flag }
+  }
+  return { region: 'auto', flag: '🌐' }
+}
+
+/** Parse a proxy subscription URL response into normalized node list */
+export function parseSubscription(content: string): ProxyNode[] {
+  const trimmed = content.trim()
+
+  // Try Base64 decode first (most common subscription format)
+  let decoded = ''
+  try {
+    decoded = Buffer.from(trimmed, 'base64').toString('utf-8')
+    // Verify it decoded to something meaningful (has protocol-like patterns)
+    if (!decoded.includes('://') && !decoded.includes('server')) {
+      decoded = ''
+    }
+  } catch {
+    decoded = ''
+  }
+
+  const text = decoded || trimmed
+
+  // Try Clash YAML format
+  if (text.includes('proxies:') || text.includes('Proxy:')) {
+    return parseClashYaml(text)
+  }
+
+  // Try line-by-line proxy URLs
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  const nodes: ProxyNode[] = []
+  for (const line of lines) {
+    const node = parseProxyLine(line)
+    if (node) nodes.push(node)
+  }
+  return nodes
+}
+
+function parseProxyLine(line: string): ProxyNode | null {
+  try {
+    if (line.startsWith('socks5://') || line.startsWith('socks://')) {
+      return parseDirectProxy(line, 'socks5')
+    }
+    if (line.startsWith('http://')) {
+      return parseDirectProxy(line, 'http')
+    }
+    if (line.startsWith('https://')) {
+      return parseDirectProxy(line, 'https')
+    }
+    if (line.startsWith('ss://')) {
+      return parseShadowsocks(line)
+    }
+    if (line.startsWith('ssr://')) {
+      return parseSsr(line)
+    }
+    if (line.startsWith('vmess://')) {
+      return parseVmess(line)
+    }
+    if (line.startsWith('vless://')) {
+      return parseVless(line)
+    }
+    if (line.startsWith('trojan://')) {
+      return parseTrojan(line)
+    }
+  } catch (err) {
+    log.warn(`[Subscription] Failed to parse line: ${line.slice(0, 80)}`, err)
+  }
+  return null
+}
+
+function parseDirectProxy(line: string, type: 'socks5' | 'http' | 'https'): ProxyNode {
+  const url = new URL(line)
+  const name = url.hash ? decodeURIComponent(url.hash.slice(1)) : `${url.hostname}:${url.port}`
+  const { region, flag } = detectRegion(name)
+  return {
+    name, type, server: url.hostname, port: Number(url.port) || (type === 'https' ? 443 : 1080),
+    url: line.split('#')[0], region, regionFlag: flag, usable: true, raw: line,
+  }
+}
+
+function parseShadowsocks(line: string): ProxyNode {
+  // ss://base64(method:password)@server:port#name
+  // or ss://base64(method:password@server:port)#name
+  const hashIdx = line.indexOf('#')
+  const name = hashIdx > 0 ? decodeURIComponent(line.slice(hashIdx + 1)) : 'SS Node'
+  const body = line.slice(5, hashIdx > 0 ? hashIdx : undefined)
+
+  let server = '', port = 0
+  if (body.includes('@')) {
+    // Format: base64(method:password)@server:port
+    const [, rest] = body.split('@')
+    if (rest) {
+      const [s, p] = rest.split(':')
+      server = s; port = Number(p)
+    }
+  } else {
+    // Fully base64 encoded
+    try {
+      const decoded = Buffer.from(body, 'base64').toString('utf-8')
+      const atIdx = decoded.lastIndexOf('@')
+      if (atIdx > 0) {
+        const [s, p] = decoded.slice(atIdx + 1).split(':')
+        server = s; port = Number(p)
+      }
+    } catch { /* ignore */ }
+  }
+
+  const { region, flag } = detectRegion(name)
+  return {
+    name, type: 'ss', server, port, url: '', region, regionFlag: flag,
+    usable: false, raw: line,
+  }
+}
+
+function parseSsr(line: string): ProxyNode {
+  const body = line.slice(6)
+  let decoded = ''
+  try { decoded = Buffer.from(body, 'base64').toString('utf-8') } catch { /* ignore */ }
+  const parts = decoded.split(':')
+  const server = parts[0] || ''
+  const port = Number(parts[1]) || 0
+  const name = decoded.includes('/') ? decodeURIComponent(decoded.split('remarks=')[1]?.split('&')[0] || '') : `SSR ${server}`
+  const { region, flag } = detectRegion(name || server)
+  return {
+    name: name || `SSR ${server}:${port}`, type: 'ssr', server, port, url: '', region, regionFlag: flag,
+    usable: false, raw: line,
+  }
+}
+
+function parseVmess(line: string): ProxyNode {
+  const body = line.slice(8)
+  try {
+    const json = JSON.parse(Buffer.from(body, 'base64').toString('utf-8'))
+    const name = json.ps || json.remark || `VMess ${json.add}:${json.port}`
+    const { region, flag } = detectRegion(name)
+    return {
+      name, type: 'vmess', server: json.add || '', port: Number(json.port) || 0,
+      url: '', region, regionFlag: flag, usable: false, raw: line,
+    }
+  } catch {
+    return { name: 'VMess Node', type: 'vmess', server: '', port: 0, url: '', region: 'auto', regionFlag: '🌐', usable: false, raw: line }
+  }
+}
+
+function parseVless(line: string): ProxyNode {
+  try {
+    const url = new URL(line)
+    const name = url.hash ? decodeURIComponent(url.hash.slice(1)) : `VLESS ${url.hostname}`
+    const { region, flag } = detectRegion(name)
+    return {
+      name, type: 'vless', server: url.hostname, port: Number(url.port) || 443,
+      url: '', region, regionFlag: flag, usable: false, raw: line,
+    }
+  } catch {
+    return { name: 'VLESS Node', type: 'vless', server: '', port: 0, url: '', region: 'auto', regionFlag: '🌐', usable: false, raw: line }
+  }
+}
+
+function parseTrojan(line: string): ProxyNode {
+  try {
+    const url = new URL(line)
+    const name = url.hash ? decodeURIComponent(url.hash.slice(1)) : `Trojan ${url.hostname}`
+    const { region, flag } = detectRegion(name)
+    return {
+      name, type: 'trojan', server: url.hostname, port: Number(url.port) || 443,
+      url: '', region, regionFlag: flag, usable: false, raw: line,
+    }
+  } catch {
+    return { name: 'Trojan Node', type: 'trojan', server: '', port: 0, url: '', region: 'auto', regionFlag: '🌐', usable: false, raw: line }
+  }
+}
+
+function parseClashYaml(text: string): ProxyNode[] {
+  // Simple YAML proxy parser (no full YAML lib needed)
+  const nodes: ProxyNode[] = []
+  const lines = text.split('\n')
+  let inProxies = false
+  let currentNode: Record<string, string> = {}
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed === 'proxies:' || trimmed === 'Proxy:') {
+      inProxies = true
+      continue
+    }
+    if (inProxies && /^[a-zA-Z]/.test(trimmed) && !trimmed.startsWith('-') && !trimmed.startsWith(' ')) {
+      inProxies = false
+      continue
+    }
+    if (!inProxies) continue
+
+    if (trimmed.startsWith('- {') || trimmed.startsWith('-{')) {
+      // Inline YAML: - {name: xxx, type: ss, server: xxx, port: 443, ...}
+      const obj = parseInlineYaml(trimmed.slice(trimmed.indexOf('{') + 1, -1))
+      if (obj.name && obj.server) {
+        const type = (obj.type || 'unknown').toLowerCase() as ProxyNode['type']
+        const usable = type === 'socks5' || type === 'http' || type === 'https'
+        const { region, flag } = detectRegion(obj.name)
+        const url = usable ? `${type}://${obj.server}:${obj.port || 1080}` : ''
+        nodes.push({
+          name: obj.name, type, server: obj.server, port: Number(obj.port) || 0,
+          url, region, regionFlag: flag, usable, raw: trimmed,
+        })
+      }
+    } else if (trimmed.startsWith('- name:') || trimmed.startsWith('-name:')) {
+      // Multi-line YAML block start
+      if (currentNode.name) {
+        pushClashNode(nodes, currentNode)
+      }
+      currentNode = { name: trimmed.split(':').slice(1).join(':').trim().replace(/^["']|["']$/g, '') }
+    } else if (trimmed.startsWith('name:') && Object.keys(currentNode).length > 0) {
+      currentNode.name = trimmed.split(':').slice(1).join(':').trim().replace(/^["']|["']$/g, '')
+    } else if (/^(type|server|port|password|cipher|uuid):/.test(trimmed)) {
+      const [key, ...rest] = trimmed.split(':')
+      currentNode[key.trim()] = rest.join(':').trim().replace(/^["']|["']$/g, '')
+    }
+  }
+  if (currentNode.name) pushClashNode(nodes, currentNode)
+
+  return nodes
+}
+
+function pushClashNode(nodes: ProxyNode[], obj: Record<string, string>): void {
+  const type = (obj.type || 'unknown').toLowerCase() as ProxyNode['type']
+  const usable = type === 'socks5' || type === 'http' || type === 'https'
+  const { region, flag } = detectRegion(obj.name || '')
+  const url = usable ? `${type}://${obj.server}:${obj.port || 1080}` : ''
+  nodes.push({
+    name: obj.name || 'Unknown', type, server: obj.server || '', port: Number(obj.port) || 0,
+    url, region, regionFlag: flag, usable, raw: JSON.stringify(obj),
+  })
+}
+
+function parseInlineYaml(str: string): Record<string, string> {
+  const obj: Record<string, string> = {}
+  // Simple key: value parser for inline YAML
+  const pairs = str.split(',')
+  for (const pair of pairs) {
+    const colonIdx = pair.indexOf(':')
+    if (colonIdx > 0) {
+      const key = pair.slice(0, colonIdx).trim()
+      const val = pair.slice(colonIdx + 1).trim().replace(/^["']|["']$/g, '')
+      obj[key] = val
+    }
+  }
+  return obj
+}
+
+/** Fetch and parse a subscription URL */
+export async function fetchSubscription(url: string, timeout = 15000): Promise<ProxyNode[]> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeout)
+
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'ClashForWindows/0.20.39',  // Common UA for subscriptions
+      },
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const text = await res.text()
+    return parseSubscription(text)
+  } finally {
+    clearTimeout(timer)
+  }
+}

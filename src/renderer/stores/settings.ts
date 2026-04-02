@@ -19,8 +19,11 @@ interface SettingsState {
   pinnedProjects: string[]
 
   proxyEnabled: boolean
-  proxyUrl: string
-  proxyRegion: string  // region code: 'us', 'jp', 'sg', 'de', 'gb', 'kr', 'auto' (no override)
+  proxyMode: 'direct' | 'subscription'  // direct = manual URL, subscription = fetch node list
+  proxyUrl: string                       // manual proxy URL (direct mode)
+  proxySubUrl: string                    // subscription URL
+  proxySelectedNode: string              // selected node name (subscription mode)
+  proxyRegion: string                    // region code: 'us', 'jp', etc.
 
   setFontSize: (v: number) => void
   setIdeChoice: (v: string) => void
@@ -33,7 +36,10 @@ interface SettingsState {
   pinProject: (path: string) => void
   unpinProject: (path: string) => void
   setProxyEnabled: (v: boolean) => void
+  setProxyMode: (v: 'direct' | 'subscription') => void
   setProxyUrl: (v: string) => void
+  setProxySubUrl: (v: string) => void
+  setProxySelectedNode: (v: string) => void
   setProxyRegion: (v: string) => void
 }
 
@@ -58,7 +64,10 @@ function persistSettings(state: SettingsState) {
       sidebarCollapsed: state.sidebarCollapsed,
       pinnedProjects: state.pinnedProjects,
       proxyEnabled: state.proxyEnabled,
+      proxyMode: state.proxyMode,
       proxyUrl: state.proxyUrl,
+      proxySubUrl: state.proxySubUrl,
+      proxySelectedNode: state.proxySelectedNode,
       proxyRegion: state.proxyRegion,
     }))
   } catch { /* ignore */ }
@@ -99,9 +108,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   pinnedProjects: Array.isArray((saved as any).pinnedProjects) ? (saved as any).pinnedProjects.filter((p: unknown) => typeof p === 'string').slice(0, 10) : [],
 
   proxyEnabled: typeof (saved as any).proxyEnabled === 'boolean' ? (saved as any).proxyEnabled : false,
+  proxyMode: (saved as any).proxyMode === 'subscription' ? 'subscription' : 'direct',
   proxyUrl: typeof (saved as any).proxyUrl === 'string' ? (saved as any).proxyUrl
     : typeof (saved as any).proxyCustomUrl === 'string' ? (saved as any).proxyCustomUrl
     : '',
+  proxySubUrl: typeof (saved as any).proxySubUrl === 'string' ? (saved as any).proxySubUrl : '',
+  proxySelectedNode: typeof (saved as any).proxySelectedNode === 'string' ? (saved as any).proxySelectedNode : '',
   proxyRegion: typeof (saved as any).proxyRegion === 'string' ? (saved as any).proxyRegion : 'us',
 
   setFontSize: (v) => { set({ fontSize: v }); persistSettings(get()) },
@@ -130,10 +142,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ proxyEnabled: v })
     const s = get(); persistSettings(s); syncProxyToMain(s)
   },
+  setProxyMode: (v) => {
+    set({ proxyMode: v })
+    const s = get(); persistSettings(s); syncProxyToMain(s)
+  },
   setProxyUrl: (v) => {
     set({ proxyUrl: v })
     const s = get(); persistSettings(s); syncProxyToMain(s)
   },
+  setProxySubUrl: (v) => { set({ proxySubUrl: v }); persistSettings(get()) },
+  setProxySelectedNode: (v) => { set({ proxySelectedNode: v }); persistSettings(get()) },
   setProxyRegion: (v) => {
     set({ proxyRegion: v })
     const s = get(); persistSettings(s); syncProxyToMain(s)

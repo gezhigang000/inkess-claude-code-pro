@@ -54,6 +54,12 @@ const api = {
     updateSettings: (settings: {
       enabled: boolean; url: string; region: string
     }) => ipcRenderer.invoke('proxy:updateSettings', settings),
+    fetchSubscription: (url: string) => ipcRenderer.invoke('proxy:fetchSubscription', url) as Promise<{
+      success: boolean; error?: string; nodes: Array<{
+        name: string; type: string; server: string; port: number; url: string;
+        region: string; regionFlag: string; usable: boolean
+      }>
+    }>,
     onSettingsChanged: (callback: (settings: {
       enabled: boolean; url: string; region: string
     }) => void) => {

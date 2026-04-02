@@ -225,6 +225,16 @@ function buildProxyEnv(url: string): Record<string, string> {
 
 ipcMain.handle('proxy:getSettings', () => proxySettings)
 
+ipcMain.handle('proxy:fetchSubscription', async (_event, url: string) => {
+  try {
+    const { fetchSubscription } = require('./proxy/subscription') as typeof import('./proxy/subscription')
+    const nodes = await fetchSubscription(url)
+    return { success: true, nodes }
+  } catch (err) {
+    return { success: false, error: (err as Error).message, nodes: [] }
+  }
+})
+
 ipcMain.handle('proxy:updateSettings', (_event, settings: unknown) => {
   proxySettings = validateProxySettings(settings)
   safeSend('proxy:settingsChanged', proxySettings)
