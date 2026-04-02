@@ -20,6 +20,7 @@ interface SettingsState {
 
   proxyEnabled: boolean
   proxyUrl: string
+  proxyRegion: string  // region code: 'us', 'jp', 'sg', 'de', 'gb', 'kr', 'auto' (no override)
 
   setFontSize: (v: number) => void
   setIdeChoice: (v: string) => void
@@ -33,6 +34,7 @@ interface SettingsState {
   unpinProject: (path: string) => void
   setProxyEnabled: (v: boolean) => void
   setProxyUrl: (v: string) => void
+  setProxyRegion: (v: string) => void
 }
 
 function loadSettings(): Partial<SettingsState> {
@@ -57,6 +59,7 @@ function persistSettings(state: SettingsState) {
       pinnedProjects: state.pinnedProjects,
       proxyEnabled: state.proxyEnabled,
       proxyUrl: state.proxyUrl,
+      proxyRegion: state.proxyRegion,
     }))
   } catch { /* ignore */ }
 }
@@ -65,6 +68,7 @@ function syncProxyToMain(state: SettingsState) {
   window.api?.proxy?.updateSettings({
     enabled: state.proxyEnabled,
     url: state.proxyUrl,
+    region: state.proxyRegion,
   })
 }
 
@@ -96,8 +100,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   proxyEnabled: typeof (saved as any).proxyEnabled === 'boolean' ? (saved as any).proxyEnabled : false,
   proxyUrl: typeof (saved as any).proxyUrl === 'string' ? (saved as any).proxyUrl
-    : typeof (saved as any).proxyCustomUrl === 'string' ? (saved as any).proxyCustomUrl  // migrate from old format
+    : typeof (saved as any).proxyCustomUrl === 'string' ? (saved as any).proxyCustomUrl
     : '',
+  proxyRegion: typeof (saved as any).proxyRegion === 'string' ? (saved as any).proxyRegion : 'us',
 
   setFontSize: (v) => { set({ fontSize: v }); persistSettings(get()) },
   setIdeChoice: (v) => { set({ ideChoice: v }); persistSettings(get()) },
@@ -127,6 +132,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
   setProxyUrl: (v) => {
     set({ proxyUrl: v })
+    const s = get(); persistSettings(s); syncProxyToMain(s)
+  },
+  setProxyRegion: (v) => {
+    set({ proxyRegion: v })
     const s = get(); persistSettings(s); syncProxyToMain(s)
   },
 }))

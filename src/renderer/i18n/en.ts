@@ -63,6 +63,8 @@ export const en = {
   'settings.proxyEnabled': 'Enable network proxy',
   'settings.proxyUrl': 'Proxy Address',
   'settings.proxyUrlHint': 'Supports http://, https://, socks5://, socks4:// — with optional auth (user:pass@host:port)',
+  'settings.proxyRegion': 'Environment Region',
+  'settings.proxyRegionHint': 'Match timezone and locale to your proxy location to avoid detection',
   'settings.proxyStatus': 'Effective Environment Variables',
   'settings.proxyApplyHint': 'Applied to new terminal tabs. Existing tabs are not affected.',
 

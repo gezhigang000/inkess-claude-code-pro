@@ -49,15 +49,15 @@ const api = {
 
   proxy: {
     getSettings: () => ipcRenderer.invoke('proxy:getSettings') as Promise<{
-      enabled: boolean; url: string
+      enabled: boolean; url: string; region: string
     }>,
     updateSettings: (settings: {
-      enabled: boolean; url: string
+      enabled: boolean; url: string; region: string
     }) => ipcRenderer.invoke('proxy:updateSettings', settings),
     onSettingsChanged: (callback: (settings: {
-      enabled: boolean; url: string
+      enabled: boolean; url: string; region: string
     }) => void) => {
-      const listener = (_: unknown, settings: { enabled: boolean; url: string }) => callback(settings)
+      const listener = (_: unknown, settings: { enabled: boolean; url: string; region: string }) => callback(settings)
       ipcRenderer.on('proxy:settingsChanged', listener)
       return () => ipcRenderer.removeListener('proxy:settingsChanged', listener)
     }

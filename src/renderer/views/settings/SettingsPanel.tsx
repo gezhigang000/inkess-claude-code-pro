@@ -100,17 +100,39 @@ const disabledBtnBase: React.CSSProperties = {
 
 // --- Section Components ---
 
+const REGION_OPTIONS = [
+  { id: 'us',   label: '🇺🇸 US East',       tz: 'America/New_York' },
+  { id: 'usw',  label: '🇺🇸 US West',       tz: 'America/Los_Angeles' },
+  { id: 'gb',   label: '🇬🇧 United Kingdom', tz: 'Europe/London' },
+  { id: 'de',   label: '🇩🇪 Germany',        tz: 'Europe/Berlin' },
+  { id: 'jp',   label: '🇯🇵 Japan',          tz: 'Asia/Tokyo' },
+  { id: 'kr',   label: '🇰🇷 Korea',          tz: 'Asia/Seoul' },
+  { id: 'sg',   label: '🇸🇬 Singapore',      tz: 'Asia/Singapore' },
+  { id: 'hk',   label: '🇭🇰 Hong Kong',      tz: 'Asia/Hong_Kong' },
+  { id: 'tw',   label: '🇹🇼 Taiwan',         tz: 'Asia/Taipei' },
+  { id: 'au',   label: '🇦🇺 Australia',      tz: 'Australia/Sydney' },
+  { id: 'auto', label: '🖥 System (no mask)', tz: '' },
+]
+
 function NetworkSection() {
   const { t } = useI18n()
-  const { proxyEnabled, proxyUrl, setProxyEnabled, setProxyUrl } = useSettingsStore()
+  const { proxyEnabled, proxyUrl, proxyRegion, setProxyEnabled, setProxyUrl, setProxyRegion } = useSettingsStore()
 
-  // Determine which env vars will be set based on protocol
   const isSocks = proxyUrl && /^socks[45s]?:\/\//i.test(proxyUrl)
-  const envVars = proxyEnabled && proxyUrl
-    ? isSocks
-      ? [`ALL_PROXY=${proxyUrl}`, `HTTP_PROXY=${proxyUrl}`, `HTTPS_PROXY=${proxyUrl}`]
-      : [`HTTP_PROXY=${proxyUrl}`, `HTTPS_PROXY=${proxyUrl}`]
-    : []
+  const region = REGION_OPTIONS.find(r => r.id === proxyRegion) || REGION_OPTIONS[0]
+
+  // Build preview of all env vars that will be injected
+  const envVars: string[] = []
+  if (proxyEnabled && proxyUrl) {
+    if (isSocks) envVars.push(`ALL_PROXY=${proxyUrl}`)
+    envVars.push(`HTTP_PROXY=${proxyUrl}`)
+    envVars.push(`HTTPS_PROXY=${proxyUrl}`)
+  }
+  if (proxyEnabled && proxyRegion !== 'auto' && region.tz) {
+    envVars.push(`TZ=${region.tz}`)
+    const lang = proxyRegion === 'de' ? 'de_DE' : proxyRegion === 'jp' ? 'ja_JP' : proxyRegion === 'kr' ? 'ko_KR' : proxyRegion === 'tw' ? 'zh_TW' : 'en_US'
+    envVars.push(`LANG=${lang}.UTF-8`)
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -132,6 +154,33 @@ function NetworkSection() {
             />
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
               {t('settings.proxyUrlHint')}
+            </div>
+          </SettingsGroup>
+
+          <SettingsGroup title={t('settings.proxyRegion')}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {REGION_OPTIONS.map(r => (
+                <div
+                  key={r.id}
+                  onClick={() => setProxyRegion(r.id)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
+                    borderRadius: 6, cursor: 'pointer', fontSize: 13,
+                    background: proxyRegion === r.id ? 'var(--accent-subtle)' : 'transparent',
+                  }}
+                >
+                  <div style={{
+                    width: 8, height: 8, borderRadius: '50%',
+                    background: proxyRegion === r.id ? 'var(--accent)' : 'transparent',
+                    border: proxyRegion === r.id ? 'none' : '2px solid var(--text-muted)',
+                  }} />
+                  <span style={{ color: 'var(--text-primary)' }}>{r.label}</span>
+                  {r.tz && <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>{r.tz}</span>}
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+              {t('settings.proxyRegionHint')}
             </div>
           </SettingsGroup>
 

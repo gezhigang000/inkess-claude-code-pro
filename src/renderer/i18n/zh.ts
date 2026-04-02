@@ -65,6 +65,8 @@ export const zh: Record<TranslationKey, string> = {
   'settings.proxyEnabled': '启用网络代理',
   'settings.proxyUrl': '代理地址',
   'settings.proxyUrlHint': '支持 http://, https://, socks5://, socks4:// — 可带认证 (user:pass@host:port)',
+  'settings.proxyRegion': '环境伪装地区',
+  'settings.proxyRegionHint': '将时区和语言设置为代理所在地区，避免环境信息不一致',
   'settings.proxyStatus': '生效的环境变量',
   'settings.proxyApplyHint': '仅对新建的终端标签页生效，已有标签页不受影响。',
 

@@ -169,9 +169,25 @@ ipcMain.handle('tools:install', async () => {
 interface ProxySettings {
   enabled: boolean
   url: string
+  region: string
 }
 
-let proxySettings: ProxySettings = { enabled: false, url: '' }
+let proxySettings: ProxySettings = { enabled: false, url: '', region: 'us' }
+
+/** Region → environment variable overrides (timezone, locale) */
+const REGION_ENV: Record<string, Record<string, string>> = {
+  us:   { TZ: 'America/New_York',    LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' },
+  usw:  { TZ: 'America/Los_Angeles', LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' },
+  gb:   { TZ: 'Europe/London',       LANG: 'en_GB.UTF-8', LC_ALL: 'en_GB.UTF-8' },
+  de:   { TZ: 'Europe/Berlin',       LANG: 'de_DE.UTF-8', LC_ALL: 'de_DE.UTF-8' },
+  jp:   { TZ: 'Asia/Tokyo',          LANG: 'ja_JP.UTF-8', LC_ALL: 'ja_JP.UTF-8' },
+  kr:   { TZ: 'Asia/Seoul',          LANG: 'ko_KR.UTF-8', LC_ALL: 'ko_KR.UTF-8' },
+  sg:   { TZ: 'Asia/Singapore',      LANG: 'en_SG.UTF-8', LC_ALL: 'en_SG.UTF-8' },
+  hk:   { TZ: 'Asia/Hong_Kong',      LANG: 'en_HK.UTF-8', LC_ALL: 'en_HK.UTF-8' },
+  tw:   { TZ: 'Asia/Taipei',         LANG: 'zh_TW.UTF-8', LC_ALL: 'zh_TW.UTF-8' },
+  au:   { TZ: 'Australia/Sydney',    LANG: 'en_AU.UTF-8', LC_ALL: 'en_AU.UTF-8' },
+  auto: {}, // no override — use real system locale
+}
 
 /** Validate and sanitize proxy settings from renderer */
 function validateProxySettings(input: unknown): ProxySettings {
@@ -179,6 +195,7 @@ function validateProxySettings(input: unknown): ProxySettings {
   return {
     enabled: typeof s?.enabled === 'boolean' ? s.enabled : false,
     url: typeof s?.url === 'string' ? s.url.slice(0, 500) : '',
+    region: typeof s?.region === 'string' && s.region in REGION_ENV ? s.region : 'us',
   }
 }
 
@@ -241,9 +258,17 @@ ipcMain.handle('pty:create', (_event, options: {
     // Inject proxy env vars if proxy is enabled
     const proxyEnv = proxySettings.enabled ? buildProxyEnv(proxySettings.url) : {}
 
+    // Build env config with region-based overrides
+    const { DEFAULT_ENV_OVERRIDES, DEFAULT_ENV_HIDDEN } = require('./pty/pty-manager') as typeof import('./pty/pty-manager')
+    const regionOverrides = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}
+    const envConfig = {
+      overrides: { ...DEFAULT_ENV_OVERRIDES, ...regionOverrides },
+      hidden: DEFAULT_ENV_HIDDEN,
+    }
+
     const mergedEnv = { ...toolsEnv, ...proxyEnv, ...options.env, CLAUDE_CONFIG_DIR: claudeConfigDir }
 
-    const id = ptyManager.create(options.cwd, mergedEnv, command, args)
+    const id = ptyManager.create(options.cwd, mergedEnv, command, args, envConfig)
     ptyMonitor.watch(id)
     const title = options.cwd.replace(/\\/g, '/').split('/').pop() || 'terminal'
     sessionRecorder.startSession(id, options.cwd, title)
