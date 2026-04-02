@@ -425,6 +425,19 @@ ipcMain.handle('browser:open', async (_event, url: string) => {
   const regionEnv = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}
   const lang = regionEnv.LANG?.split('.')[0]?.replace('_', '-') || 'en-US'
 
+  // Each browser window gets an isolated session to avoid proxy leaking to main app
+  const { session: electronSession } = require('electron') as typeof import('electron')
+  const partition = `browser-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const browserSession = electronSession.fromPartition(partition, { cache: false })
+
+  // Apply proxy to this isolated session
+  if (proxySettings.enabled && proxySettings.url) {
+    await browserSession.setProxy({
+      proxyRules: proxySettings.url,
+    })
+    log.info(`browser:open proxy set to: ${proxySettings.url}`)
+  }
+
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -436,16 +449,9 @@ ipcMain.handle('browser:open', async (_event, url: string) => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      session: browserSession,
     }
   })
-
-  // Apply proxy to this window's session
-  if (proxySettings.enabled && proxySettings.url) {
-    await win.webContents.session.setProxy({
-      proxyRules: proxySettings.url,
-    })
-    log.info(`browser:open proxy set to: ${proxySettings.url}`)
-  }
 
   // Set language header to match region
   win.webContents.session.setUserAgent(
@@ -456,21 +462,27 @@ ipcMain.handle('browser:open', async (_event, url: string) => {
   // Override navigator.language via JavaScript injection
   win.webContents.on('did-finish-load', () => {
     if (regionEnv.LANG) {
+      const safeLang = JSON.stringify(lang)
       win.webContents.executeJavaScript(`
-        Object.defineProperty(navigator, 'language', { get: () => '${lang}' });
-        Object.defineProperty(navigator, 'languages', { get: () => ['${lang}', 'en'] });
+        Object.defineProperty(navigator, 'language', { get: () => ${safeLang} });
+        Object.defineProperty(navigator, 'languages', { get: () => [${safeLang}, 'en'] });
       `).catch(() => {})
     }
     // Set timezone via Intl override
     if (regionEnv.TZ) {
+      const safeTz = JSON.stringify(regionEnv.TZ)
       win.webContents.executeJavaScript(`
-        const __tz = '${regionEnv.TZ}';
-        const __origDTF = Intl.DateTimeFormat;
-        Intl.DateTimeFormat = function(locale, opts) {
-          return new __origDTF(locale, { ...opts, timeZone: opts?.timeZone || __tz });
-        };
-        Intl.DateTimeFormat.prototype = __origDTF.prototype;
-        Intl.DateTimeFormat.supportedLocalesOf = __origDTF.supportedLocalesOf;
+        (function() {
+          var __tz = ${safeTz};
+          var __origDTF = Intl.DateTimeFormat;
+          var __newDTF = function(locale, opts) {
+            return new __origDTF(locale, Object.assign({}, opts, { timeZone: (opts && opts.timeZone) || __tz }));
+          };
+          __newDTF.prototype = __origDTF.prototype;
+          __newDTF.supportedLocalesOf = __origDTF.supportedLocalesOf.bind(__origDTF);
+          Object.defineProperty(__newDTF, Symbol.hasInstance, { value: function(i) { return i instanceof __origDTF; } });
+          Intl.DateTimeFormat = __newDTF;
+        })();
       `).catch(() => {})
     }
   })

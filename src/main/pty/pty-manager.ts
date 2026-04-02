@@ -9,10 +9,12 @@ export const DEFAULT_ENV_OVERRIDES: Record<string, string> = {
   LANG: 'en_US.UTF-8',
   LC_ALL: 'en_US.UTF-8',
   LC_CTYPE: 'en_US.UTF-8',
+  USER: 'user',
+  LOGNAME: 'user',
 }
 
 export const DEFAULT_ENV_HIDDEN = [
-  'USER', 'LOGNAME', 'HOSTNAME', 'DISPLAY',
+  'HOSTNAME', 'DISPLAY',
   'SSH_*', 'GPG_*', 'APPLE_*', '__CF_*',
   'SECURITYSESSION*', 'XPC_*',
   'TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'TERM_SESSION_ID',
