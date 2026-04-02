@@ -147,6 +147,10 @@ const api = {
       ipcRenderer.send('analytics:track', { event, props })
   },
 
+  browser: {
+    open: (url: string) => ipcRenderer.invoke('browser:open', url) as Promise<{ success?: boolean; error?: string }>,
+  },
+
   clipboard: {
     writeText: (text: string) => ipcRenderer.invoke('clipboard:writeText', text),
     saveImage: (buffer: ArrayBuffer) => ipcRenderer.invoke('clipboard:saveImage', buffer) as Promise<string>,

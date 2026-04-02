@@ -174,31 +174,43 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
       return true
     })
 
-    // File path link provider — Cmd+Click to preview
+    // Link providers — file paths + URLs
     const linkDisposable = term.registerLinkProvider({
       provideLinks(lineNumber, callback) {
         const line = term.buffer.active.getLine(lineNumber - 1)
         if (!line) { callback(undefined); return }
         const text = line.translateToString()
-        const links: Array<{ startIndex: number; length: number; text: string }> = []
-        // Match file paths in the line
-        const re = /(?:[\w./~-]+\/)*[\w.-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|kt|swift|rb|sh|md|json|yaml|yml|toml|css|scss|html|sql|c|cpp|h|hpp|cs|vue|svelte|php|xml)\b/g
+        const links: Array<{ startIndex: number; length: number; text: string; type: 'file' | 'url' }> = []
+
+        // Match file paths
+        const fileRe = /(?:[\w./~-]+\/)*[\w.-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|kt|swift|rb|sh|md|json|yaml|yml|toml|css|scss|html|sql|c|cpp|h|hpp|cs|vue|svelte|php|xml)\b/g
         let m: RegExpExecArray | null
-        while ((m = re.exec(text)) !== null) {
-          links.push({
-            startIndex: m.index,
-            length: m[0].length,
-            text: m[0],
-          })
+        while ((m = fileRe.exec(text)) !== null) {
+          links.push({ startIndex: m.index, length: m[0].length, text: m[0], type: 'file' })
         }
+
+        // Match URLs (http/https)
+        const urlRe = /https?:\/\/[^\s"'<>)\]]+/g
+        while ((m = urlRe.exec(text)) !== null) {
+          // Avoid overlapping with file links
+          const overlaps = links.some(l => m!.index >= l.startIndex && m!.index < l.startIndex + l.length)
+          if (!overlaps) {
+            links.push({ startIndex: m.index, length: m[0].length, text: m[0], type: 'url' })
+          }
+        }
+
         callback(links.map(l => ({
           range: {
             start: { x: l.startIndex + 1, y: lineNumber },
             end: { x: l.startIndex + l.length + 1, y: lineNumber },
           },
           text: l.text,
-          activate(_event: MouseEvent, text: string) {
-            onFileClick?.(text)
+          activate(_event: MouseEvent, linkText: string) {
+            if (l.type === 'url') {
+              window.api.browser.open(linkText)
+            } else {
+              onFileClick?.(linkText)
+            }
           }
         })))
       }

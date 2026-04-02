@@ -412,6 +412,79 @@ ipcMain.handle('clipboard:getImageSize', async (_event, filepath: string) => {
   }
 })
 
+// IPC: Built-in browser (uses proxy + region env)
+let browserWindows: BrowserWindow[] = []
+
+ipcMain.handle('browser:open', async (_event, url: string) => {
+  // Validate URL
+  if (!/^https?:\/\//i.test(url)) {
+    log.warn(`browser:open blocked non-http URL: ${url}`)
+    return { error: 'Only http/https URLs are supported' }
+  }
+
+  const regionEnv = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}
+  const lang = regionEnv.LANG?.split('.')[0]?.replace('_', '-') || 'en-US'
+
+  const win = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 600,
+    minHeight: 400,
+    title: 'Browser',
+    icon: join(__dirname, '../../resources/icon-256.png'),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    }
+  })
+
+  // Apply proxy to this window's session
+  if (proxySettings.enabled && proxySettings.url) {
+    await win.webContents.session.setProxy({
+      proxyRules: proxySettings.url,
+    })
+    log.info(`browser:open proxy set to: ${proxySettings.url}`)
+  }
+
+  // Set language header to match region
+  win.webContents.session.setUserAgent(
+    win.webContents.getUserAgent(),
+    lang
+  )
+
+  // Override navigator.language via JavaScript injection
+  win.webContents.on('did-finish-load', () => {
+    if (regionEnv.LANG) {
+      win.webContents.executeJavaScript(`
+        Object.defineProperty(navigator, 'language', { get: () => '${lang}' });
+        Object.defineProperty(navigator, 'languages', { get: () => ['${lang}', 'en'] });
+      `).catch(() => {})
+    }
+    // Set timezone via Intl override
+    if (regionEnv.TZ) {
+      win.webContents.executeJavaScript(`
+        const __tz = '${regionEnv.TZ}';
+        const __origDTF = Intl.DateTimeFormat;
+        Intl.DateTimeFormat = function(locale, opts) {
+          return new __origDTF(locale, { ...opts, timeZone: opts?.timeZone || __tz });
+        };
+        Intl.DateTimeFormat.prototype = __origDTF.prototype;
+        Intl.DateTimeFormat.supportedLocalesOf = __origDTF.supportedLocalesOf;
+      `).catch(() => {})
+    }
+  })
+
+  win.loadURL(url)
+  browserWindows.push(win)
+
+  win.on('closed', () => {
+    browserWindows = browserWindows.filter(w => w !== win)
+  })
+
+  return { success: true }
+})
+
 // IPC: Window controls (Windows only)
 ipcMain.on('window:minimize', () => mainWindow?.minimize())
 ipcMain.on('window:maximize', () => {
@@ -553,6 +626,9 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  // Close all browser windows
+  browserWindows.forEach(w => { try { w.close() } catch { /* ignore */ } })
+  browserWindows = []
   ptyManager.killAll()
   ptyMonitor.dispose()
   analytics.flushSync()
