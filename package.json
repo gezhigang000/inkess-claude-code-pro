@@ -79,7 +79,7 @@
     },
     "publish": {
       "provider": "generic",
-      "url": "https://download.starapp.net/app-releases"
+      "url": "https://download.starapp.net/pro-releases"
     }
   },
   "devDependencies": {
