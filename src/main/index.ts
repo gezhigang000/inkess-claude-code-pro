@@ -13,6 +13,7 @@ import { Analytics } from './analytics'
 import { ErrorReporter } from './error-reporter'
 import { SessionRecorder } from './session/session-recorder'
 import { SubscriptionManager } from './subscription/subscription-manager'
+import { SingBoxManager } from './proxy/sing-box-manager'
 
 process.on('uncaughtException', (err) => log.error('Uncaught:', err))
 process.on('unhandledRejection', (reason) => log.error('Unhandled:', reason))
@@ -26,6 +27,7 @@ const analytics = new Analytics()
 const errorReporter = new ErrorReporter()
 const sessionRecorder = new SessionRecorder()
 const subscriptionManager = new SubscriptionManager()
+const singBoxManager = new SingBoxManager()
 
 /** Safely send to renderer, swallowing errors if window is destroyed */
 function safeSend(channel: string, ...args: unknown[]): void {
@@ -282,6 +284,43 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, { email, password 
     }
   })
 
+  return { success: true }
+})
+
+// IPC: sing-box TUN/proxy
+ipcMain.handle('singbox:getInfo', () => singBoxManager.getInfo())
+
+ipcMain.handle('singbox:install', async () => {
+  try {
+    await singBoxManager.install((step, pct) => {
+      safeSend('singbox:installProgress', { step, pct })
+    })
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('singbox:startTun', async (_event, proxyUrl: string) => {
+  try {
+    await singBoxManager.startTun(proxyUrl)
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('singbox:startLocalProxy', async (_event, proxyUrl: string, port?: number) => {
+  try {
+    const localPort = await singBoxManager.startLocalProxy(proxyUrl, port)
+    return { success: true, port: localPort }
+  } catch (err) {
+    return { success: false, error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('singbox:stop', () => {
+  singBoxManager.stop()
   return { success: true }
 })
 
@@ -772,6 +811,8 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  // Stop sing-box TUN/proxy
+  singBoxManager.stop()
   // Close all browser windows
   browserWindows.forEach(w => { try { w.close() } catch { /* ignore */ } })
   browserWindows = []

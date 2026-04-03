@@ -192,20 +192,26 @@ function NetworkSection() {
         <>
           {/* Mode selector */}
           <SettingsGroup title={t('settings.proxyMode')}>
-            {(['direct', 'subscription'] as const).map(mode => (
-              <div key={mode} onClick={() => setProxyMode(mode)} style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
+            {([
+              { id: 'direct' as const, label: t('settings.proxyModeDirect'), desc: t('settings.proxyModeDirectDesc') },
+              { id: 'subscription' as const, label: t('settings.proxyModeSub'), desc: t('settings.proxyModeSubDesc') },
+              { id: 'tun' as const, label: t('settings.proxyModeTun'), desc: t('settings.proxyModeTunDesc') },
+              { id: 'system' as const, label: t('settings.proxyModeSystem'), desc: t('settings.proxyModeSystemDesc') },
+            ]).map(mode => (
+              <div key={mode.id} onClick={() => setProxyMode(mode.id)} style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
                 borderRadius: 6, cursor: 'pointer', fontSize: 13,
-                background: proxyMode === mode ? 'var(--accent-subtle)' : 'transparent',
+                background: proxyMode === mode.id ? 'var(--accent-subtle)' : 'transparent',
               }}>
                 <div style={{
-                  width: 8, height: 8, borderRadius: '50%',
-                  background: proxyMode === mode ? 'var(--accent)' : 'transparent',
-                  border: proxyMode === mode ? 'none' : '2px solid var(--text-muted)',
+                  width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                  background: proxyMode === mode.id ? 'var(--accent)' : 'transparent',
+                  border: proxyMode === mode.id ? 'none' : '2px solid var(--text-muted)',
                 }} />
-                <span style={{ color: 'var(--text-primary)' }}>
-                  {mode === 'direct' ? t('settings.proxyModeDirect') : t('settings.proxyModeSub')}
-                </span>
+                <div>
+                  <div style={{ color: 'var(--text-primary)' }}>{mode.label}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>{mode.desc}</div>
+                </div>
               </div>
             ))}
           </SettingsGroup>
@@ -277,6 +283,24 @@ function NetworkSection() {
                 </SettingsGroup>
               )}
             </>
+          )}
+
+          {/* TUN mode */}
+          {proxyMode === 'tun' && (
+            <>
+              <SettingsGroup title={t('settings.proxyUrl')}>
+                <FocusInput value={proxyUrl} onChange={e => setProxyUrl(e.target.value)} placeholder="ss://... or vmess://... or socks5://..." />
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyTunUrlHint')}</div>
+              </SettingsGroup>
+              <TunControl proxyUrl={proxyUrl} />
+            </>
+          )}
+
+          {/* System proxy — only env masking, no proxy injection */}
+          {proxyMode === 'system' && (
+            <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-muted)', background: 'var(--bg-tertiary)', borderRadius: 6 }}>
+              {t('settings.proxySystemHint')}
+            </div>
           )}
 
           {/* Region selector */}
@@ -472,6 +496,71 @@ function AboutSection() {
         </button>
       </SettingsGroup>
     </div>
+  )
+}
+
+function TunControl({ proxyUrl }: { proxyUrl: string }) {
+  const { t } = useI18n()
+  const [info, setInfo] = useState<{ mode: string; status: string; installed: boolean; lastError: string | null }>({ mode: 'off', status: 'stopped', installed: false, lastError: null })
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    window.api.singbox.getInfo().then(setInfo)
+    const interval = setInterval(() => window.api.singbox.getInfo().then(setInfo), 3000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const handleStart = async () => {
+    setLoading(true)
+    if (!info.installed) {
+      const install = await window.api.singbox.install()
+      if (!install.success) { setLoading(false); return }
+    }
+    const result = await window.api.singbox.startTun(proxyUrl)
+    setLoading(false)
+    if (!result.success) {
+      setInfo(prev => ({ ...prev, lastError: result.error || 'Failed to start' }))
+    }
+    window.api.singbox.getInfo().then(setInfo)
+  }
+
+  const handleStop = async () => {
+    await window.api.singbox.stop()
+    window.api.singbox.getInfo().then(setInfo)
+  }
+
+  const isRunning = info.status === 'running'
+  const statusColor = isRunning ? 'var(--success)' : info.status === 'error' ? 'var(--error)' : 'var(--text-muted)'
+
+  return (
+    <SettingsGroup title="TUN">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0' }}>
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor, flexShrink: 0 }} />
+        <span style={{ fontSize: 13, color: 'var(--text-primary)', flex: 1 }}>
+          {isRunning ? t('settings.tunRunning') : t('settings.tunStopped')}
+        </span>
+        {isRunning ? (
+          <button onClick={handleStop} style={{
+            padding: '5px 14px', fontSize: 12, borderRadius: 6, cursor: 'pointer',
+            background: 'var(--error)', color: '#fff', border: 'none',
+          }}>
+            {t('settings.tunStop')}
+          </button>
+        ) : (
+          <button onClick={handleStart} disabled={loading || !proxyUrl} style={{
+            padding: '5px 14px', fontSize: 12, borderRadius: 6,
+            cursor: loading ? 'not-allowed' : 'pointer', opacity: loading || !proxyUrl ? 0.5 : 1,
+            background: 'var(--accent)', color: '#fff', border: 'none',
+          }}>
+            {loading ? '...' : t('settings.tunStart')}
+          </button>
+        )}
+      </div>
+      {info.lastError && (
+        <div style={{ fontSize: 11, color: 'var(--error-text)', marginTop: 4 }}>{info.lastError}</div>
+      )}
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.tunHint')}</div>
+    </SettingsGroup>
   )
 }
 

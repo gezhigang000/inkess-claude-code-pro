@@ -153,6 +153,21 @@ const api = {
       ipcRenderer.send('analytics:track', { event, props })
   },
 
+  singbox: {
+    getInfo: () => ipcRenderer.invoke('singbox:getInfo') as Promise<{
+      mode: string; status: string; installed: boolean; lastError: string | null
+    }>,
+    install: () => ipcRenderer.invoke('singbox:install') as Promise<{ success: boolean; error?: string }>,
+    startTun: (proxyUrl: string) => ipcRenderer.invoke('singbox:startTun', proxyUrl) as Promise<{ success: boolean; error?: string }>,
+    startLocalProxy: (proxyUrl: string, port?: number) => ipcRenderer.invoke('singbox:startLocalProxy', proxyUrl, port) as Promise<{ success: boolean; port?: number; error?: string }>,
+    stop: () => ipcRenderer.invoke('singbox:stop') as Promise<{ success: boolean }>,
+    onInstallProgress: (callback: (event: { step: string; pct: number }) => void) => {
+      const listener = (_: unknown, event: { step: string; pct: number }) => callback(event)
+      ipcRenderer.on('singbox:installProgress', listener)
+      return () => ipcRenderer.removeListener('singbox:installProgress', listener)
+    },
+  },
+
   browser: {
     open: (url: string) => ipcRenderer.invoke('browser:open', url) as Promise<{ success?: boolean; error?: string }>,
   },

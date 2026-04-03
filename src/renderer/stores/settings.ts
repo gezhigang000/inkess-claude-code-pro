@@ -19,7 +19,7 @@ interface SettingsState {
   pinnedProjects: string[]
 
   proxyEnabled: boolean
-  proxyMode: 'direct' | 'subscription'
+  proxyMode: 'direct' | 'subscription' | 'tun' | 'system'
   proxyUrl: string                       // manual proxy URL (direct mode)
   proxySubUrl: string                    // subscription URL
   proxySubNodeUrl: string                // resolved URL of selected subscription node
@@ -37,7 +37,7 @@ interface SettingsState {
   pinProject: (path: string) => void
   unpinProject: (path: string) => void
   setProxyEnabled: (v: boolean) => void
-  setProxyMode: (v: 'direct' | 'subscription') => void
+  setProxyMode: (v: 'direct' | 'subscription' | 'tun' | 'system') => void
   setProxyUrl: (v: string) => void
   setProxySubUrl: (v: string) => void
   setProxySubNodeUrl: (v: string) => void
@@ -77,10 +77,13 @@ function persistSettings(state: SettingsState) {
 }
 
 function syncProxyToMain(state: SettingsState) {
-  // Use the correct URL based on proxy mode
-  const url = state.proxyMode === 'subscription' ? state.proxySubNodeUrl : state.proxyUrl
+  // system/tun mode: no env var proxy (TUN handles all traffic, or user has external proxy)
+  const url = state.proxyMode === 'subscription' ? state.proxySubNodeUrl
+    : state.proxyMode === 'system' ? '' // system proxy — don't inject env vars
+    : state.proxyMode === 'tun' ? '' // TUN mode — sing-box handles traffic
+    : state.proxyUrl
   window.api?.proxy?.updateSettings({
-    enabled: state.proxyEnabled,
+    enabled: state.proxyEnabled && state.proxyMode !== 'system',
     url,
     region: state.proxyRegion,
   })
@@ -113,7 +116,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   pinnedProjects: Array.isArray((saved as any).pinnedProjects) ? (saved as any).pinnedProjects.filter((p: unknown) => typeof p === 'string').slice(0, 10) : [],
 
   proxyEnabled: typeof (saved as any).proxyEnabled === 'boolean' ? (saved as any).proxyEnabled : false,
-  proxyMode: (saved as any).proxyMode === 'subscription' ? 'subscription' : 'direct',
+  proxyMode: ['direct', 'subscription', 'tun', 'system'].includes((saved as any).proxyMode) ? (saved as any).proxyMode : 'direct',
   proxyUrl: typeof (saved as any).proxyUrl === 'string' ? (saved as any).proxyUrl
     : typeof (saved as any).proxyCustomUrl === 'string' ? (saved as any).proxyCustomUrl
     : '',
