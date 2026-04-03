@@ -302,6 +302,9 @@ ipcMain.handle('singbox:install', async () => {
 })
 
 ipcMain.handle('singbox:startTun', async (_event, proxyUrl: string) => {
+  if (typeof proxyUrl !== 'string' || proxyUrl.length > 500 || proxyUrl.length < 5) {
+    return { success: false, error: 'Invalid proxy URL' }
+  }
   try {
     await singBoxManager.startTun(proxyUrl)
     return { success: true }
@@ -311,6 +314,9 @@ ipcMain.handle('singbox:startTun', async (_event, proxyUrl: string) => {
 })
 
 ipcMain.handle('singbox:startLocalProxy', async (_event, proxyUrl: string, port?: number) => {
+  if (typeof proxyUrl !== 'string' || proxyUrl.length > 500 || proxyUrl.length < 5) {
+    return { success: false, error: 'Invalid proxy URL' }
+  }
   try {
     const localPort = await singBoxManager.startLocalProxy(proxyUrl, port)
     return { success: true, port: localPort }

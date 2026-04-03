@@ -13,7 +13,7 @@ export interface SingBoxOutbound {
 
 export interface SingBoxConfig {
   log: { level: string; timestamp: boolean }
-  dns: { servers: { address: string; tag: string }[]; rules: { outbound: string; server: string }[] }
+  dns: { servers: { address: string; tag: string }[]; rules: { outbound: string; server: string }[]; final?: string }
   inbounds: { type: string; tag: string; [key: string]: unknown }[]
   outbounds: SingBoxOutbound[]
   route: { rules: { protocol?: string; outbound: string }[]; auto_detect_interface: boolean; final: string }
@@ -44,8 +44,9 @@ export function buildTunConfig(proxyUrl: string, dnsServer = '8.8.8.8'): SingBox
         { address: 'local', tag: 'local-dns' },
       ],
       rules: [
-        { outbound: 'any', server: 'local-dns' },
+        { outbound: 'any', server: 'local-dns' },  // proxy outbound DNS bootstrap
       ],
+      final: 'remote-dns', // all other DNS goes through proxy (prevents DNS leak)
     },
     inbounds: [
       {

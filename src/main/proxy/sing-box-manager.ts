@@ -165,25 +165,36 @@ export class SingBoxManager {
    * Stop sing-box
    */
   stop(): void {
-    if (this.process) {
-      try {
-        this.process.kill('SIGTERM')
-        // Force kill after 3s
-        setTimeout(() => {
-          try { this.process?.kill('SIGKILL') } catch { /* ignore */ }
-        }, 3000)
-      } catch { /* ignore */ }
-      this.process = null
+    const proc = this.process
+    this.process = null
+
+    if (proc) {
+      try { proc.kill('SIGTERM') } catch { /* ignore */ }
+      // Force kill after 3s if still alive
+      const forceKillTimer = setTimeout(() => {
+        try { proc.kill('SIGKILL') } catch { /* ignore */ }
+      }, 3000)
+      proc.on('exit', () => clearTimeout(forceKillTimer))
     }
 
-    // Also kill any lingering sing-box process (TUN mode may have been started with sudo)
-    try {
-      if (os.platform() === 'win32') {
-        execSync('taskkill /F /IM sing-box.exe', { timeout: 3000 })
-      } else {
-        execSync('pkill -f "sing-box run"', { timeout: 3000 })
-      }
-    } catch { /* no process to kill */ }
+    // TUN mode: sing-box was started via sudo/UAC, not a direct child
+    // Use PID file to kill only our instance
+    const pidFile = join(this.singboxDir, 'sing-box.pid')
+    if (existsSync(pidFile)) {
+      try {
+        const { readFileSync: readF } = require('fs') as typeof import('fs')
+        const pid = parseInt(readF(pidFile, 'utf-8').trim())
+        if (pid > 0) {
+          if (os.platform() === 'win32') {
+            execSync(`taskkill /F /PID ${pid}`, { timeout: 3000 })
+          } else {
+            process.kill(pid, 'SIGTERM')
+            setTimeout(() => { try { process.kill(pid, 'SIGKILL') } catch { /* already dead */ } }, 3000)
+          }
+        }
+        unlinkSync(pidFile)
+      } catch { /* ignore — process may already be dead */ }
+    }
 
     this._mode = 'off'
     this._status = 'stopped'
@@ -244,10 +255,15 @@ export class SingBoxManager {
 
   private async startWithSudo(): Promise<void> {
     // macOS: use osascript to prompt for admin password
-    const cmd = `"${this.binaryPath}" run -c "${this.configPath}"`
+    // Escape paths safely for shell: use single quotes + escape single quotes
+    const safeBin = this.binaryPath.replace(/'/g, "'\\''")
+    const safeCfg = this.configPath.replace(/'/g, "'\\''")
+    const pidFile = join(this.singboxDir, 'sing-box.pid').replace(/'/g, "'\\''")
+    // Shell cmd: start sing-box, write its PID to file
+    const shellCmd = `'${safeBin}' run -c '${safeCfg}' & echo $! > '${pidFile}'; wait`
     try {
       this.process = spawn('osascript', [
-        '-e', `do shell script "${cmd.replace(/"/g, '\\"')}" with administrator privileges`,
+        '-e', `do shell script "${shellCmd.replace(/"/g, '\\"')}" with administrator privileges`,
       ], {
         stdio: ['ignore', 'pipe', 'pipe'],
       })
@@ -269,9 +285,17 @@ export class SingBoxManager {
         }
       })
 
-      // Assume running after 3s
+      // Check PID file to confirm actually running
       setTimeout(() => {
-        if (this._status === 'starting') this._status = 'running'
+        const pidPath = join(this.singboxDir, 'sing-box.pid')
+        if (this._status === 'starting') {
+          if (existsSync(pidPath)) {
+            this._status = 'running'
+          } else {
+            this._status = 'error'
+            this._lastError = this._lastError || 'sing-box failed to start (no PID file)'
+          }
+        }
       }, 3000)
 
     } catch (err) {
@@ -282,7 +306,9 @@ export class SingBoxManager {
 
   private async startWithAdmin(): Promise<void> {
     // Windows: use PowerShell Start-Process -Verb RunAs for UAC prompt
-    const cmd = `Start-Process -FilePath '${this.binaryPath}' -ArgumentList 'run','-c','${this.configPath}' -Verb RunAs -WindowStyle Hidden`
+    const safeBin = this.binaryPath.replace(/'/g, "''")
+    const safeCfg = this.configPath.replace(/'/g, "''")
+    const cmd = `Start-Process -FilePath '${safeBin}' -ArgumentList 'run','-c','${safeCfg}' -Verb RunAs -WindowStyle Hidden`
     try {
       execSync(`powershell -NoProfile -Command "${cmd}"`, { timeout: 30000 })
       this._status = 'running'
