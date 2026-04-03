@@ -59,6 +59,7 @@ function createWindow(): void {
   }
 
   mainWindow = new BrowserWindow({
+    title: 'Inkess Claude Code Pro',
     width: 1100,
     height: 700,
     minWidth: 800,

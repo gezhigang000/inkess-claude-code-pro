@@ -18,7 +18,7 @@
     "test:e2e": "npx playwright test"
   },
   "build": {
-    "appId": "com.inkess.claude-code",
+    "appId": "com.inkess.claude-code-pro",
     "productName": "Inkess Claude Code Pro",
     "directories": {
       "output": "release"

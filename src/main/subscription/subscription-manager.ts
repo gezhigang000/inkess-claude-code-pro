@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs'
+import { platform, release, arch } from 'os'
 import log from '../logger'
 import { getDeviceId } from './device-id'
 
@@ -96,7 +97,11 @@ export class SubscriptionManager {
       const res = await fetch(`${API_BASE}/api/subscription/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, deviceId }),
+        body: JSON.stringify({
+          username, password, deviceId,
+          deviceName: `${platform()} ${release()} ${arch()}`,
+          appVersion: app.getVersion(),
+        }),
         signal: controller.signal,
       }).finally(() => clearTimeout(timer))
 
