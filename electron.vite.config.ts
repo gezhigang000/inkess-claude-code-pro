@@ -20,6 +20,9 @@ export default defineConfig({
   },
   renderer: {
     plugins: [react(), tailwindcss()],
+    server: {
+      port: 5174  // Different from CLI version (5173) to avoid localStorage collision
+    },
     build: {
       outDir: 'out/renderer'
     }
