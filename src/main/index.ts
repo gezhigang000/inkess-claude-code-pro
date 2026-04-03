@@ -271,10 +271,14 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, { email, password 
     browserWindows = browserWindows.filter(w => w !== win)
   })
 
-  // Notify renderer when login appears successful (URL changes to claude.ai main page)
+  // Auto-close browser and notify renderer when login succeeds
   win.webContents.on('did-navigate', (_event, url) => {
     if (url.includes('claude.ai') && !url.includes('login') && !url.includes('accounts')) {
       safeSend('subscription:claudeLoginSuccess')
+      // Close the login browser window after a short delay (let cookies settle)
+      setTimeout(() => {
+        try { if (!win.isDestroyed()) win.close() } catch { /* ignore */ }
+      }, 2000)
     }
   })
 
