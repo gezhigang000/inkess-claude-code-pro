@@ -4,10 +4,11 @@ import { useI18n } from '../../i18n'
 
 interface SettingsPanelProps {
   onClose: () => void
+  onLogout?: () => void
 }
 
-export function SettingsPanel({ onClose }: SettingsPanelProps) {
-  const [activeSection, setActiveSection] = useState<'network' | 'appearance' | 'language' | 'about'>('network')
+export function SettingsPanel({ onClose, onLogout }: SettingsPanelProps) {
+  const [activeSection, setActiveSection] = useState<'account' | 'network' | 'appearance' | 'language' | 'about'>('account')
   const { fontSize, language, theme, setFontSize, setLanguage, setTheme } = useSettingsStore()
   const { t } = useI18n()
 
@@ -21,6 +22,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   }, [onClose])
 
   const sections = [
+    { id: 'account' as const, label: t('settings.account'), icon: 'M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 3a4 4 0 100 8 4 4 0 000-8z' },
     { id: 'network' as const, label: t('settings.network'), icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z' },
     { id: 'appearance' as const, label: t('settings.appearance'), icon: 'M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z' },
     { id: 'language' as const, label: t('settings.language'), icon: 'M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129' },
@@ -64,6 +66,9 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18 }}>×</button>
           </div>
 
+          {activeSection === 'account' && (
+            <AccountSection onLogout={onLogout} />
+          )}
           {activeSection === 'network' && (
             <NetworkSection />
           )}
@@ -495,6 +500,66 @@ function AboutSection() {
            t('settings.uploadLogs')}
         </button>
       </SettingsGroup>
+    </div>
+  )
+}
+
+function AccountSection({ onLogout }: { onLogout?: () => void }) {
+  const { t } = useI18n()
+  const [session, setSession] = useState<{ isLoggedIn: boolean; username: string | null; session: { expiresAt: string; proxyUrl: string; proxyRegion: string } | null } | null>(null)
+
+  useEffect(() => {
+    window.api.subscription.getSession().then(setSession)
+  }, [])
+
+  if (!session) return null
+
+  const expiresAt = session.session?.expiresAt
+  const daysRemaining = expiresAt ? Math.max(0, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 86400000)) : 0
+  const isExpiringSoon = daysRemaining <= 7
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <SettingsGroup title={t('settings.accountInfo')}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 10px', background: 'var(--bg-tertiary)', borderRadius: 6 }}>
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('settings.accountUsername')}</span>
+            <span style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 500 }}>{session.username || '—'}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 10px', background: 'var(--bg-tertiary)', borderRadius: 6 }}>
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('settings.accountExpires')}</span>
+            <span style={{ fontSize: 13, color: isExpiringSoon ? 'var(--warning)' : 'var(--text-primary)', fontWeight: 500 }}>
+              {expiresAt ? new Date(expiresAt).toLocaleDateString() : '—'}
+              {daysRemaining > 0 && ` (${daysRemaining}${t('settings.accountDaysLeft')})`}
+            </span>
+          </div>
+          {session.session?.proxyUrl && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 10px', background: 'var(--bg-tertiary)', borderRadius: 6 }}>
+              <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('settings.accountProxy')}</span>
+              <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>
+                {session.session.proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')}
+              </span>
+            </div>
+          )}
+        </div>
+      </SettingsGroup>
+
+      {onLogout && (
+        <button
+          onClick={() => {
+            window.api.subscription.logout()
+            onLogout()
+          }}
+          style={{
+            padding: '8px 0', fontSize: 13, fontWeight: 500,
+            background: 'transparent', color: 'var(--error-text)',
+            border: '1px solid var(--border)', borderRadius: 6,
+            cursor: 'pointer', width: '100%',
+          }}
+        >
+          {t('settings.logout')}
+        </button>
+      )}
     </div>
   )
 }

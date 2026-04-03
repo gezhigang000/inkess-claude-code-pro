@@ -527,7 +527,7 @@ export function App() {
           )}
         </div>
       </div>
-      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} onLogout={() => { setShowSettings(false); setSubscriptionLoggedIn(false); setSubscriptionUsername(null) }} />}
       {showCommandPalette && (
         <CommandPalette
           onClose={() => setShowCommandPalette(false)}

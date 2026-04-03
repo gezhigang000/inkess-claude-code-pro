@@ -34,6 +34,13 @@ export const zh: Record<TranslationKey, string> = {
 
   // Settings
   'settings.title': '设置',
+  'settings.account': '账号',
+  'settings.accountInfo': '订阅信息',
+  'settings.accountUsername': '账号',
+  'settings.accountExpires': '到期时间',
+  'settings.accountDaysLeft': '天',
+  'settings.accountProxy': '代理',
+  'settings.logout': '退出登录',
   'settings.network': '网络',
   'settings.appearance': '外观',
   'settings.language': '语言',

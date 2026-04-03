@@ -32,6 +32,13 @@ export const en = {
 
   // Settings
   'settings.title': 'Settings',
+  'settings.account': 'Account',
+  'settings.accountInfo': 'Subscription Info',
+  'settings.accountUsername': 'Account',
+  'settings.accountExpires': 'Expires',
+  'settings.accountDaysLeft': ' days left',
+  'settings.accountProxy': 'Proxy',
+  'settings.logout': 'Sign Out',
   'settings.network': 'Network',
   'settings.appearance': 'Appearance',
   'settings.language': 'Language',
