@@ -174,6 +174,28 @@ const api = {
     isFocused: () => ipcRenderer.invoke('app:isFocused') as Promise<boolean>
   },
 
+  subscription: {
+    login: (username: string, password: string) =>
+      ipcRenderer.invoke('subscription:login', { username, password }) as Promise<{
+        success: boolean; config?: { claudeEmail: string; claudePassword: string; proxyUrl: string; proxyRegion: string; expiresAt: string; status: string }
+        error?: string; errorCode?: string
+      }>,
+    checkStatus: () => ipcRenderer.invoke('subscription:checkStatus') as Promise<{
+      status: string; expiresAt: string; daysRemaining: number; proxyUrl?: string; proxyRegion?: string
+    } | null>,
+    getSession: () => ipcRenderer.invoke('subscription:getSession') as Promise<{
+      isLoggedIn: boolean; username: string | null; session: { token: string; expiresAt: string; proxyUrl: string; proxyRegion: string } | null
+    }>,
+    logout: () => ipcRenderer.invoke('subscription:logout'),
+    autoLoginClaude: (email: string, password: string) =>
+      ipcRenderer.invoke('subscription:autoLoginClaude', { email, password }) as Promise<{ success: boolean }>,
+    onClaudeLoginSuccess: (callback: () => void) => {
+      const listener = () => callback()
+      ipcRenderer.on('subscription:claudeLoginSuccess', listener)
+      return () => ipcRenderer.removeListener('subscription:claudeLoginSuccess', listener)
+    },
+  },
+
   session: {
     list: () => ipcRenderer.invoke('session:list') as Promise<Array<{
       id: string; cwd: string; title: string; createdAt: number; closedAt?: number; size: number

@@ -12,6 +12,7 @@ import { checkForAppUpdate, downloadAppUpdate, installAppUpdate, onUpdateStatus 
 import { Analytics } from './analytics'
 import { ErrorReporter } from './error-reporter'
 import { SessionRecorder } from './session/session-recorder'
+import { SubscriptionManager } from './subscription/subscription-manager'
 
 process.on('uncaughtException', (err) => log.error('Uncaught:', err))
 process.on('unhandledRejection', (reason) => log.error('Unhandled:', reason))
@@ -24,6 +25,7 @@ const toolsManager = new ToolsManager()
 const analytics = new Analytics()
 const errorReporter = new ErrorReporter()
 const sessionRecorder = new SessionRecorder()
+const subscriptionManager = new SubscriptionManager()
 
 /** Safely send to renderer, swallowing errors if window is destroyed */
 function safeSend(channel: string, ...args: unknown[]): void {
@@ -163,6 +165,120 @@ ipcMain.handle('tools:install', async () => {
     log.error('Tools install failed:', err)
     return { success: false, error: (err as Error).message }
   }
+})
+
+// IPC: Subscription
+ipcMain.handle('subscription:login', async (_event, { username, password }: { username: string; password: string }) => {
+  return subscriptionManager.login(username, password)
+})
+
+ipcMain.handle('subscription:checkStatus', async () => {
+  return subscriptionManager.checkStatus()
+})
+
+ipcMain.handle('subscription:getSession', () => {
+  return {
+    isLoggedIn: subscriptionManager.isLoggedIn(),
+    username: subscriptionManager.getUsername(),
+    session: subscriptionManager.getSession(),
+  }
+})
+
+ipcMain.handle('subscription:logout', () => {
+  subscriptionManager.logout()
+})
+
+// IPC: Auto-login Claude via browser
+ipcMain.handle('subscription:autoLoginClaude', async (_event, { email, password }: { email: string; password: string }) => {
+  const { session: electronSession } = require('electron') as typeof import('electron')
+  const regionEnv = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}
+  const lang = regionEnv.LANG?.split('.')[0]?.replace('_', '-') || 'en-US'
+
+  const partition = `claude-login-${Date.now()}`
+  const loginSession = electronSession.fromPartition(partition, { cache: false })
+
+  if (proxySettings.enabled && proxySettings.url) {
+    await loginSession.setProxy({ proxyRules: proxySettings.url })
+  }
+
+  const win = new BrowserWindow({
+    width: 1000,
+    height: 700,
+    title: 'Claude Login',
+    icon: join(__dirname, '../../resources/icon-256.png'),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      session: loginSession,
+    }
+  })
+
+  browserWindows.push(win)
+
+  // Auto-fill login form when page loads
+  const safeEmail = JSON.stringify(email)
+  const safePass = JSON.stringify(password)
+
+  win.webContents.on('did-finish-load', () => {
+    const url = win.webContents.getURL()
+
+    // Override language/timezone
+    if (regionEnv.LANG) {
+      const safeLang = JSON.stringify(lang)
+      win.webContents.executeJavaScript(`
+        Object.defineProperty(navigator, 'language', { get: () => ${safeLang} });
+        Object.defineProperty(navigator, 'languages', { get: () => [${safeLang}, 'en'] });
+      `).catch(() => {})
+    }
+
+    if (url.includes('claude.ai/login') || url.includes('clerk') || url.includes('accounts.anthropic.com')) {
+      win.webContents.executeJavaScript(`
+        (function() {
+          function tryFill() {
+            var emailInput = document.querySelector('input[type="email"], input[name="email"], input[name="identifier"]');
+            var passInput = document.querySelector('input[type="password"]');
+            if (emailInput) {
+              emailInput.value = ${safeEmail};
+              emailInput.dispatchEvent(new Event('input', { bubbles: true }));
+              emailInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            if (passInput) {
+              passInput.value = ${safePass};
+              passInput.dispatchEvent(new Event('input', { bubbles: true }));
+              passInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            // Auto-click submit after short delay
+            if (emailInput || passInput) {
+              setTimeout(function() {
+                var btn = document.querySelector('button[type="submit"]');
+                if (btn) btn.click();
+              }, 800);
+            } else {
+              // Retry — page may still be loading
+              setTimeout(tryFill, 1000);
+            }
+          }
+          setTimeout(tryFill, 500);
+        })()
+      `).catch(() => {})
+    }
+  })
+
+  win.loadURL('https://claude.ai/login')
+
+  win.on('closed', () => {
+    browserWindows = browserWindows.filter(w => w !== win)
+  })
+
+  // Notify renderer when login appears successful (URL changes to claude.ai main page)
+  win.webContents.on('did-navigate', (_event, url) => {
+    if (url.includes('claude.ai') && !url.includes('login') && !url.includes('accounts')) {
+      safeSend('subscription:claudeLoginSuccess')
+    }
+  })
+
+  return { success: true }
 })
 
 // IPC: Proxy settings (stored in main process, applied to PTY env on create)

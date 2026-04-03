@@ -120,6 +120,17 @@ export const en = {
   'cmdPalette.modeAutoEdit': 'Mode: Auto Edit',
   'cmdPalette.modeFullAuto': 'Mode: Full Auto',
 
+  // Subscription
+  'subscription.login': 'Sign In',
+  'subscription.loggingIn': 'Signing In...',
+  'subscription.loginHint': 'Enter your subscription account to get started',
+  'subscription.username': 'Account',
+  'subscription.password': 'Password',
+  'subscription.loginFailed': 'Login failed',
+  'subscription.deviceBound': 'This device is already bound to another account',
+  'subscription.accountBound': 'This account is bound to another device. Contact admin to unbind.',
+  'subscription.contactAdmin': 'Contact your administrator for account credentials',
+
   // File Preview
   'preview.notFound': 'File not found or too large to preview',
   'preview.copyPath': 'Copy Path',

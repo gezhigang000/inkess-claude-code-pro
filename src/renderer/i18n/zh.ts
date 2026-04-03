@@ -122,6 +122,17 @@ export const zh: Record<TranslationKey, string> = {
   'cmdPalette.modeAutoEdit': '模式: 自动编辑',
   'cmdPalette.modeFullAuto': '模式: 完全自动',
 
+  // Subscription
+  'subscription.login': '登 录',
+  'subscription.loggingIn': '登录中...',
+  'subscription.loginHint': '输入订阅账号开始使用',
+  'subscription.username': '账号',
+  'subscription.password': '密码',
+  'subscription.loginFailed': '登录失败',
+  'subscription.deviceBound': '此设备已绑定其他账号',
+  'subscription.accountBound': '此账号已绑定其他设备，请联系管理员解绑',
+  'subscription.contactAdmin': '请联系管理员获取账号密码',
+
   // File Preview
   'preview.notFound': '文件不存在或太大无法预览',
   'preview.copyPath': '复制路径',

@@ -11,6 +11,7 @@ import { StatusBar } from './views/statusbar/StatusBar'
 import { CommandPalette } from './views/command-palette/CommandPalette'
 import { HistoryView } from './views/history/HistoryView'
 import { FilePreview } from './views/preview/FilePreview'
+import { LoginPage } from './views/subscription/LoginPage'
 import { useI18n } from './i18n'
 
 const DEFAULT_CWD = window.api?.homedir || '/'
@@ -53,12 +54,82 @@ export function App() {
   const dragCounterRef = useRef(0)
   const [showHistory, setShowHistory] = useState(false)
   const [previewFile, setPreviewFile] = useState<string | null>(null)
+  const [subscriptionLoggedIn, setSubscriptionLoggedIn] = useState<boolean | null>(null) // null = checking
+  const [subscriptionUsername, setSubscriptionUsername] = useState<string | null>(null)
+  const [subscriptionExpiry, setSubscriptionExpiry] = useState<string | null>(null)
+  const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Startup: check CLI directly (no auth)
+  // Startup: check subscription login, then CLI
   useEffect(() => {
     if (initRef.current) return
     initRef.current = true
+    checkSubscriptionAndProceed()
+  }, [])
+
+  const checkSubscriptionAndProceed = useCallback(async () => {
+    const session = await window.api.subscription.getSession()
+    if (session.isLoggedIn) {
+      setSubscriptionLoggedIn(true)
+      setSubscriptionUsername(session.username)
+      setSubscriptionExpiry(session.session?.expiresAt || null)
+      // Auto-apply saved proxy settings
+      if (session.session?.proxyUrl) {
+        const store = useSettingsStore.getState()
+        store.setProxyEnabled(true)
+        store.setProxyMode('direct')
+        store.setProxyUrl(session.session.proxyUrl)
+        if (session.session.proxyRegion) store.setProxyRegion(session.session.proxyRegion)
+      }
+      startStatusPolling()
+      checkCliAndProceed()
+    } else {
+      setSubscriptionLoggedIn(false)
+    }
+  }, [])
+
+  const handleSubscriptionLogin = useCallback(async (config: {
+    claudeEmail: string; claudePassword: string; proxyUrl: string; proxyRegion: string; expiresAt: string; status: string
+  }) => {
+    setSubscriptionLoggedIn(true)
+    setSubscriptionExpiry(config.expiresAt)
+
+    // 1. Auto-configure proxy
+    const store = useSettingsStore.getState()
+    store.setProxyEnabled(true)
+    store.setProxyMode('direct')
+    store.setProxyUrl(config.proxyUrl)
+    store.setProxyRegion(config.proxyRegion)
+
+    // 2. Auto-login Claude (opens browser window)
+    if (config.claudeEmail && config.claudePassword) {
+      window.api.subscription.autoLoginClaude(config.claudeEmail, config.claudePassword)
+    }
+
+    // 3. Start status polling
+    startStatusPolling()
+
+    // 4. Continue to CLI check
+    const session = await window.api.subscription.getSession()
+    setSubscriptionUsername(session.username)
     checkCliAndProceed()
+  }, [])
+
+  const startStatusPolling = useCallback(() => {
+    if (statusPollRef.current) return
+    statusPollRef.current = setInterval(async () => {
+      const status = await window.api.subscription.checkStatus()
+      if (!status) return
+      setSubscriptionExpiry(status.expiresAt)
+      if (status.status === 'suspended') {
+        // TODO: show suspension overlay
+      }
+      // Update proxy if server pushed new address
+      if (status.proxyUrl) {
+        const store = useSettingsStore.getState()
+        store.setProxyUrl(status.proxyUrl)
+        if (status.proxyRegion) store.setProxyRegion(status.proxyRegion)
+      }
+    }, 3600000) // every hour
   }, [])
 
   const checkCliAndProceed = useCallback(async () => {
@@ -328,6 +399,28 @@ export function App() {
       {isMac && <div style={{ width: 70 }} />}
     </div>
   )
+
+  // Show login page if not logged in
+  if (subscriptionLoggedIn === false) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+        {plainTitleBar}
+        <LoginPage onLoginSuccess={handleSubscriptionLogin} />
+      </div>
+    )
+  }
+
+  // Still checking subscription or loading
+  if (subscriptionLoggedIn === null) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+        {plainTitleBar}
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
+          <div style={{ width: 24, height: 24, border: '2px solid var(--border)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.75s linear infinite' }} />
+        </div>
+      </div>
+    )
+  }
 
   if (phase === 'checking' || phase === 'installing' || phase === 'error') {
     return (
