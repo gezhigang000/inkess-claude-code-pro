@@ -22,6 +22,10 @@ export const DEFAULT_ENV_HIDDEN = [
   'ELECTRON_RUN_AS_NODE', 'CHROME_DESKTOP',
   'COMMAND_MODE', 'MallocNanoZone',
   'USERDOMAIN', 'USERDOMAIN_ROAMINGPROFILE', 'COMPUTERNAME',
+  // Strip user's Claude/Anthropic env to ensure clean environment
+  // Our own ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, CLAUDE_CONFIG_DIR
+  // are injected AFTER sanitization via mergedEnv, so they won't be stripped
+  'ANTHROPIC_*', 'CLAUDE_*',
 ]
 
 export interface EnvConfig {

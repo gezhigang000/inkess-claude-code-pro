@@ -90,6 +90,12 @@ html, body, #root {
   100% { background-position: 200% 0; }
 }
 
+/* Pulse animation (expiry countdown warning) */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 /* Button press feedback (scoped to avoid xterm interference) */
 button:not(.xterm *):active, [role="button"]:not(.xterm *):active {
   transform: scale(0.97);

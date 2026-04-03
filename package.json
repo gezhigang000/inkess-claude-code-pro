@@ -29,6 +29,7 @@
       "node_modules/electron-log/**/*",
       "node_modules/electron-updater/**/*"
     ],
+    "afterPack": "build/fix-framework.js",
     "mac": {
       "icon": "resources/icon.icns",
       "target": [

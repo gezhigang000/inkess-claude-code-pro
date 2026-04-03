@@ -115,8 +115,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   sidebarCollapsed: typeof (saved as any).sidebarCollapsed === 'boolean' ? (saved as any).sidebarCollapsed : false,
   pinnedProjects: Array.isArray((saved as any).pinnedProjects) ? (saved as any).pinnedProjects.filter((p: unknown) => typeof p === 'string').slice(0, 10) : [],
 
-  proxyEnabled: typeof (saved as any).proxyEnabled === 'boolean' ? (saved as any).proxyEnabled : false,
-  proxyMode: ['direct', 'subscription', 'tun', 'system'].includes((saved as any).proxyMode) ? (saved as any).proxyMode : 'direct',
+  proxyEnabled: typeof (saved as any).proxyEnabled === 'boolean' ? (saved as any).proxyEnabled : true,
+  proxyMode: 'tun' as const,  // TUN mode only — not user-configurable
   proxyUrl: typeof (saved as any).proxyUrl === 'string' ? (saved as any).proxyUrl
     : typeof (saved as any).proxyCustomUrl === 'string' ? (saved as any).proxyCustomUrl
     : '',

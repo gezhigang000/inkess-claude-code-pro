@@ -14,13 +14,17 @@ export interface SubscriptionConfig {
   proxyRegion: string
   expiresAt: string
   status: 'active' | 'expired' | 'suspended'
+  plan?: string
   daysRemaining?: number
+  minutesRemaining?: number
 }
 
 export interface SubscriptionStatus {
   status: 'active' | 'expired' | 'suspended'
+  plan?: string
   expiresAt: string
   daysRemaining: number
+  minutesRemaining?: number
   proxyUrl?: string
   proxyRegion?: string
 }
@@ -28,6 +32,7 @@ export interface SubscriptionStatus {
 interface StoredSession {
   token: string
   username: string
+  plan: string
   expiresAt: string
   proxyUrl: string
   proxyRegion: string
@@ -78,6 +83,10 @@ export class SubscriptionManager {
     return this.session?.username || null
   }
 
+  getPlan(): string {
+    return this.session?.plan || 'monthly'
+  }
+
   /**
    * Login with subscription credentials.
    * Returns config on success (including Claude credentials — one-time).
@@ -121,6 +130,7 @@ export class SubscriptionManager {
       this.saveSession({
         token: data.token,
         username,
+        plan: config.plan || 'monthly',
         expiresAt: config.expiresAt,
         proxyUrl: config.proxyUrl,
         proxyRegion: config.proxyRegion,

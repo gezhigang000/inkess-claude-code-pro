@@ -54,10 +54,14 @@ export function App() {
   const dragCounterRef = useRef(0)
   const [showHistory, setShowHistory] = useState(false)
   const [previewFile, setPreviewFile] = useState<string | null>(null)
+  const [tunOk, setTunOk] = useState(false)
   const [subscriptionLoggedIn, setSubscriptionLoggedIn] = useState<boolean | null>(null) // null = checking
   const [subscriptionUsername, setSubscriptionUsername] = useState<string | null>(null)
   const [subscriptionExpiry, setSubscriptionExpiry] = useState<string | null>(null)
+  const [subscriptionPlan, setSubscriptionPlan] = useState<string>('monthly')
+  const [expiryMinutesRemaining, setExpiryMinutesRemaining] = useState<number | null>(null)
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Startup: check subscription login, then CLI
   useEffect(() => {
@@ -72,15 +76,16 @@ export function App() {
       setSubscriptionLoggedIn(true)
       setSubscriptionUsername(session.username)
       setSubscriptionExpiry(session.session?.expiresAt || null)
+      setSubscriptionPlan(session.session?.plan || 'monthly')
       // Auto-apply saved proxy settings
       if (session.session?.proxyUrl) {
         const store = useSettingsStore.getState()
         store.setProxyEnabled(true)
-        store.setProxyMode('direct')
+        store.setProxyMode('tun')
         store.setProxyUrl(session.session.proxyUrl)
         if (session.session.proxyRegion) store.setProxyRegion(session.session.proxyRegion)
       }
-      startStatusPolling()
+      startStatusPolling(session.session?.plan || 'monthly')
       checkCliAndProceed()
     } else {
       setSubscriptionLoggedIn(false)
@@ -88,10 +93,11 @@ export function App() {
   }, [])
 
   const handleSubscriptionLogin = useCallback(async (config: {
-    claudeEmail: string; claudePassword: string; proxyUrl: string; proxyRegion: string; expiresAt: string; status: string
+    claudeEmail: string; claudePassword: string; proxyUrl: string; proxyRegion: string; expiresAt: string; status: string; plan?: string
   }) => {
     setSubscriptionLoggedIn(true)
     setSubscriptionExpiry(config.expiresAt)
+    setSubscriptionPlan(config.plan || 'monthly')
 
     // 1. Auto-configure proxy
     const store = useSettingsStore.getState()
@@ -106,7 +112,7 @@ export function App() {
     }
 
     // 3. Start status polling
-    startStatusPolling()
+    startStatusPolling(config.plan || 'monthly')
 
     // 4. Continue to CLI check
     const session = await window.api.subscription.getSession()
@@ -114,23 +120,106 @@ export function App() {
     checkCliAndProceed()
   }, [])
 
-  const startStatusPolling = useCallback(() => {
-    if (statusPollRef.current) return
-    statusPollRef.current = setInterval(async () => {
-      const status = await window.api.subscription.checkStatus()
-      if (!status) return
-      setSubscriptionExpiry(status.expiresAt)
-      if (status.status === 'suspended') {
-        // TODO: show suspension overlay
+  const forceExpiredLogout = useCallback(() => {
+    // Kill all active PTY sessions
+    const store = useTerminalStore.getState()
+    store.tabs.forEach(tab => {
+      if (tab.ptyId && !tab.isExited) {
+        window.api.pty.kill(tab.ptyId)
       }
+    })
+    // Clear polling
+    if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null }
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null }
+    // Logout and go back to login page
+    window.api.subscription.logout()
+    setSubscriptionLoggedIn(false)
+    setSubscriptionExpiry(null)
+    setExpiryMinutesRemaining(null)
+  }, [])
+
+  /** Compute minutes remaining from expiresAt string */
+  const calcMinutesRemaining = (expiresAt: string): number => {
+    return Math.max(0, (new Date(expiresAt).getTime() - Date.now()) / 60000)
+  }
+
+  const startStatusPolling = useCallback((plan: string) => {
+    if (statusPollRef.current) return
+
+    const isDaily = plan === 'daily'
+    const pollInterval = isDaily ? 60000 : 3600000
+
+    const poll = async () => {
+      const status = await window.api.subscription.checkStatus()
+      if (!status) {
+        // null = token expired (401, already logged out by manager) OR network error.
+        // Only force logout if manager already cleared session (401 case).
+        const session = await window.api.subscription.getSession()
+        if (!session.isLoggedIn) {
+          setSubscriptionLoggedIn(false)
+        }
+        // Network error: do nothing, let local countdown continue but don't force logout
+        return
+      }
+
+      setSubscriptionExpiry(status.expiresAt)
+      if (status.plan) setSubscriptionPlan(status.plan)
+
+      if (status.status === 'expired' || status.status === 'suspended') {
+        forceExpiredLogout()
+        return
+      }
+
+      // Update remaining from server (authoritative, replaces local estimate)
+      setExpiryMinutesRemaining(calcMinutesRemaining(status.expiresAt))
+
       // Update proxy if server pushed new address
       if (status.proxyUrl) {
         const store = useSettingsStore.getState()
         store.setProxyUrl(status.proxyUrl)
         if (status.proxyRegion) store.setProxyRegion(status.proxyRegion)
       }
-    }, 3600000) // every hour
-  }, [])
+    }
+
+    // Seed countdown immediately from stored expiresAt (before first poll)
+    if (isDaily) {
+      const session = window.api.subscription.getSession()
+      session.then(s => {
+        if (s.session?.expiresAt) {
+          setExpiryMinutesRemaining(calcMinutesRemaining(s.session.expiresAt))
+        }
+      })
+    }
+
+    // Initial poll (will correct the seed value with server truth)
+    poll()
+    statusPollRef.current = setInterval(poll, pollInterval)
+
+    // Local countdown — ticks every 30s, uses expiresAt-based calculation
+    if (isDaily) {
+      countdownRef.current = setInterval(async () => {
+        setExpiryMinutesRemaining(prev => {
+          if (prev === null) return null
+          const next = prev - 0.5
+          if (next <= 0) return 0
+          return next
+        })
+        // When countdown hits 0, verify with server before kicking
+        const current = await new Promise<number | null>(resolve => {
+          setExpiryMinutesRemaining(v => { resolve(v); return v })
+        })
+        if (current !== null && current <= 0) {
+          const status = await window.api.subscription.checkStatus()
+          if (!status || status.status === 'expired' || status.status === 'suspended') {
+            forceExpiredLogout()
+          } else {
+            // Server says still active — correct the countdown
+            setExpiryMinutesRemaining(calcMinutesRemaining(status.expiresAt))
+          }
+        }
+      }, 30000)
+    }
+  }, [forceExpiredLogout])
 
   const checkCliAndProceed = useCallback(async () => {
     const info = await window.api.cli.getInfo()
@@ -148,9 +237,19 @@ export function App() {
     }
 
     setPhase('ready')
+
+    // Check if TUN is already running and connected
+    const singboxInfo = await window.api.singbox.getInfo()
+    if (singboxInfo.status === 'running') {
+      const test = await window.api.singbox.testConnectivity()
+      setTunOk(test.success)
+    }
   }, [setCliInfo, setPhase])
 
   const handleNewTab = useCallback(async (cwd?: string) => {
+    // Block new sessions if TUN is not connected
+    if (!tunOk) return
+
     const targetCwd = cwd || (tabs.length > 0 ? tabs[tabs.length - 1].cwd : DEFAULT_CWD)
     const { cliInstalled } = useAppStore.getState()
 
@@ -198,7 +297,11 @@ export function App() {
   }, [handleNewTab])
 
   useEffect(() => {
-    return () => { if (pendingCloseTimerRef.current) clearTimeout(pendingCloseTimerRef.current) }
+    return () => {
+      if (pendingCloseTimerRef.current) clearTimeout(pendingCloseTimerRef.current)
+      if (statusPollRef.current) clearInterval(statusPollRef.current)
+      if (countdownRef.current) clearInterval(countdownRef.current)
+    }
   }, [])
 
   // Menu keyboard shortcuts
@@ -478,6 +581,20 @@ export function App() {
         onCommandPalette={() => setShowCommandPalette(true)}
         onSettings={() => { setShowSettings(true); window.api.analytics?.track('settings_open') }}
       />
+      {/* TUN not connected banner */}
+      {!tunOk && (
+        <div
+          onClick={() => setShowSettings(true)}
+          style={{
+            padding: '6px 16px', fontSize: 12, fontWeight: 500,
+            background: 'var(--warning-text, #f59e0b)', color: '#000',
+            textAlign: 'center', cursor: 'pointer', flexShrink: 0,
+          }}
+        >
+          {t('app.tunRequired')}
+        </div>
+      )}
+
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
           onSettings={() => { setShowSettings(true); window.api.analytics?.track('settings_open') }}
@@ -522,12 +639,12 @@ export function App() {
                   />
                 )}
               </div>
-              <StatusBar />
+              <StatusBar expiryMinutesRemaining={expiryMinutesRemaining} subscriptionPlan={subscriptionPlan} />
             </>
           )}
         </div>
       </div>
-      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} onLogout={() => { setShowSettings(false); setSubscriptionLoggedIn(false); setSubscriptionUsername(null) }} />}
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} onLogout={() => { setShowSettings(false); setSubscriptionLoggedIn(false); setSubscriptionUsername(null) }} onTunStatusChange={setTunOk} />}
       {showCommandPalette && (
         <CommandPalette
           onClose={() => setShowCommandPalette(false)}

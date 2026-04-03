@@ -25,7 +25,12 @@ function simplifyModel(model: string): string {
   return model.split('-').slice(0, 2).join(' ')
 }
 
-export function StatusBar() {
+interface StatusBarProps {
+  expiryMinutesRemaining?: number | null
+  subscriptionPlan?: string
+}
+
+export function StatusBar({ expiryMinutesRemaining, subscriptionPlan }: StatusBarProps) {
   const { tabs, activeTabId, updateTab } = useTerminalStore()
   const { sleepInhibitorEnabled } = useSettingsStore()
   const { t } = useI18n()
@@ -140,6 +145,19 @@ export function StatusBar() {
       {sleepInhibitorEnabled && sleepActive && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 3 }} title={t('statusbar.preventingSleep')}>
           ☕
+        </div>
+      )}
+
+      {/* Expiry countdown — shown when ≤15 minutes remaining (daily plan) */}
+      {subscriptionPlan === 'daily' && expiryMinutesRemaining != null && expiryMinutesRemaining <= 15 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 4,
+          color: expiryMinutesRemaining <= 5 ? 'var(--error, #ef4444)' : 'var(--warning-text, #f59e0b)',
+          fontWeight: 600, fontSize: 11,
+          animation: expiryMinutesRemaining <= 5 ? 'pulse 1s infinite' : undefined,
+        }} title={t('statusbar.expiryWarning')}>
+          <span>⏱</span>
+          <span>{Math.ceil(expiryMinutesRemaining)}m</span>
         </div>
       )}
 

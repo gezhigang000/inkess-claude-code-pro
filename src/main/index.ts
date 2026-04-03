@@ -13,6 +13,7 @@ import { Analytics } from './analytics'
 import { ErrorReporter } from './error-reporter'
 import { SessionRecorder } from './session/session-recorder'
 import { SubscriptionManager } from './subscription/subscription-manager'
+import { fetchSubscription } from './proxy/subscription'
 import { SingBoxManager } from './proxy/sing-box-manager'
 
 process.on('uncaughtException', (err) => log.error('Uncaught:', err))
@@ -303,13 +304,17 @@ ipcMain.handle('singbox:install', async () => {
 })
 
 ipcMain.handle('singbox:startTun', async (_event, proxyUrl: string) => {
+  log.info(`[startTun] url: ${proxyUrl?.substring(0, 80)}...`)
   if (typeof proxyUrl !== 'string' || proxyUrl.length > 500 || proxyUrl.length < 5) {
+    log.error(`[startTun] invalid proxy URL (len=${proxyUrl?.length})`)
     return { success: false, error: 'Invalid proxy URL' }
   }
   try {
     await singBoxManager.startTun(proxyUrl)
+    log.info(`[startTun] success`)
     return { success: true }
   } catch (err) {
+    log.error(`[startTun] error:`, err)
     return { success: false, error: (err as Error).message }
   }
 })
@@ -329,6 +334,22 @@ ipcMain.handle('singbox:startLocalProxy', async (_event, proxyUrl: string, port?
 ipcMain.handle('singbox:stop', () => {
   singBoxManager.stop()
   return { success: true }
+})
+
+ipcMain.handle('singbox:testConnectivity', async () => {
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10000)
+    const start = Date.now()
+    const res = await fetch('https://www.google.com/generate_204', {
+      method: 'HEAD',
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timer))
+    const latency = Date.now() - start
+    return { success: res.ok || res.status === 204, latency }
+  } catch (err) {
+    return { success: false, error: (err as Error).message }
+  }
 })
 
 // IPC: Proxy settings (stored in main process, applied to PTY env on create)
@@ -396,11 +417,34 @@ ipcMain.handle('proxy:fetchSubscription', async (_event, url: string) => {
     return { success: false, error: 'Only http/https URLs are supported', nodes: [] }
   }
   try {
-    const { fetchSubscription } = require('./proxy/subscription') as typeof import('./proxy/subscription')
     const nodes = await fetchSubscription(url)
     return { success: true, nodes }
   } catch (err) {
     return { success: false, error: (err as Error).message, nodes: [] }
+  }
+})
+
+// Resolve proxy URL: if it's a subscription URL (https://), fetch and return first usable node's raw URL
+ipcMain.handle('proxy:resolveUrl', async (_event, url: string) => {
+  log.info(`[resolveUrl] input: ${url?.substring(0, 80)}...`)
+  if (typeof url !== 'string' || !url) return { resolved: url, isSubscription: false }
+  if (!/^https?:\/\//i.test(url)) {
+    log.info(`[resolveUrl] not a subscription URL, using directly`)
+    return { resolved: url, isSubscription: false }
+  }
+  try {
+    const nodes = await fetchSubscription(url)
+    log.info(`[resolveUrl] fetched ${nodes.length} nodes: ${nodes.map(n => `${n.name}(${n.type}, url=${n.url?.substring(0,30)}, raw=${n.raw?.substring(0,30)})`).join(', ')}`)
+    if (!nodes.length) return { resolved: '', isSubscription: true, error: 'No nodes found in subscription' }
+    // Find first node with a protocol URL (raw starts with protocol://, not JSON)
+    const node = nodes.find(n => n.raw && /^[a-z]+:\/\//i.test(n.raw)) || nodes.find(n => n.url) || nodes[0]
+    const resolved = (node.raw && /^[a-z]+:\/\//i.test(node.raw)) ? node.raw : node.url
+    log.info(`[resolveUrl] picked node: ${node.name}, resolved: ${resolved?.substring(0, 80)}`)
+    if (!resolved) return { resolved: '', isSubscription: true, error: `No usable proxy URL in ${nodes.length} nodes` }
+    return { resolved, isSubscription: true, nodeName: node.name, nodeCount: nodes.length }
+  } catch (err) {
+    log.error(`[resolveUrl] error:`, err)
+    return { resolved: '', isSubscription: true, error: (err as Error).message }
   }
 })
 

@@ -79,13 +79,18 @@ export const zh: Record<TranslationKey, string> = {
   'settings.proxyModeTunDesc': '通过虚拟网卡代理全部系统流量（需要管理员权限）',
   'settings.proxyModeSystem': '系统代理 / 外部代理',
   'settings.proxyModeSystemDesc': '已有 Clash/V2Ray TUN，仅做环境伪装',
-  'settings.proxyTunUrlHint': '支持所有协议：ss/vmess/vless/trojan/socks5/http',
+  'settings.proxyTunUrlHint': '支持协议地址（ss/vmess/vless/trojan/socks5）或订阅链接（https://...）',
   'settings.proxySystemHint': '使用系统代理或外部代理客户端。仅注入环境伪装变量（TZ/LANG），不设置代理环境变量。',
   'settings.tunRunning': 'TUN 运行中 — 全部流量已代理',
   'settings.tunStopped': 'TUN 已停止',
   'settings.tunStart': '启动 TUN',
   'settings.tunStop': '停止',
+  'settings.tunTest': '检测',
+  'settings.tunTesting': '检测中...',
+  'settings.tunTestOk': '连接正常',
+  'settings.tunTestFail': '连接失败 — 已停止 TUN 恢复网络',
   'settings.tunHint': 'TUN 模式创建虚拟网卡，macOS 会弹出管理员密码输入框。启动后系统所有流量都经过代理。',
+  'app.tunRequired': '代理未连接，请前往 设置 → 网络 启动 TUN。',
   'settings.proxyUrl': '代理地址',
   'settings.proxyUrlHint': '支持 http://, https://, socks5://, socks4:// — 可带认证 (user:pass@host:port)',
   'settings.proxySubUrl': '订阅地址',
@@ -128,6 +133,7 @@ export const zh: Record<TranslationKey, string> = {
 
   // StatusBar
   'statusbar.preventingSleep': '阻止休眠中',
+  'statusbar.expiryWarning': '订阅即将到期',
 
   // Close Tab
   'tab.pressAgainToClose': '再次点击关闭',

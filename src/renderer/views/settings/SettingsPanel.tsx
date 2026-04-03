@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
 import { useSettingsStore } from '../../stores/settings'
+import { useTerminalStore } from '../../stores/terminal'
 import { useI18n } from '../../i18n'
 
 interface SettingsPanelProps {
   onClose: () => void
   onLogout?: () => void
+  onTunStatusChange?: (ok: boolean) => void
 }
 
-export function SettingsPanel({ onClose, onLogout }: SettingsPanelProps) {
+export function SettingsPanel({ onClose, onLogout, onTunStatusChange }: SettingsPanelProps) {
   const [activeSection, setActiveSection] = useState<'account' | 'network' | 'appearance' | 'language' | 'about'>('account')
   const { fontSize, language, theme, setFontSize, setLanguage, setTheme } = useSettingsStore()
   const { t } = useI18n()
@@ -70,7 +72,7 @@ export function SettingsPanel({ onClose, onLogout }: SettingsPanelProps) {
             <AccountSection onLogout={onLogout} />
           )}
           {activeSection === 'network' && (
-            <NetworkSection />
+            <NetworkSection onTunStatusChange={onTunStatusChange} />
           )}
           {activeSection === 'appearance' && (
             <AppearanceSection
@@ -119,231 +121,62 @@ const REGION_OPTIONS = [
   { id: 'auto', label: '🖥 System (no mask)', tz: '' },
 ]
 
-interface SubNode {
-  name: string; type: string; server: string; port: number; url: string;
-  region: string; regionFlag: string; usable: boolean
-}
-
-function NetworkSection() {
+function NetworkSection({ onTunStatusChange }: { onTunStatusChange?: (ok: boolean) => void }) {
   const { t } = useI18n()
-  const {
-    proxyEnabled, proxyMode, proxyUrl, proxySubUrl, proxySubNodeUrl, proxySelectedNode, proxyRegion,
-    setProxyEnabled, setProxyMode, setProxyUrl, setProxySubUrl, setProxySubNodeUrl, setProxySelectedNode, setProxyRegion
-  } = useSettingsStore()
-  const [nodes, setNodes] = useState<SubNode[]>([])
-  const [subLoading, setSubLoading] = useState(false)
-  const [subError, setSubError] = useState<string | null>(null)
-  const [hoveredNode, setHoveredNode] = useState<string | null>(null)
-  const fetchIdRef = useRef(0)
+  const { proxyUrl, proxyRegion, setProxyUrl, setProxyRegion } = useSettingsStore()
 
-  // Determine active proxy URL (from direct input or persisted subscription node URL)
-  const activeUrl = proxyMode === 'subscription'
-    ? (nodes.find(n => n.name === proxySelectedNode)?.url || proxySubNodeUrl)
-    : proxyUrl
-
-  const isSocks = activeUrl && /^socks[45s]?:\/\//i.test(activeUrl)
   const region = REGION_OPTIONS.find(r => r.id === proxyRegion) || REGION_OPTIONS[0]
 
   const envVars: string[] = []
-  if (proxyEnabled && activeUrl) {
-    if (isSocks) envVars.push(`ALL_PROXY=${activeUrl}`)
-    envVars.push(`HTTP_PROXY=${activeUrl}`)
-    envVars.push(`HTTPS_PROXY=${activeUrl}`)
-  }
-  if (proxyEnabled && proxyRegion !== 'auto' && region.tz) {
+  if (proxyRegion !== 'auto' && region.tz) {
     envVars.push(`TZ=${region.tz}`)
     const lang = proxyRegion === 'de' ? 'de_DE' : proxyRegion === 'jp' ? 'ja_JP' : proxyRegion === 'kr' ? 'ko_KR' : proxyRegion === 'tw' ? 'zh_TW' : 'en_US'
     envVars.push(`LANG=${lang}.UTF-8`)
   }
 
-  const handleFetchSubscription = async () => {
-    if (!proxySubUrl) return
-    const myId = ++fetchIdRef.current
-    setSubLoading(true)
-    setSubError(null)
-    const result = await window.api.proxy.fetchSubscription(proxySubUrl)
-    if (fetchIdRef.current !== myId) return // stale
-    setSubLoading(false)
-    if (result.success) {
-      setNodes(result.nodes)
-      if (result.nodes.length > 0 && !proxySelectedNode) {
-        const first = result.nodes.find(n => n.usable) || result.nodes[0]
-        setProxySelectedNode(first.name)
-        if (first.region !== 'auto') setProxyRegion(first.region)
-      }
-    } else {
-      setSubError(result.error || 'Failed to fetch subscription')
-      setSubLoading(false)
-    }
-  }
-
-  const handleSelectNode = (node: SubNode) => {
-    setProxySelectedNode(node.name)
-    // Auto-set region from node
-    if (node.region !== 'auto') setProxyRegion(node.region)
-    // Persist the node's URL separately (don't overwrite direct-mode proxyUrl)
-    if (node.usable && node.url) {
-      setProxySubNodeUrl(node.url)
-    }
-  }
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <SettingsGroup title={t('settings.proxyToggle')}>
-        <ToggleRow label={t('settings.proxyEnabled')} checked={proxyEnabled} onChange={setProxyEnabled} />
+      {/* TUN proxy URL */}
+      <SettingsGroup title={t('settings.proxyUrl')}>
+        <FocusInput value={proxyUrl} onChange={e => setProxyUrl(e.target.value)} placeholder="ss://... / vmess://... / https://panel.xxx/api/sub/..." />
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyTunUrlHint')}</div>
+      </SettingsGroup>
+      <TunControl proxyUrl={proxyUrl} onTunStatusChange={onTunStatusChange} />
+
+      {/* Region selector */}
+      <SettingsGroup title={t('settings.proxyRegion')}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {REGION_OPTIONS.map(r => (
+            <div key={r.id} onClick={() => setProxyRegion(r.id)} style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
+              borderRadius: 6, cursor: 'pointer', fontSize: 13,
+              background: proxyRegion === r.id ? 'var(--accent-subtle)' : 'transparent',
+            }}>
+              <div style={{
+                width: 8, height: 8, borderRadius: '50%',
+                background: proxyRegion === r.id ? 'var(--accent)' : 'transparent',
+                border: proxyRegion === r.id ? 'none' : '2px solid var(--text-muted)',
+              }} />
+              <span style={{ color: 'var(--text-primary)' }}>{r.label}</span>
+              {r.tz && <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>{r.tz}</span>}
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyRegionHint')}</div>
       </SettingsGroup>
 
-      {proxyEnabled && (
-        <>
-          {/* Mode selector */}
-          <SettingsGroup title={t('settings.proxyMode')}>
-            {([
-              { id: 'direct' as const, label: t('settings.proxyModeDirect'), desc: t('settings.proxyModeDirectDesc') },
-              { id: 'subscription' as const, label: t('settings.proxyModeSub'), desc: t('settings.proxyModeSubDesc') },
-              { id: 'tun' as const, label: t('settings.proxyModeTun'), desc: t('settings.proxyModeTunDesc') },
-              { id: 'system' as const, label: t('settings.proxyModeSystem'), desc: t('settings.proxyModeSystemDesc') },
-            ]).map(mode => (
-              <div key={mode.id} onClick={() => setProxyMode(mode.id)} style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
-                borderRadius: 6, cursor: 'pointer', fontSize: 13,
-                background: proxyMode === mode.id ? 'var(--accent-subtle)' : 'transparent',
-              }}>
-                <div style={{
-                  width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-                  background: proxyMode === mode.id ? 'var(--accent)' : 'transparent',
-                  border: proxyMode === mode.id ? 'none' : '2px solid var(--text-muted)',
-                }} />
-                <div>
-                  <div style={{ color: 'var(--text-primary)' }}>{mode.label}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>{mode.desc}</div>
-                </div>
-              </div>
-            ))}
-          </SettingsGroup>
-
-          {/* Direct mode */}
-          {proxyMode === 'direct' && (
-            <SettingsGroup title={t('settings.proxyUrl')}>
-              <FocusInput value={proxyUrl} onChange={e => setProxyUrl(e.target.value)} placeholder="socks5://user:pass@host:port" />
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyUrlHint')}</div>
-            </SettingsGroup>
-          )}
-
-          {/* Subscription mode */}
-          {proxyMode === 'subscription' && (
-            <>
-              <SettingsGroup title={t('settings.proxySubUrl')}>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <FocusInput value={proxySubUrl} onChange={e => setProxySubUrl(e.target.value)} placeholder="https://panel.xxx/api/sub/..." style={{ flex: 1 }} />
-                  <button onClick={handleFetchSubscription} disabled={subLoading || !proxySubUrl} style={{
-                    padding: '6px 14px', background: 'var(--accent)', color: '#fff', border: 'none',
-                    borderRadius: 6, fontSize: 12, cursor: subLoading ? 'not-allowed' : 'pointer',
-                    opacity: subLoading ? 0.6 : 1, whiteSpace: 'nowrap', flexShrink: 0,
-                  }}>
-                    {subLoading ? '...' : '🔄'}
-                  </button>
-                </div>
-                {subError && <div style={{ fontSize: 12, color: 'var(--error-text)', marginTop: 4 }}>{subError}</div>}
-              </SettingsGroup>
-
-              {nodes.length > 0 && (
-                <SettingsGroup title={`${t('settings.proxyNodes')} (${nodes.length})`}>
-                  <div style={{ maxHeight: 200, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 1 }}>
-                    {nodes.map(node => {
-                      const isSelected = proxySelectedNode === node.name
-                      const isHovered = hoveredNode === node.name
-                      return (
-                        <div
-                          key={node.name + node.server}
-                          onClick={() => handleSelectNode(node)}
-                          onMouseEnter={() => setHoveredNode(node.name)}
-                          onMouseLeave={() => setHoveredNode(null)}
-                          style={{
-                            display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px',
-                            borderRadius: 6, cursor: 'pointer', fontSize: 12,
-                            background: isSelected ? 'var(--accent-subtle)' : isHovered ? 'var(--bg-hover)' : 'transparent',
-                            borderLeft: isSelected ? '2px solid var(--accent)' : '2px solid transparent',
-                            opacity: node.usable ? 1 : 0.5,
-                          }}
-                        >
-                          <span style={{ fontSize: 14 }}>{node.regionFlag}</span>
-                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>
-                            {node.name}
-                          </span>
-                          <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', flexShrink: 0 }}>
-                            {node.type}
-                          </span>
-                          {!node.usable && (
-                            <span style={{ fontSize: 9, color: 'var(--warning)', flexShrink: 0 }} title="Requires local proxy client (Clash/V2Ray)">⚠</span>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                  {nodes.some(n => !n.usable) && (
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                      {t('settings.proxyNodesHint')}
-                    </div>
-                  )}
-                </SettingsGroup>
-              )}
-            </>
-          )}
-
-          {/* TUN mode */}
-          {proxyMode === 'tun' && (
-            <>
-              <SettingsGroup title={t('settings.proxyUrl')}>
-                <FocusInput value={proxyUrl} onChange={e => setProxyUrl(e.target.value)} placeholder="ss://... or vmess://... or socks5://..." />
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyTunUrlHint')}</div>
-              </SettingsGroup>
-              <TunControl proxyUrl={proxyUrl} />
-            </>
-          )}
-
-          {/* System proxy — only env masking, no proxy injection */}
-          {proxyMode === 'system' && (
-            <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-muted)', background: 'var(--bg-tertiary)', borderRadius: 6 }}>
-              {t('settings.proxySystemHint')}
-            </div>
-          )}
-
-          {/* Region selector */}
-          <SettingsGroup title={t('settings.proxyRegion')}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              {REGION_OPTIONS.map(r => (
-                <div key={r.id} onClick={() => setProxyRegion(r.id)} style={{
-                  display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
-                  borderRadius: 6, cursor: 'pointer', fontSize: 13,
-                  background: proxyRegion === r.id ? 'var(--accent-subtle)' : 'transparent',
-                }}>
-                  <div style={{
-                    width: 8, height: 8, borderRadius: '50%',
-                    background: proxyRegion === r.id ? 'var(--accent)' : 'transparent',
-                    border: proxyRegion === r.id ? 'none' : '2px solid var(--text-muted)',
-                  }} />
-                  <span style={{ color: 'var(--text-primary)' }}>{r.label}</span>
-                  {r.tz && <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>{r.tz}</span>}
-                </div>
-              ))}
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyRegionHint')}</div>
-          </SettingsGroup>
-
-          {/* Env preview */}
-          {envVars.length > 0 && (
-            <SettingsGroup title={t('settings.proxyStatus')}>
-              <div style={{
-                padding: '8px 12px', background: 'var(--bg-tertiary)', borderRadius: 6,
-                fontSize: 12, color: 'var(--text-secondary)', fontFamily: '"Menlo", "Consolas", monospace',
-                display: 'flex', flexDirection: 'column', gap: 2,
-              }}>
-                {envVars.map(v => <div key={v}>{v}</div>)}
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyApplyHint')}</div>
-            </SettingsGroup>
-          )}
-        </>
+      {/* Env preview */}
+      {envVars.length > 0 && (
+        <SettingsGroup title={t('settings.proxyStatus')}>
+          <div style={{
+            padding: '8px 12px', background: 'var(--bg-tertiary)', borderRadius: 6,
+            fontSize: 12, color: 'var(--text-secondary)', fontFamily: '"Menlo", "Consolas", monospace',
+            display: 'flex', flexDirection: 'column', gap: 2,
+          }}>
+            {envVars.map(v => <div key={v}>{v}</div>)}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyApplyHint')}</div>
+        </SettingsGroup>
       )}
     </div>
   )
@@ -506,7 +339,7 @@ function AboutSection() {
 
 function AccountSection({ onLogout }: { onLogout?: () => void }) {
   const { t } = useI18n()
-  const [session, setSession] = useState<{ isLoggedIn: boolean; username: string | null; session: { expiresAt: string; proxyUrl: string; proxyRegion: string } | null } | null>(null)
+  const [session, setSession] = useState<{ isLoggedIn: boolean; username: string | null; session: { plan?: string; expiresAt: string; proxyUrl: string; proxyRegion: string } | null } | null>(null)
 
   useEffect(() => {
     window.api.subscription.getSession().then(setSession)
@@ -515,8 +348,12 @@ function AccountSection({ onLogout }: { onLogout?: () => void }) {
   if (!session) return null
 
   const expiresAt = session.session?.expiresAt
-  const daysRemaining = expiresAt ? Math.max(0, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 86400000)) : 0
-  const isExpiringSoon = daysRemaining <= 7
+  const plan = session.session?.plan || 'monthly'
+  const isDaily = plan === 'daily'
+  const msRemaining = expiresAt ? new Date(expiresAt).getTime() - Date.now() : 0
+  const daysRemaining = Math.max(0, Math.ceil(msRemaining / 86400000))
+  const hoursRemaining = Math.max(0, Math.ceil(msRemaining / 3600000))
+  const isExpiringSoon = isDaily ? hoursRemaining <= 2 : daysRemaining <= 7
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -529,8 +366,10 @@ function AccountSection({ onLogout }: { onLogout?: () => void }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 10px', background: 'var(--bg-tertiary)', borderRadius: 6 }}>
             <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('settings.accountExpires')}</span>
             <span style={{ fontSize: 13, color: isExpiringSoon ? 'var(--warning)' : 'var(--text-primary)', fontWeight: 500 }}>
-              {expiresAt ? new Date(expiresAt).toLocaleDateString() : '—'}
-              {daysRemaining > 0 && ` (${daysRemaining}${t('settings.accountDaysLeft')})`}
+              {expiresAt ? (isDaily ? new Date(expiresAt).toLocaleString() : new Date(expiresAt).toLocaleDateString()) : '—'}
+              {isDaily
+                ? hoursRemaining > 0 && ` (${hoursRemaining}h)`
+                : daysRemaining > 0 && ` (${daysRemaining}${t('settings.accountDaysLeft')})`}
             </span>
           </div>
           {session.session?.proxyUrl && (
@@ -564,10 +403,20 @@ function AccountSection({ onLogout }: { onLogout?: () => void }) {
   )
 }
 
-function TunControl({ proxyUrl }: { proxyUrl: string }) {
+function killAllPtySessions() {
+  const store = useTerminalStore.getState()
+  store.tabs.forEach(tab => {
+    if (tab.ptyId && !tab.isExited) {
+      window.api.pty.kill(tab.ptyId)
+    }
+  })
+}
+
+function TunControl({ proxyUrl, onTunStatusChange }: { proxyUrl: string; onTunStatusChange?: (ok: boolean) => void }) {
   const { t } = useI18n()
   const [info, setInfo] = useState<{ mode: string; status: string; installed: boolean; lastError: string | null }>({ mode: 'off', status: 'stopped', installed: false, lastError: null })
   const [loading, setLoading] = useState(false)
+  const [testResult, setTestResult] = useState<{ status: 'idle' | 'testing' | 'ok' | 'fail'; latency?: number; error?: string }>({ status: 'idle' })
 
   useEffect(() => {
     window.api.singbox.getInfo().then(setInfo)
@@ -577,21 +426,66 @@ function TunControl({ proxyUrl }: { proxyUrl: string }) {
 
   const handleStart = async () => {
     setLoading(true)
+    setTestResult({ status: 'idle' })
     if (!info.installed) {
       const install = await window.api.singbox.install()
       if (!install.success) { setLoading(false); return }
     }
-    const result = await window.api.singbox.startTun(proxyUrl)
-    setLoading(false)
-    if (!result.success) {
-      setInfo(prev => ({ ...prev, lastError: result.error || 'Failed to start' }))
+    // Resolve subscription URL → protocol URL if needed
+    const resolved = await window.api.proxy.resolveUrl(proxyUrl)
+    if (resolved.isSubscription && resolved.error) {
+      setLoading(false)
+      setInfo(prev => ({ ...prev, lastError: resolved.error || 'Failed to fetch subscription' }))
+      return
     }
+    const tunUrl = resolved.resolved || proxyUrl
+    if (!tunUrl) {
+      setLoading(false)
+      setInfo(prev => ({ ...prev, lastError: 'No proxy URL available' }))
+      return
+    }
+    const result = await window.api.singbox.startTun(tunUrl)
+    if (!result.success) {
+      setLoading(false)
+      setInfo(prev => ({ ...prev, lastError: result.error || 'Failed to start' }))
+      return
+    }
+    // Auto-test after start — wait a moment for TUN to be ready
+    await new Promise(r => setTimeout(r, 1500))
     window.api.singbox.getInfo().then(setInfo)
+    setTestResult({ status: 'testing' })
+    const test = await window.api.singbox.testConnectivity()
+    setLoading(false)
+    if (test.success) {
+      setTestResult({ status: 'ok', latency: test.latency })
+      onTunStatusChange?.(true)
+    } else {
+      // TUN started but proxy is broken — keep TUN (block traffic), don't allow sessions
+      setTestResult({ status: 'fail', error: test.error })
+      onTunStatusChange?.(false)
+    }
   }
 
   const handleStop = async () => {
     await window.api.singbox.stop()
+    setTestResult({ status: 'idle' })
+    onTunStatusChange?.(false)
+    killAllPtySessions()
     window.api.singbox.getInfo().then(setInfo)
+  }
+
+  const handleTest = async () => {
+    setTestResult({ status: 'testing' })
+    const result = await window.api.singbox.testConnectivity()
+    if (result.success) {
+      setTestResult({ status: 'ok', latency: result.latency })
+      onTunStatusChange?.(true)
+    } else {
+      // Proxy broken — keep TUN running (block traffic), kill PTY sessions
+      killAllPtySessions()
+      onTunStatusChange?.(false)
+      setTestResult({ status: 'fail', error: result.error })
+    }
   }
 
   const isRunning = info.status === 'running'
@@ -604,6 +498,15 @@ function TunControl({ proxyUrl }: { proxyUrl: string }) {
         <span style={{ fontSize: 13, color: 'var(--text-primary)', flex: 1 }}>
           {isRunning ? t('settings.tunRunning') : t('settings.tunStopped')}
         </span>
+        {isRunning && (
+          <button onClick={handleTest} disabled={testResult.status === 'testing'} style={{
+            padding: '5px 14px', fontSize: 12, borderRadius: 6, cursor: 'pointer',
+            background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border)',
+            opacity: testResult.status === 'testing' ? 0.5 : 1,
+          }}>
+            {testResult.status === 'testing' ? t('settings.tunTesting') : t('settings.tunTest')}
+          </button>
+        )}
         {isRunning ? (
           <button onClick={handleStop} style={{
             padding: '5px 14px', fontSize: 12, borderRadius: 6, cursor: 'pointer',
@@ -621,6 +524,17 @@ function TunControl({ proxyUrl }: { proxyUrl: string }) {
           </button>
         )}
       </div>
+      {/* Test result */}
+      {testResult.status === 'ok' && (
+        <div style={{ fontSize: 11, color: 'var(--success)', marginTop: 4 }}>
+          ✓ {t('settings.tunTestOk')} ({testResult.latency}ms)
+        </div>
+      )}
+      {testResult.status === 'fail' && (
+        <div style={{ fontSize: 11, color: 'var(--error-text)', marginTop: 4 }}>
+          ✗ {t('settings.tunTestFail')}{testResult.error ? ` — ${testResult.error}` : ''}
+        </div>
+      )}
       {info.lastError && (
         <div style={{ fontSize: 11, color: 'var(--error-text)', marginTop: 4 }}>{info.lastError}</div>
       )}

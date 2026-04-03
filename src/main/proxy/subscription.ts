@@ -215,7 +215,9 @@ function parseClashYaml(text: string): ProxyNode[] {
       inProxies = true
       continue
     }
-    if (inProxies && /^[a-zA-Z]/.test(trimmed) && !trimmed.startsWith('-') && !trimmed.startsWith(' ')) {
+    // End of proxies section: a new top-level key (no leading whitespace in original line)
+    if (inProxies && /^[a-zA-Z]/.test(line) && !line.startsWith(' ') && !line.startsWith('\t')) {
+      if (currentNode.name) { pushClashNode(nodes, currentNode); currentNode = {} }
       inProxies = false
       continue
     }
@@ -225,14 +227,7 @@ function parseClashYaml(text: string): ProxyNode[] {
       // Inline YAML: - {name: xxx, type: ss, server: xxx, port: 443, ...}
       const obj = parseInlineYaml(trimmed.slice(trimmed.indexOf('{') + 1, -1))
       if (obj.name && obj.server) {
-        const type = (obj.type || 'unknown').toLowerCase() as ProxyNode['type']
-        const usable = type === 'socks5' || type === 'http' || type === 'https'
-        const { region, flag } = detectRegion(obj.name)
-        const url = usable ? `${type}://${obj.server}:${obj.port || 1080}` : ''
-        nodes.push({
-          name: obj.name, type, server: obj.server, port: Number(obj.port) || 0,
-          url, region, regionFlag: flag, usable, raw: trimmed,
-        })
+        pushClashNode(nodes, obj)
       }
     } else if (trimmed.startsWith('- name:') || trimmed.startsWith('-name:')) {
       // Multi-line YAML block start
@@ -242,9 +237,12 @@ function parseClashYaml(text: string): ProxyNode[] {
       currentNode = { name: trimmed.split(':').slice(1).join(':').trim().replace(/^["']|["']$/g, '') }
     } else if (trimmed.startsWith('name:') && Object.keys(currentNode).length > 0) {
       currentNode.name = trimmed.split(':').slice(1).join(':').trim().replace(/^["']|["']$/g, '')
-    } else if (/^(type|server|port|password|cipher|uuid):/.test(trimmed)) {
-      const [key, ...rest] = trimmed.split(':')
-      currentNode[key.trim()] = rest.join(':').trim().replace(/^["']|["']$/g, '')
+    } else if (/^[a-z][a-z0-9_-]*:/i.test(trimmed) && !trimmed.startsWith('- ')) {
+      // Capture all key-value fields (type, server, port, password, uuid, flow, network, sni, etc.)
+      const colonIdx = trimmed.indexOf(':')
+      const key = trimmed.slice(0, colonIdx).trim()
+      const val = trimmed.slice(colonIdx + 1).trim().replace(/^["']|["']$/g, '')
+      currentNode[key] = val
     }
   }
   if (currentNode.name) pushClashNode(nodes, currentNode)
@@ -252,14 +250,77 @@ function parseClashYaml(text: string): ProxyNode[] {
   return nodes
 }
 
+/** Build a protocol URL from clash yaml node fields */
+function buildProtocolUrl(obj: Record<string, string>): string {
+  const type = (obj.type || '').toLowerCase()
+  const server = obj.server || ''
+  const port = obj.port || '443'
+  const name = obj.name || ''
+  const encoded = encodeURIComponent(name)
+
+  if (type === 'ss') {
+    const method = obj.cipher || obj.method || 'aes-256-gcm'
+    const password = obj.password || ''
+    const userinfo = Buffer.from(`${method}:${password}`).toString('base64url')
+    return `ss://${userinfo}@${server}:${port}#${encoded}`
+  }
+  if (type === 'vmess') {
+    const json = { v: '2', ps: name, add: server, port, id: obj.uuid || '', aid: obj.alterId || '0', net: obj.network || 'tcp', type: 'none', tls: obj.tls === 'true' ? 'tls' : '' }
+    return `vmess://${Buffer.from(JSON.stringify(json)).toString('base64')}`
+  }
+  if (type === 'vless') {
+    const uuid = obj.uuid || ''
+    const params = new URLSearchParams()
+    if (obj.network) params.set('type', obj.network)
+    if (obj.flow) params.set('flow', obj.flow)
+    const sni = obj.servername || obj.sni || ''
+    if (sni) params.set('sni', sni)
+    // Reality support
+    if (obj['reality-opts'] || obj['public-key']) {
+      params.set('security', 'reality')
+      if (obj['public-key']) params.set('pbk', obj['public-key'])
+      if (obj['short-id']) params.set('sid', obj['short-id'])
+      if (sni) params.set('sni', sni)
+    } else if (obj.tls === 'true') {
+      params.set('security', 'tls')
+    }
+    if (obj['client-fingerprint']) params.set('fp', obj['client-fingerprint'])
+    return `vless://${uuid}@${server}:${port}?${params}#${encoded}`
+  }
+  if (type === 'trojan') {
+    const password = obj.password || ''
+    const params = new URLSearchParams()
+    const sni = obj.sni || obj.servername || ''
+    if (sni) params.set('sni', sni)
+    if (obj.network === 'ws') {
+      params.set('type', 'ws')
+      if (obj['ws-path'] || obj.path) params.set('path', obj['ws-path'] || obj.path || '')
+      if (sni) params.set('host', sni)
+    }
+    return `trojan://${encodeURIComponent(password)}@${server}:${port}?${params}#${encoded}`
+  }
+  if (type === 'hysteria2' || type === 'hy2') {
+    const password = obj.password || ''
+    const params = new URLSearchParams()
+    if (obj.sni || obj.servername) params.set('sni', obj.sni || obj.servername || '')
+    if (obj.obfs) params.set('obfs', obj.obfs)
+    if (obj['obfs-password']) params.set('obfs-password', obj['obfs-password'])
+    if (obj['skip-cert-verify'] === 'true') params.set('insecure', '1')
+    return `hysteria2://${encodeURIComponent(password)}@${server}:${port}?${params}#${encoded}`
+  }
+  if (type === 'socks5' || type === 'http' || type === 'https') {
+    return `${type}://${server}:${port}`
+  }
+  return ''
+}
+
 function pushClashNode(nodes: ProxyNode[], obj: Record<string, string>): void {
   const type = (obj.type || 'unknown').toLowerCase() as ProxyNode['type']
-  const usable = type === 'socks5' || type === 'http' || type === 'https'
   const { region, flag } = detectRegion(obj.name || '')
-  const url = usable ? `${type}://${obj.server}:${obj.port || 1080}` : ''
+  const protocolUrl = buildProtocolUrl(obj)
   nodes.push({
     name: obj.name || 'Unknown', type, server: obj.server || '', port: Number(obj.port) || 0,
-    url, region, regionFlag: flag, usable, raw: JSON.stringify(obj),
+    url: protocolUrl, region, regionFlag: flag, usable: !!protocolUrl, raw: protocolUrl || JSON.stringify(obj),
   })
 }
 

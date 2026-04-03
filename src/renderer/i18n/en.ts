@@ -77,13 +77,18 @@ export const en = {
   'settings.proxyModeTunDesc': 'Route ALL traffic through proxy via virtual network adapter (requires admin)',
   'settings.proxyModeSystem': 'System Proxy / External',
   'settings.proxyModeSystemDesc': 'Use existing Clash/V2Ray TUN — only apply environment masking',
-  'settings.proxyTunUrlHint': 'All protocols supported: ss/vmess/vless/trojan/socks5/http',
+  'settings.proxyTunUrlHint': 'Supports protocol URLs (ss/vmess/vless/trojan/socks5) or subscription URLs (https://...)',
   'settings.proxySystemHint': 'System proxy detected. Environment masking (TZ/LANG) will be applied but no proxy env vars injected.',
   'settings.tunRunning': 'TUN running — all traffic proxied',
   'settings.tunStopped': 'TUN stopped',
   'settings.tunStart': 'Start TUN',
   'settings.tunStop': 'Stop',
+  'settings.tunTest': 'Test',
+  'settings.tunTesting': 'Testing...',
+  'settings.tunTestOk': 'Connected',
+  'settings.tunTestFail': 'Connection failed — TUN stopped to restore network',
   'settings.tunHint': 'TUN mode creates a virtual network adapter. macOS will ask for admin password. All system traffic goes through the proxy.',
+  'app.tunRequired': 'Proxy not connected. Go to Settings → Network to start TUN.',
   'settings.proxyUrl': 'Proxy Address',
   'settings.proxyUrlHint': 'Supports http://, https://, socks5://, socks4:// — with optional auth (user:pass@host:port)',
   'settings.proxySubUrl': 'Subscription URL',
@@ -126,6 +131,7 @@ export const en = {
 
   // StatusBar
   'statusbar.preventingSleep': 'Preventing sleep',
+  'statusbar.expiryWarning': 'Subscription expiring soon',
 
   // Close Tab
   'tab.pressAgainToClose': 'Press again to close',

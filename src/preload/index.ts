@@ -54,6 +54,9 @@ const api = {
     updateSettings: (settings: {
       enabled: boolean; url: string; region: string
     }) => ipcRenderer.invoke('proxy:updateSettings', settings),
+    resolveUrl: (url: string) => ipcRenderer.invoke('proxy:resolveUrl', url) as Promise<{
+      resolved: string; isSubscription: boolean; nodeName?: string; nodeCount?: number; error?: string
+    }>,
     fetchSubscription: (url: string) => ipcRenderer.invoke('proxy:fetchSubscription', url) as Promise<{
       success: boolean; error?: string; nodes: Array<{
         name: string; type: string; server: string; port: number; url: string;
@@ -161,6 +164,7 @@ const api = {
     startTun: (proxyUrl: string) => ipcRenderer.invoke('singbox:startTun', proxyUrl) as Promise<{ success: boolean; error?: string }>,
     startLocalProxy: (proxyUrl: string, port?: number) => ipcRenderer.invoke('singbox:startLocalProxy', proxyUrl, port) as Promise<{ success: boolean; port?: number; error?: string }>,
     stop: () => ipcRenderer.invoke('singbox:stop') as Promise<{ success: boolean }>,
+    testConnectivity: () => ipcRenderer.invoke('singbox:testConnectivity') as Promise<{ success: boolean; latency?: number; error?: string }>,
     onInstallProgress: (callback: (event: { step: string; pct: number }) => void) => {
       const listener = (_: unknown, event: { step: string; pct: number }) => callback(event)
       ipcRenderer.on('singbox:installProgress', listener)
@@ -192,14 +196,14 @@ const api = {
   subscription: {
     login: (username: string, password: string) =>
       ipcRenderer.invoke('subscription:login', { username, password }) as Promise<{
-        success: boolean; config?: { claudeEmail: string; claudePassword: string; proxyUrl: string; proxyRegion: string; expiresAt: string; status: string }
+        success: boolean; config?: { claudeEmail: string; claudePassword: string; proxyUrl: string; proxyRegion: string; expiresAt: string; status: string; plan?: string; minutesRemaining?: number }
         error?: string; errorCode?: string
       }>,
     checkStatus: () => ipcRenderer.invoke('subscription:checkStatus') as Promise<{
-      status: string; expiresAt: string; daysRemaining: number; proxyUrl?: string; proxyRegion?: string
+      status: string; plan?: string; expiresAt: string; daysRemaining: number; minutesRemaining?: number; proxyUrl?: string; proxyRegion?: string
     } | null>,
     getSession: () => ipcRenderer.invoke('subscription:getSession') as Promise<{
-      isLoggedIn: boolean; username: string | null; session: { token: string; expiresAt: string; proxyUrl: string; proxyRegion: string } | null
+      isLoggedIn: boolean; username: string | null; session: { token: string; plan?: string; expiresAt: string; proxyUrl: string; proxyRegion: string } | null
     }>,
     logout: () => ipcRenderer.invoke('subscription:logout'),
     autoLoginClaude: (email: string, password: string) =>

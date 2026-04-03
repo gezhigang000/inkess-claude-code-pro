@@ -128,6 +128,9 @@ function parseProxyUrl(url: string): SingBoxOutbound {
   if (lower.startsWith('trojan://')) {
     return parseTrojan(url)
   }
+  if (lower.startsWith('hysteria2://') || lower.startsWith('hy2://')) {
+    return parseHysteria2(url)
+  }
 
   // Fallback: treat as socks5
   return { type: 'socks', tag: 'proxy', server: url, server_port: 1080 }
@@ -254,6 +257,7 @@ function parseVless(url: string): SingBoxOutbound {
     // TLS
     const security = params.get('security') || ''
     if (security === 'tls' || security === 'reality') {
+      const fp = params.get('fp') || ''
       out.tls = {
         enabled: true,
         server_name: params.get('sni') || u.hostname,
@@ -264,6 +268,7 @@ function parseVless(url: string): SingBoxOutbound {
             short_id: params.get('sid') || '',
           }
         } : {}),
+        ...(fp ? { utls: { enabled: true, fingerprint: fp } } : {}),
       }
     }
     // Transport
@@ -279,6 +284,35 @@ function parseVless(url: string): SingBoxOutbound {
     return out
   } catch {
     return { type: 'vless', tag: 'proxy', server: '', server_port: 443, uuid: '' }
+  }
+}
+
+function parseHysteria2(url: string): SingBoxOutbound {
+  try {
+    const u = new URL(url.replace(/^hy2:\/\//, 'hysteria2://'))
+    const params = u.searchParams
+    const out: SingBoxOutbound = {
+      type: 'hysteria2',
+      tag: 'proxy',
+      server: u.hostname,
+      server_port: Number(u.port) || 443,
+      password: decodeURIComponent(u.username) || '',
+      tls: {
+        enabled: true,
+        server_name: params.get('sni') || u.hostname,
+        insecure: params.get('insecure') === '1',
+      },
+    }
+    const obfs = params.get('obfs')
+    if (obfs) {
+      out.obfs = {
+        type: obfs,
+        password: params.get('obfs-password') || '',
+      }
+    }
+    return out
+  } catch {
+    return { type: 'hysteria2', tag: 'proxy', server: '', server_port: 443, password: '' }
   }
 }
 
