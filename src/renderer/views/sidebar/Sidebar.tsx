@@ -32,10 +32,16 @@ export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPale
   const editRef = useRef<HTMLInputElement>(null)
   const { t } = useI18n()
 
-  const activeSessions: SessionRecord[] = useMemo(() => tabs.map(tab => ({
-    id: tab.id, name: tab.title, cwd: tab.cwd,
-    createdAt: Date.now(), status: 'active' as const,
-  })), [tabs])
+  const tabCreatedAtRef = useRef<Map<string, number>>(new Map())
+  const activeSessions: SessionRecord[] = useMemo(() => tabs.map(tab => {
+    if (!tabCreatedAtRef.current.has(tab.id)) {
+      tabCreatedAtRef.current.set(tab.id, Date.now())
+    }
+    return {
+      id: tab.id, name: tab.title, cwd: tab.cwd,
+      createdAt: tabCreatedAtRef.current.get(tab.id)!, status: 'active' as const,
+    }
+  }), [tabs])
 
   const [closedSessions, setClosedSessions] = useState<SessionRecord[]>(
     () => loadSessionHistory()

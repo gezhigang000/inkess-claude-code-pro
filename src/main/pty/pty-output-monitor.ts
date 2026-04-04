@@ -77,6 +77,7 @@ export class PtyOutputMonitor extends EventEmitter {
     // Reset idle timer
     if (session.idleTimer) clearTimeout(session.idleTimer)
     session.idleTimer = setTimeout(() => {
+      if (!this.sessions.has(id)) return
       if (!session.isStreaming) return
       session.isStreaming = false
 

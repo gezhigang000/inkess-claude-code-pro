@@ -3,6 +3,37 @@ import { useSettingsStore } from '../../stores/settings'
 import { useTerminalStore } from '../../stores/terminal'
 import { useI18n } from '../../i18n'
 
+/** Redact proxy URL for display: protocol + masked host + port */
+function redactProxyUrl(url: string): string {
+  if (!url) return ''
+  try {
+    // Handle protocol URLs: ss://method:pass@host:port, socks5://user:pass@host:port, etc.
+    const match = url.match(/^([a-z][a-z0-9+.-]*):\/\/(.+)$/)
+    if (!match) return '***'
+    const scheme = match[1]
+    const rest = match[2]
+
+    // Extract host:port from the end (after last @, or from start if no @)
+    const atIdx = rest.lastIndexOf('@')
+    const hostPart = atIdx >= 0 ? rest.slice(atIdx + 1) : rest
+    // Split host:port (handle IPv6 [::1]:port)
+    const hostMatch = hostPart.match(/^\[?([^\]]+)\]?:(\d+)/)
+    if (hostMatch) {
+      const host = hostMatch[1]
+      const port = hostMatch[2]
+      // Mask middle of host: abc.example.com → abc.***.com
+      const parts = host.split('.')
+      const masked = parts.length > 2
+        ? `${parts[0]}.${'*'.repeat(3)}.${parts[parts.length - 1]}`
+        : `${'*'.repeat(3)}.${parts[parts.length - 1] || '***'}`
+      return `${scheme}://***@${masked}:${port}`
+    }
+    return `${scheme}://***`
+  } catch {
+    return '***'
+  }
+}
+
 interface SettingsPanelProps {
   onClose: () => void
   onLogout?: () => void
@@ -138,7 +169,7 @@ function NetworkSection({ onTunStatusChange }: { onTunStatusChange?: (ok: boolea
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       {/* TUN proxy URL */}
       <SettingsGroup title={t('settings.proxyUrl')}>
-        <FocusInput value={proxyUrl} onChange={e => setProxyUrl(e.target.value)} placeholder="ss://... / vmess://... / https://panel.xxx/api/sub/..." />
+        <ProxyUrlInput value={proxyUrl} onChange={setProxyUrl} placeholder="ss://... / vmess://... / https://panel.xxx/api/sub/..." />
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyTunUrlHint')}</div>
       </SettingsGroup>
       <TunControl proxyUrl={proxyUrl} onTunStatusChange={onTunStatusChange} />
@@ -376,7 +407,7 @@ function AccountSection({ onLogout }: { onLogout?: () => void }) {
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 10px', background: 'var(--bg-tertiary)', borderRadius: 6 }}>
               <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('settings.accountProxy')}</span>
               <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>
-                {session.session.proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')}
+                {redactProxyUrl(session.session.proxyUrl)}
               </span>
             </div>
           )}
@@ -558,6 +589,22 @@ function FocusInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
       style={{ ...focusableInputStyle, ...props.style }}
       onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; props.onFocus?.(e) }}
       onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; props.onBlur?.(e) }}
+    />
+  )
+}
+
+/** Proxy URL input: shows redacted when blurred, real value when focused */
+function ProxyUrlInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  const [focused, setFocused] = useState(false)
+  return (
+    <input
+      type="text"
+      value={focused ? value : (value ? redactProxyUrl(value) : '')}
+      onChange={e => onChange(e.target.value)}
+      onFocus={e => { setFocused(true); e.currentTarget.style.borderColor = 'var(--accent)' }}
+      onBlur={e => { setFocused(false); e.currentTarget.style.borderColor = 'var(--border)' }}
+      placeholder={placeholder}
+      style={focusableInputStyle}
     />
   )
 }

@@ -65,6 +65,7 @@ export class SessionRecorder {
 
   /** Start recording a new session */
   startSession(sessionId: string, cwd: string, title: string): void {
+    if (!SessionRecorder.isValidId(sessionId)) return
     const meta: SessionMeta = {
       id: sessionId,
       cwd,
@@ -165,7 +166,7 @@ export class SessionRecorder {
   }
 
   /** Search sessions for a keyword (returns matching session IDs with context) */
-  searchSessions(query: string): { id: string; matches: string[] }[] {
+  async searchSessions(query: string): Promise<{ id: string; matches: string[] }[]> {
     const results: { id: string; matches: string[] }[] = []
     const lowerQuery = query.toLowerCase()
 
@@ -174,7 +175,8 @@ export class SessionRecorder {
       if (!existsSync(path)) continue
 
       try {
-        const content = readFileSync(path, 'utf-8')
+        const { readFile } = require('fs/promises') as typeof import('fs/promises')
+        const content = await readFile(path, 'utf-8')
         const matches: string[] = []
         const lines = content.split('\n')
 
@@ -216,6 +218,15 @@ export class SessionRecorder {
 
   /** Enforce total storage limit by removing oldest sessions */
   private enforceStorageLimit(): void {
+    // Clean up orphaned .jsonl files not in the index
+    try {
+      const indexedIds = new Set(this.index.map(m => m.id))
+      const orphans = readdirSync(this.sessionsDir).filter(f => f.endsWith('.jsonl') && !indexedIds.has(f.replace('.jsonl', '')))
+      for (const f of orphans) {
+        try { unlinkSync(join(this.sessionsDir, f)) } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
+
     let totalSize = 0
     // Calculate total size from actual files
     try {

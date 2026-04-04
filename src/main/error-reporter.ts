@@ -112,7 +112,11 @@ export class ErrorReporter {
         signal: controller.signal,
       }).finally(() => clearTimeout(timer))
     } catch {
-      // Silent fail
+      // Re-queue for retry (cap at MAX_QUEUE_SIZE)
+      for (const entry of batch) {
+        if (this.queue.length >= MAX_QUEUE_SIZE) break
+        this.queue.push(entry)
+      }
     } finally {
       this.flushing = false
     }

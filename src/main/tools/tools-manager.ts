@@ -243,7 +243,12 @@ export class ToolsManager {
     })
 
     const fileStream = createWriteStream(tmpPath)
-    await pipeline(Readable.fromWeb(progressStream as any), fileStream)
+    try {
+      await pipeline(Readable.fromWeb(progressStream as any), fileStream)
+    } catch (err) {
+      try { unlinkSync(tmpPath) } catch { /* ignore */ }
+      throw err
+    }
 
     // Verify checksum (streaming — memory-efficient for large archives)
     onProgress(`Verifying ${def.displayName}...`, 0.72)

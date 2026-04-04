@@ -88,6 +88,8 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
   const [searchQuery, setSearchQuery] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   const [pendingImage, setPendingImage] = useState<{ path: string; size: number; objectUrl: string } | null>(null)
+  const mountedRef = useRef(true)
+  useEffect(() => { return () => { mountedRef.current = false } }, [])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -151,6 +153,7 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
             const savedPath = await window.api.clipboard.saveImage(buffer)
             const { size } = await window.api.clipboard.getImageSize(savedPath)
             const objectUrl = URL.createObjectURL(blob)
+            if (!mountedRef.current) { URL.revokeObjectURL(objectUrl); return }
             setPendingImage({ path: savedPath, size, objectUrl })
           } else {
             // No image — paste text

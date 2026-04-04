@@ -40,6 +40,7 @@ export class CliManager {
   private cliDir: string
   private binaryPath: string
   private _cachedInfo: CliInfo | null = null
+  private _installing = false
 
   private get markerPath(): string {
     return join(this.cliDir, '.installed')
@@ -115,8 +116,9 @@ export class CliManager {
       if (!currentInfo.version)
         return { available: false, latestVersion }
 
+      const strip = (v: string) => v.replace(/^v/, '')
       return {
-        available: latestVersion !== currentInfo.version,
+        available: strip(latestVersion) !== strip(currentInfo.version || ''),
         latestVersion
       }
     } catch {
@@ -127,6 +129,9 @@ export class CliManager {
   async install(
     onProgress?: (step: string, progress: number) => void
   ): Promise<void> {
+    if (this._installing) throw new Error('Installation already in progress')
+    this._installing = true
+    try {
     if (!existsSync(this.cliDir)) {
       mkdirSync(this.cliDir, { recursive: true })
     }
@@ -266,6 +271,9 @@ export class CliManager {
     onProgress?.('Installation complete', 1.0)
     this.invalidateCache()
     writeFileSync(this.markerPath, `${version}|${new Date().toISOString()}`)
+    } finally {
+      this._installing = false
+    }
   }
 
   async update(
@@ -275,18 +283,15 @@ export class CliManager {
     if (existsSync(this.binaryPath)) {
       copyFileSync(this.binaryPath, backupPath)
     }
-
     try {
       await this.install(onProgress)
-      if (existsSync(backupPath)) {
-        unlinkSync(backupPath)
-      }
     } catch (err) {
       if (existsSync(backupPath)) {
-        copyFileSync(backupPath, this.binaryPath)
-        unlinkSync(backupPath)
+        try { copyFileSync(backupPath, this.binaryPath) } catch { /* ignore */ }
       }
       throw err
+    } finally {
+      try { if (existsSync(backupPath)) unlinkSync(backupPath) } catch { /* ignore */ }
     }
   }
 }

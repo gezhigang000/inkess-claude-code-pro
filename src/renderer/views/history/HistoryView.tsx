@@ -156,11 +156,11 @@ export function HistoryView({ onClose, onOpenProject }: HistoryViewProps) {
     if (!selectedId || !termRef.current) return
     let cancelled = false
     setLoading(true)
-    termRef.current.clear()
-    termRef.current.reset()
 
     window.api.session.read(selectedId).then((content) => {
       if (cancelled || !content || !termRef.current) { setLoading(false); return }
+      termRef.current.clear()
+      termRef.current.reset()
 
       const lines = content.split('\n').filter(Boolean)
       let i = 0

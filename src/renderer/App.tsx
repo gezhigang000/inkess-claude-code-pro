@@ -55,11 +55,16 @@ export function App() {
   const [showHistory, setShowHistory] = useState(false)
   const [previewFile, setPreviewFile] = useState<string | null>(null)
   const [tunOk, setTunOk] = useState(false)
+  const tunOkRef = useRef(false)
+  const handleNewTabRef = useRef<(cwd?: string) => void>(() => {})
+  useEffect(() => { tunOkRef.current = tunOk }, [tunOk])
+
   const [subscriptionLoggedIn, setSubscriptionLoggedIn] = useState<boolean | null>(null) // null = checking
   const [subscriptionUsername, setSubscriptionUsername] = useState<string | null>(null)
   const [subscriptionExpiry, setSubscriptionExpiry] = useState<string | null>(null)
   const [subscriptionPlan, setSubscriptionPlan] = useState<string>('monthly')
   const [expiryMinutesRemaining, setExpiryMinutesRemaining] = useState<number | null>(null)
+  const expiryAtRef = useRef<string | null>(null)
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -76,6 +81,7 @@ export function App() {
       setSubscriptionLoggedIn(true)
       setSubscriptionUsername(session.username)
       setSubscriptionExpiry(session.session?.expiresAt || null)
+      expiryAtRef.current = session.session?.expiresAt || null
       setSubscriptionPlan(session.session?.plan || 'monthly')
       // Auto-apply saved proxy settings
       if (session.session?.proxyUrl) {
@@ -97,6 +103,7 @@ export function App() {
   }) => {
     setSubscriptionLoggedIn(true)
     setSubscriptionExpiry(config.expiresAt)
+    expiryAtRef.current = config.expiresAt
     setSubscriptionPlan(config.plan || 'monthly')
 
     // 1. Auto-configure proxy
@@ -135,6 +142,7 @@ export function App() {
     window.api.subscription.logout()
     setSubscriptionLoggedIn(false)
     setSubscriptionExpiry(null)
+    expiryAtRef.current = null
     setExpiryMinutesRemaining(null)
   }, [])
 
@@ -163,6 +171,7 @@ export function App() {
       }
 
       setSubscriptionExpiry(status.expiresAt)
+      expiryAtRef.current = status.expiresAt
       if (status.plan) setSubscriptionPlan(status.plan)
 
       if (status.status === 'expired' || status.status === 'suspended') {
@@ -201,23 +210,20 @@ export function App() {
         setExpiryMinutesRemaining(prev => {
           if (prev === null) return null
           const next = prev - 0.5
-          if (next <= 0) return 0
-          return next
+          return next <= 0 ? 0 : next
         })
-        // When countdown hits 0, verify with server before kicking
-        const current = await new Promise<number | null>(resolve => {
-          setExpiryMinutesRemaining(v => { resolve(v); return v })
-        })
-        if (current !== null && current <= 0) {
+        // Check expiry using ref (avoids stale state read)
+        const expiresAt = expiryAtRef.current
+        if (!expiresAt) return
+        const msRemaining = new Date(expiresAt).getTime() - Date.now()
+        if (msRemaining <= 0) {
           const status = await window.api.subscription.checkStatus()
           if (status && (status.status === 'expired' || status.status === 'suspended')) {
-            // Server confirmed expired/suspended — force logout
             forceExpiredLogout()
           } else if (status) {
-            // Server says still active — correct the countdown
             setExpiryMinutesRemaining(calcMinutesRemaining(status.expiresAt))
+            expiryAtRef.current = status.expiresAt
           } else {
-            // Network error — grant 5min grace period, don't kill sessions
             setExpiryMinutesRemaining(5)
           }
         }
@@ -252,7 +258,7 @@ export function App() {
 
   const handleNewTab = useCallback(async (cwd?: string) => {
     // Block new sessions if TUN is not connected
-    if (!tunOk) return
+    if (!tunOkRef.current) return
 
     const targetCwd = cwd || (tabs.length > 0 ? tabs[tabs.length - 1].cwd : DEFAULT_CWD)
     const { cliInstalled } = useAppStore.getState()
@@ -271,6 +277,8 @@ export function App() {
     // Persist to recent projects
     saveRecentProject(targetCwd)
   }, [tabs, addTab])
+
+  useEffect(() => { handleNewTabRef.current = handleNewTab }, [handleNewTab])
 
   const handleCloseTab = useCallback(
     (tabId: string) => {
@@ -396,7 +404,7 @@ export function App() {
           if (existing) {
             store.setActiveTab(existing.id)
           } else {
-            handleNewTab(dir)
+            handleNewTabRef.current(dir)
           }
         }
       }

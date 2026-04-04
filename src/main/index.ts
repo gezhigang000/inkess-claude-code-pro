@@ -206,7 +206,12 @@ ipcMain.handle('subscription:logout', () => {
 })
 
 // IPC: Auto-login Claude via browser
-ipcMain.handle('subscription:autoLoginClaude', async (_event, { email, password }: { email: string; password: string }) => {
+ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => {
+  const { email, password } = (args || {}) as Record<string, unknown>
+  if (typeof email !== 'string' || typeof password !== 'string' ||
+      email.length === 0 || email.length > 300 || password.length === 0 || password.length > 500) {
+    return { success: false, error: 'Invalid credentials format' }
+  }
   const { session: electronSession } = require('electron') as typeof import('electron')
   const regionEnv = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}
   const lang = regionEnv.LANG?.split('.')[0]?.replace('_', '-') || 'en-US'
@@ -317,7 +322,7 @@ ipcMain.handle('singbox:install', async () => {
 })
 
 ipcMain.handle('singbox:startTun', async (_event, proxyUrl: string) => {
-  log.info(`[startTun] url: ${proxyUrl?.substring(0, 80)}...`)
+  log.info(`[startTun] url: ${proxyUrl?.replace(/:\/\/.*@/, '://***@').replace(/:\/\/([^/]+)/, '://***.***:***')}`)
   if (typeof proxyUrl !== 'string' || proxyUrl.length > 500 || proxyUrl.length < 5) {
     log.error(`[startTun] invalid proxy URL (len=${proxyUrl?.length})`)
     return { success: false, error: 'Invalid proxy URL' }
@@ -526,13 +531,15 @@ ipcMain.handle('pty:create', (_event, options: {
   }
 })
 
-ipcMain.on('pty:write', (_event, { id, data }: { id: string; data: string }) => {
-  ptyManager.write(id, data)
-  sessionRecorder.recordInput(id, data)
+ipcMain.on('pty:write', (_event, payload) => {
+  if (!payload || typeof payload.id !== 'string' || typeof payload.data !== 'string') return
+  ptyManager.write(payload.id, payload.data)
+  sessionRecorder.recordInput(payload.id, payload.data)
 })
 
-ipcMain.on('pty:resize', (_event, { id, cols, rows }: { id: string; cols: number; rows: number }) => {
-  ptyManager.resize(id, cols, rows)
+ipcMain.on('pty:resize', (_event, payload) => {
+  if (!payload || typeof payload.id !== 'string') return
+  ptyManager.resize(payload.id, payload.cols, payload.rows)
 })
 
 ipcMain.on('pty:kill', (_event, { id }: { id: string }) => {
@@ -551,8 +558,9 @@ ipcMain.handle('shell:openExternal', (_event, url: string) => {
 
 ipcMain.handle('shell:openPath', (_event, path: string) => {
   const normalized = normalize(resolve(path))
-  if (normalized !== path && path.includes('..')) {
-    log.warn(`Blocked openPath with path traversal: ${path}`)
+  const home = os.homedir()
+  if (!normalized.startsWith(home + '/') && !normalized.startsWith(home + require('path').sep)) {
+    log.warn(`Blocked openPath outside home: ${normalized}`)
     return
   }
   return shell.openPath(normalized)
@@ -585,19 +593,21 @@ ipcMain.handle('fs:exists', (_event, path: string) => {
 ipcMain.handle('fs:readFile', (_event, filePath: string, maxSize?: number) => {
   try {
     const resolved = resolve(normalize(filePath))
-    // Security: only allow reading files under user's home directory
+    if (!existsSync(resolved)) return null
+    // Resolve symlinks for security boundary check
+    const { realpathSync } = require('fs') as typeof import('fs')
+    const real = realpathSync(resolved)
     const home = os.homedir()
-    if (!resolved.startsWith(home + require('path').sep) && !resolved.startsWith(home + '/')) {
-      log.warn(`fs:readFile blocked path outside home: ${resolved}`)
+    if (!real.startsWith(home + require('path').sep) && !real.startsWith(home + '/')) {
+      log.warn(`fs:readFile blocked path outside home: ${real}`)
       return null
     }
-    if (!existsSync(resolved)) return null
-    const stat = statSync(resolved)
+    const stat = statSync(real)
     if (stat.isDirectory()) return null
     const limit = maxSize || 1024 * 1024
     if (stat.size > limit) return null
     const { readFileSync } = require('fs') as typeof import('fs')
-    return readFileSync(resolved, 'utf-8')
+    return readFileSync(real, 'utf-8')
   } catch {
     return null
   }
@@ -640,9 +650,13 @@ ipcMain.handle('clipboard:saveImage', async (_event, buffer: ArrayBuffer) => {
 
 ipcMain.handle('clipboard:getImageSize', async (_event, filepath: string) => {
   try {
-    const { statSync } = require('fs') as typeof import('fs')
-    const stat = statSync(filepath)
-    return { size: stat.size }
+    const expectedDir = join(app.getPath('userData'), 'tmp')
+    const resolved = resolve(normalize(filepath))
+    if (!resolved.startsWith(expectedDir + '/') && !resolved.startsWith(expectedDir + require('path').sep)) {
+      return { size: 0 }
+    }
+    const { statSync: fsStat } = require('fs') as typeof import('fs')
+    return { size: fsStat(resolved).size }
   } catch {
     return { size: 0 }
   }

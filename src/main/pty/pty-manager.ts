@@ -134,10 +134,12 @@ export class PtyManager {
   kill(id: string): void {
     const session = this.sessions.get(id)
     if (session) {
+      const exitCbs = session.onExitCallbacks.slice()
       session.onDataCallbacks = []
       session.onExitCallbacks = []
-      session.process.kill()
       this.sessions.delete(id)
+      session.process.kill()
+      exitCbs.forEach(cb => cb(-1))
     }
   }
 
