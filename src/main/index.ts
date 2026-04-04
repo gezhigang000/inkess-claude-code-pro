@@ -172,7 +172,14 @@ ipcMain.handle('tools:install', async () => {
 })
 
 // IPC: Subscription
-ipcMain.handle('subscription:login', async (_event, { username, password }: { username: string; password: string }) => {
+ipcMain.handle('subscription:login', async (_event, args: unknown) => {
+  const { username, password } = (args || {}) as Record<string, unknown>
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    return { success: false, error: 'Invalid input' }
+  }
+  if (username.length === 0 || username.length > 50 || password.length === 0 || password.length > 200) {
+    return { success: false, error: 'Invalid input length' }
+  }
   return subscriptionManager.login(username, password)
 })
 
@@ -181,10 +188,16 @@ ipcMain.handle('subscription:checkStatus', async () => {
 })
 
 ipcMain.handle('subscription:getSession', () => {
+  const s = subscriptionManager.getSession()
   return {
     isLoggedIn: subscriptionManager.isLoggedIn(),
     username: subscriptionManager.getUsername(),
-    session: subscriptionManager.getSession(),
+    session: s ? {
+      plan: s.plan,
+      expiresAt: s.expiresAt,
+      proxyUrl: s.proxyUrl,
+      proxyRegion: s.proxyRegion,
+    } : null,
   }
 })
 

@@ -386,8 +386,7 @@ function AccountSection({ onLogout }: { onLogout?: () => void }) {
       {onLogout && (
         <button
           onClick={() => {
-            window.api.subscription.logout()
-            onLogout()
+            onLogout?.()
           }}
           style={{
             padding: '8px 0', fontSize: 13, fontWeight: 500,

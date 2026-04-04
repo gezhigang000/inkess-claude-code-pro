@@ -306,12 +306,44 @@ export class SingBoxManager {
 
   private async startWithAdmin(): Promise<void> {
     // Windows: use PowerShell Start-Process -Verb RunAs for UAC prompt
+    // Write PID to file so stop() can find it
     const safeBin = this.binaryPath.replace(/'/g, "''")
     const safeCfg = this.configPath.replace(/'/g, "''")
-    const cmd = `Start-Process -FilePath '${safeBin}' -ArgumentList 'run','-c','${safeCfg}' -Verb RunAs -WindowStyle Hidden`
+    const pidFile = join(this.singboxDir, 'sing-box.pid').replace(/'/g, "''")
+    // Start sing-box, capture its PID, then wait for it
+    const wrapper = `$p = Start-Process -FilePath '${safeBin}' -ArgumentList 'run','-c','${safeCfg}' -Verb RunAs -WindowStyle Hidden -PassThru; $p.Id | Out-File -Encoding ascii '${pidFile}'; Wait-Process -Id $p.Id`
     try {
-      execSync(`powershell -NoProfile -Command "${cmd}"`, { timeout: 30000 })
-      this._status = 'running'
+      // Start wrapper in background (don't block on wait)
+      this.process = spawn('powershell', ['-NoProfile', '-Command', wrapper], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
+
+      this.process.on('exit', (code) => {
+        this._status = code === 0 ? 'stopped' : 'error'
+        this.process = null
+      })
+
+      this.process.stderr?.on('data', (data: Buffer) => {
+        const msg = data.toString().trim()
+        if (msg) {
+          this._lastError = msg
+          log.warn(`[sing-box admin] ${msg}`)
+        }
+      })
+
+      // Check PID file after a short delay to confirm running
+      setTimeout(() => {
+        const pidPath = join(this.singboxDir, 'sing-box.pid')
+        if (this._status === 'starting') {
+          if (existsSync(pidPath)) {
+            this._status = 'running'
+          } else {
+            this._status = 'error'
+            this._lastError = this._lastError || 'sing-box failed to start (no PID file)'
+          }
+        }
+      }, 5000)
     } catch (err) {
       this._status = 'error'
       this._lastError = (err as Error).message

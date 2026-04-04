@@ -102,7 +102,7 @@ export function App() {
     // 1. Auto-configure proxy
     const store = useSettingsStore.getState()
     store.setProxyEnabled(true)
-    store.setProxyMode('direct')
+    store.setProxyMode('tun')
     store.setProxyUrl(config.proxyUrl)
     store.setProxyRegion(config.proxyRegion)
 
@@ -210,11 +210,15 @@ export function App() {
         })
         if (current !== null && current <= 0) {
           const status = await window.api.subscription.checkStatus()
-          if (!status || status.status === 'expired' || status.status === 'suspended') {
+          if (status && (status.status === 'expired' || status.status === 'suspended')) {
+            // Server confirmed expired/suspended — force logout
             forceExpiredLogout()
-          } else {
+          } else if (status) {
             // Server says still active — correct the countdown
             setExpiryMinutesRemaining(calcMinutesRemaining(status.expiresAt))
+          } else {
+            // Network error — grant 5min grace period, don't kill sessions
+            setExpiryMinutesRemaining(5)
           }
         }
       }, 30000)
@@ -644,7 +648,7 @@ export function App() {
           )}
         </div>
       </div>
-      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} onLogout={() => { setShowSettings(false); setSubscriptionLoggedIn(false); setSubscriptionUsername(null) }} onTunStatusChange={setTunOk} />}
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} onLogout={() => { setShowSettings(false); forceExpiredLogout() }} onTunStatusChange={setTunOk} />}
       {showCommandPalette && (
         <CommandPalette
           onClose={() => setShowCommandPalette(false)}

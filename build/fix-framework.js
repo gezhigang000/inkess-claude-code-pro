@@ -1,37 +1,53 @@
-// afterPack hook: fix Electron Framework "bundle format is ambiguous" on Electron 41+
-// The root-level binary and Resources/ confuse codesign. Remove them since
-// Versions/Current/ symlinks provide the canonical structure.
-const { existsSync, unlinkSync, rmSync, lstatSync } = require('fs')
-const { join } = require('path')
+// afterPack hook: fix ".framework" bundle structure for codesign on Electron 41+
+// macOS frameworks require top-level entries to be symlinks into Versions/Current/.
+// Electron sometimes copies real files/dirs instead, causing "bundle format is ambiguous".
+const { existsSync, unlinkSync, rmSync, lstatSync, readdirSync, symlinkSync, readlinkSync } = require('fs')
+const { join, basename } = require('path')
 
 exports.default = async function (context) {
   if (process.platform !== 'darwin') return
 
   const appPath = context.appOutDir
   const frameworksDir = join(appPath, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Frameworks')
-  const efDir = join(frameworksDir, 'Electron Framework.framework')
 
-  // Remove root-level binary if it's a real file (not symlink)
-  const rootBin = join(efDir, 'Electron Framework')
-  if (existsSync(rootBin) && !lstatSync(rootBin).isSymbolicLink()) {
-    unlinkSync(rootBin)
-    // Re-create as symlink to Versions/Current/Electron Framework
-    require('fs').symlinkSync('Versions/Current/Electron Framework', rootBin)
-  }
+  if (!existsSync(frameworksDir)) return
 
-  // Remove root-level Resources if it's a real directory (not symlink)
-  const rootRes = join(efDir, 'Resources')
-  if (existsSync(rootRes) && !lstatSync(rootRes).isSymbolicLink()) {
-    rmSync(rootRes, { recursive: true })
-    require('fs').symlinkSync('Versions/Current/Resources', rootRes)
-  }
+  // Fix ALL .framework bundles, not just Electron Framework
+  const frameworks = readdirSync(frameworksDir).filter(f => f.endsWith('.framework'))
 
-  // Same for Helpers, Libraries
-  for (const name of ['Helpers', 'Libraries']) {
-    const p = join(efDir, name)
-    if (existsSync(p) && !lstatSync(p).isSymbolicLink()) {
-      rmSync(p, { recursive: true })
-      require('fs').symlinkSync(`Versions/Current/${name}`, p)
+  for (const fw of frameworks) {
+    const fwDir = join(frameworksDir, fw)
+    const versionsDir = join(fwDir, 'Versions')
+
+    // Only fix frameworks that have a Versions/ directory
+    if (!existsSync(versionsDir)) continue
+
+    // Ensure Versions/Current is a symlink
+    const currentDir = join(versionsDir, 'Current')
+    if (existsSync(currentDir) && !lstatSync(currentDir).isSymbolicLink()) {
+      // Find the version dir (typically 'A')
+      const versionDirs = readdirSync(versionsDir).filter(d => d !== 'Current')
+      if (versionDirs.length > 0) {
+        rmSync(currentDir, { recursive: true })
+        symlinkSync(versionDirs[0], currentDir)
+      }
+    }
+
+    // Fix top-level entries: must be symlinks to Versions/Current/<name>
+    const topEntries = readdirSync(fwDir).filter(e => e !== 'Versions')
+    for (const entry of topEntries) {
+      const entryPath = join(fwDir, entry)
+      const stat = lstatSync(entryPath)
+
+      if (!stat.isSymbolicLink()) {
+        // Replace real file/dir with symlink
+        if (stat.isDirectory()) {
+          rmSync(entryPath, { recursive: true })
+        } else {
+          unlinkSync(entryPath)
+        }
+        symlinkSync(`Versions/Current/${entry}`, entryPath)
+      }
     }
   }
 }

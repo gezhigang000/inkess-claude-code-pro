@@ -65,7 +65,7 @@ export class SubscriptionManager {
   private saveSession(session: StoredSession): void {
     this.session = session
     try {
-      writeFileSync(this.sessionPath, JSON.stringify(session))
+      writeFileSync(this.sessionPath, JSON.stringify(session), { mode: 0o600 })
     } catch (err) {
       log.error('Failed to save subscription session:', err)
     }

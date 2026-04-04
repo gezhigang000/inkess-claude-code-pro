@@ -18,7 +18,7 @@ export function getDeviceId(): string {
   if (existsSync(cachePath)) {
     try {
       const cached = readFileSync(cachePath, 'utf-8').trim()
-      if (cached.length === 32) return cached
+      if (/^[0-9a-f]{32}$/.test(cached)) return cached
     } catch { /* regenerate */ }
   }
 
