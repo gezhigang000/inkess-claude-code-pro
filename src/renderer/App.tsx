@@ -47,8 +47,9 @@ export function App() {
   const pendingCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string } | null>(null)
   const [appUpdateStatus, setAppUpdateStatus] = useState<{
-    type: string; version?: string; percent?: number
+    type: string; version?: string; percent?: number; message?: string
   } | null>(null)
+  const [appUpdateDismissed, setAppUpdateDismissed] = useState(false)
   const { t } = useI18n()
   const [dragOver, setDragOver] = useState(false)
   const dragCounterRef = useRef(0)
@@ -358,11 +359,17 @@ export function App() {
   // App auto-update status listener
   useEffect(() => {
     const unsub = window.api.appUpdate.onStatus((status) => {
-      if (status.type === 'available' || status.type === 'downloaded' || status.type === 'downloading') {
-        setAppUpdateStatus(status)
+      setAppUpdateStatus(status)
+      // Auto-show toast when status changes to actionable states
+      if (status.type === 'available' || status.type === 'downloaded' || status.type === 'downloading' || status.type === 'error') {
+        setAppUpdateDismissed(false)
       }
     })
-    return () => { unsub() }
+    // Periodic re-check every 2 hours
+    const recheckTimer = setInterval(() => {
+      window.api.appUpdate.check()
+    }, 2 * 60 * 60 * 1000)
+    return () => { unsub(); clearInterval(recheckTimer) }
   }, [])
 
   // Desktop notifications
@@ -678,21 +685,13 @@ export function App() {
           />
         </div>
       )}
-      {appUpdateStatus && appUpdateStatus.type === 'available' && (
+      {appUpdateStatus && !appUpdateDismissed && (appUpdateStatus.type === 'available' || appUpdateStatus.type === 'downloading' || appUpdateStatus.type === 'downloaded' || appUpdateStatus.type === 'error') && (
         <AppUpdateToast
-          version={appUpdateStatus.version || ''}
+          status={appUpdateStatus}
           bottomOffset={updateInfo ? 100 : 16}
           onDownload={() => window.api.appUpdate.download()}
-          onDismiss={() => setAppUpdateStatus(null)}
-        />
-      )}
-      {appUpdateStatus && appUpdateStatus.type === 'downloaded' && (
-        <AppUpdateToast
-          version={appUpdateStatus.version || ''}
-          bottomOffset={updateInfo ? 100 : 16}
-          downloaded
           onInstall={() => window.api.appUpdate.install()}
-          onDismiss={() => setAppUpdateStatus(null)}
+          onDismiss={() => setAppUpdateDismissed(true)}
         />
       )}
     </div>
@@ -1113,31 +1112,44 @@ const kbdStyle: React.CSSProperties = {
   fontFamily: 'inherit', fontSize: 10, lineHeight: '16px',
 }
 
-function AppUpdateToast({ version, downloaded, bottomOffset, onDownload, onInstall, onDismiss }: {
-  version: string; downloaded?: boolean; bottomOffset?: number
+function AppUpdateToast({ status, bottomOffset, onDownload, onInstall, onDismiss }: {
+  status: { type: string; version?: string; percent?: number; message?: string }
+  bottomOffset?: number
   onDownload?: () => void; onInstall?: () => void; onDismiss: () => void
 }) {
   const { t } = useI18n()
+  const version = status.version || ''
+  const btnStyle: React.CSSProperties = {
+    padding: '4px 12px', borderRadius: 4, border: 'none',
+    background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 12, whiteSpace: 'nowrap',
+  }
   return (
     <div style={{
       position: 'fixed', bottom: bottomOffset ?? 16, right: 16, background: 'var(--bg-secondary)',
       border: '1px solid var(--border)', borderRadius: 8, padding: '12px 16px',
-      display: 'flex', alignItems: 'center', gap: 12, fontSize: 13, color: 'var(--text-primary)',
-      boxShadow: '0 4px 12px rgba(0,0,0,0.3)', zIndex: 1000
+      display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13, color: 'var(--text-primary)',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.3)', zIndex: 1000, minWidth: 260, maxWidth: 340,
     }}>
-      <span>{downloaded ? t('appUpdate.ready', { version }) : t('appUpdate.available', { version })}</span>
-      {downloaded ? (
-        <button onClick={onInstall} style={{
-          padding: '4px 12px', borderRadius: 4, border: 'none',
-          background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 12
-        }}>{t('appUpdate.restartUpdate')}</button>
-      ) : (
-        <button onClick={onDownload} style={{
-          padding: '4px 12px', borderRadius: 4, border: 'none',
-          background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 12
-        }}>{t('appUpdate.download')}</button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <span style={{ flex: 1 }}>
+          {status.type === 'available' && t('appUpdate.available', { version })}
+          {status.type === 'downloading' && t('appUpdate.downloading', { percent: String(Math.round(status.percent ?? 0)) })}
+          {status.type === 'downloaded' && t('appUpdate.ready', { version })}
+          {status.type === 'error' && t('appUpdate.error', { message: status.message || 'Unknown' })}
+        </span>
+        {status.type === 'available' && <button onClick={onDownload} style={btnStyle}>{t('appUpdate.download')}</button>}
+        {status.type === 'downloaded' && <button onClick={onInstall} style={btnStyle}>{t('appUpdate.restartUpdate')}</button>}
+        {status.type === 'error' && <button onClick={onDownload} style={btnStyle}>{t('appUpdate.retry')}</button>}
+        <span onClick={onDismiss} style={{ cursor: 'pointer', opacity: 0.5, fontSize: 16, lineHeight: 1 }}>×</span>
+      </div>
+      {status.type === 'downloading' && (
+        <div style={{ height: 3, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+          <div style={{
+            height: '100%', borderRadius: 2, background: 'var(--accent)',
+            width: `${Math.min(status.percent ?? 0, 100)}%`, transition: 'width 0.3s ease',
+          }} />
+        </div>
       )}
-      <span onClick={onDismiss} style={{ cursor: 'pointer', opacity: 0.5, fontSize: 16 }}>×</span>
     </div>
   )
 }

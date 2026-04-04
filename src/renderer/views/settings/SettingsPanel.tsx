@@ -316,11 +316,29 @@ function AboutSection() {
   const [appVersion, setAppVersion] = useState('')
   const [cliVersion, setCliVersion] = useState<string | null>(null)
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle')
+  const [checkStatus, setCheckStatus] = useState<'idle' | 'checking' | 'up-to-date'>('idle')
 
   useEffect(() => {
     window.api.app.getVersion().then(setAppVersion)
     window.api.cli.getInfo().then(info => setCliVersion(info.version))
   }, [])
+
+  const handleCheckUpdate = () => {
+    setCheckStatus('checking')
+    window.api.appUpdate.check()
+    // Listen for result — if not-available, show "up to date" briefly
+    const unsub = window.api.appUpdate.onStatus((status) => {
+      if (status.type === 'not-available') {
+        setCheckStatus('up-to-date')
+        setTimeout(() => setCheckStatus('idle'), 3000)
+      } else if (status.type === 'available' || status.type === 'error') {
+        setCheckStatus('idle')
+      }
+      unsub()
+    })
+    // Timeout fallback
+    setTimeout(() => { setCheckStatus('idle'); unsub() }, 15000)
+  }
 
   const handleUploadLogs = async () => {
     setUploadStatus('uploading')
@@ -345,6 +363,19 @@ function AboutSection() {
             <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Claude Code CLI</span>
             <span style={{ fontSize: 13, color: 'var(--text-primary)', fontFamily: 'var(--font-mono, monospace)' }}>{cliVersion ? `v${cliVersion}` : '—'}</span>
           </div>
+          <button
+            onClick={handleCheckUpdate}
+            disabled={checkStatus === 'checking'}
+            style={{
+              padding: '6px 14px', background: 'var(--bg-tertiary)', color: 'var(--text-primary)',
+              border: '1px solid var(--border)', borderRadius: 6, fontSize: 12,
+              cursor: checkStatus === 'checking' ? 'wait' : 'pointer', width: '100%',
+            }}
+          >
+            {checkStatus === 'checking' ? t('appUpdate.checking') :
+             checkStatus === 'up-to-date' ? `✓ ${t('appUpdate.upToDate')}` :
+             t('appUpdate.checkForUpdates')}
+          </button>
         </div>
       </SettingsGroup>
       <SettingsGroup title={t('settings.diagnostics')}>

@@ -191,4 +191,10 @@ export const zh: Record<TranslationKey, string> = {
   'appUpdate.available': '应用更新 v{version} 可用',
   'appUpdate.restartUpdate': '重启并更新',
   'appUpdate.download': '下载',
+  'appUpdate.downloading': '下载中 {percent}%',
+  'appUpdate.error': '更新失败：{message}',
+  'appUpdate.retry': '重试',
+  'appUpdate.checkForUpdates': '检查更新',
+  'appUpdate.checking': '检查中...',
+  'appUpdate.upToDate': '已是最新版',
 }

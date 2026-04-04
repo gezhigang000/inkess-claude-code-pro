@@ -189,6 +189,12 @@ export const en = {
   'appUpdate.available': 'App update v{version} available',
   'appUpdate.restartUpdate': 'Restart & Update',
   'appUpdate.download': 'Download',
+  'appUpdate.downloading': 'Downloading {percent}%',
+  'appUpdate.error': 'Update failed: {message}',
+  'appUpdate.retry': 'Retry',
+  'appUpdate.checkForUpdates': 'Check for Updates',
+  'appUpdate.checking': 'Checking...',
+  'appUpdate.upToDate': 'Up to date',
 }
 
 export type TranslationKey = keyof typeof en
