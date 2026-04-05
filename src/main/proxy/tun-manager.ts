@@ -8,10 +8,15 @@ import {
   chmodSync,
   readFileSync,
 } from 'fs'
-import { execSync, spawn, type ChildProcess } from 'child_process'
+import { execSync, execFile, execFileSync, spawn, type ChildProcess } from 'child_process'
 import * as os from 'os'
+import * as dns from 'dns'
+import { promisify } from 'util'
 import log from '../logger'
 import { fetchWithTimeout } from '../utils/fetch'
+
+const dnsResolve4 = promisify(dns.resolve4)
+const execFileAsync = promisify(execFile)
 
 const TUN_VERSION = '2.14.4'
 const TUN_MIRROR_BASE = `https://inkess-install-file.oss-cn-beijing.aliyuncs.com/tun-mirror/${TUN_VERSION}`
@@ -44,6 +49,7 @@ export class TunManager {
   private _internetReachable: boolean | null = null
   private _latencyMs: number | null = null
   private _stopPromise: Promise<void> | null = null
+  private _startPromise: Promise<void> | null = null
 
   constructor() {
     this.tunDir = join(app.getPath('userData'), 'tun')
@@ -106,7 +112,7 @@ export class TunManager {
    * Generate YAML config for hev-socks5-tunnel.
    * proxyHost/proxyPort: the upstream SOCKS5 proxy to tunnel through.
    */
-  private generateConfig(socksHost: string, socksPort: number): string {
+  private generateConfig(socksHost: string, socksPort: number, username?: string, password?: string): string {
     const tunName = os.platform() === 'win32' ? TUN_NAME_WIN : TUN_NAME_MAC
     const lines = [
       'tunnel:',
@@ -118,6 +124,12 @@ export class TunManager {
       'socks5:',
       `  port: ${socksPort}`,
       `  address: ${socksHost}`,
+    ]
+    // YAML-escape credentials (single-quote, double internal quotes)
+    const yamlStr = (s: string): string => `'${s.replace(/'/g, "''")}'`
+    if (username) lines.push(`  username: ${yamlStr(username)}`)
+    if (password) lines.push(`  password: ${yamlStr(password)}`)
+    lines.push(
       '  udp: udp',
       '',
       'misc:',
@@ -128,7 +140,7 @@ export class TunManager {
       'dns:',
       `  address: ${FAKE_DNS_IP}`,
       `  ipv4: ${CGNAT_RANGE}`,
-    ]
+    )
     return lines.join('\n') + '\n'
   }
 
@@ -136,9 +148,10 @@ export class TunManager {
 
   /**
    * Generate macOS post-up.sh: set routes + DNS via scutil.
-   * proxyHostIp: resolved IP of the SOCKS5 proxy server (to bypass TUN).
+   * proxyIps: resolved IPs of the SOCKS5 proxy server (to bypass TUN).
    */
-  private generatePostUpMac(proxyHostIp: string): string {
+  private generatePostUpMac(proxyIps: string[]): string {
+    const bypassRoutes = proxyIps.map(ip => `route add -host ${ip} "\\$GW"`).join('\n')
     // Get default gateway at script runtime
     return `#!/bin/bash
 set -e
@@ -150,8 +163,8 @@ if [ -z "$GW" ]; then
   exit 1
 fi
 
-# Route proxy host via original gateway (bypass TUN)
-route add -host ${proxyHostIp} "\$GW"
+# Route proxy host(s) via original gateway (bypass TUN)
+${bypassRoutes}
 
 # Route all traffic via TUN (split route, don't clobber default)
 route add -net 0.0.0.0/1 ${TUN_IP}
@@ -172,12 +185,13 @@ echo "post-up: routes and DNS configured"
   /**
    * Generate macOS pre-down.sh: remove routes + DNS.
    */
-  private generatePreDownMac(proxyHostIp: string): string {
+  private generatePreDownMac(proxyIps: string[]): string {
+    const removeRoutes = proxyIps.map(ip => `route delete -host ${ip} 2>/dev/null || true`).join('\n')
     return `#!/bin/bash
 set -e
 
 # Remove routes (ignore errors if already gone)
-route delete -host ${proxyHostIp} 2>/dev/null || true
+${removeRoutes}
 route delete -net 0.0.0.0/1 2>/dev/null || true
 route delete -net 128.0.0.0/1 2>/dev/null || true
 
@@ -191,9 +205,13 @@ echo "pre-down: routes and DNS cleaned up"
   }
 
   /**
-   * Generate Windows post-up.ps1: set routes + DNS.
+   * Generate Windows post-up.ps1: set routes + DNS on ALL active interfaces.
    */
-  private generatePostUpWin(proxyHostIp: string): string {
+  private generatePostUpWin(proxyIps: string[]): string {
+    const bypassRoutes = proxyIps.map(ip =>
+      `New-NetRoute -DestinationPrefix "${ip}/32" -NextHop $gw -InterfaceIndex $ifIndex -ErrorAction SilentlyContinue`
+    ).join('\n')
+    const dnsBackupPath = join(this.tunDir, 'dns-backup.json').replace(/\\/g, '\\\\')
     return `# post-up.ps1 - configure routes and DNS for TUN
 $ErrorActionPreference = "Stop"
 
@@ -207,8 +225,8 @@ if (-not $gw) {
     exit 1
 }
 
-# Route proxy host via original gateway
-New-NetRoute -DestinationPrefix "${proxyHostIp}/32" -NextHop $gw -InterfaceIndex $ifIndex -ErrorAction SilentlyContinue
+# Route proxy host(s) via original gateway
+${bypassRoutes}
 
 # Get TUN interface index
 $tunIf = Get-NetAdapter -Name "${TUN_NAME_WIN}" -ErrorAction Stop
@@ -218,71 +236,106 @@ $tunIndex = $tunIf.InterfaceIndex
 New-NetRoute -DestinationPrefix "0.0.0.0/1" -NextHop ${TUN_IP} -InterfaceIndex $tunIndex -ErrorAction SilentlyContinue
 New-NetRoute -DestinationPrefix "128.0.0.0/1" -NextHop ${TUN_IP} -InterfaceIndex $tunIndex -ErrorAction SilentlyContinue
 
-# Set DNS on TUN interface
-Set-DnsClientServerAddress -InterfaceIndex $tunIndex -ServerAddresses ("${FAKE_DNS_IP}")
+# Backup DNS config of all active adapters, then set DNS system-wide
+$activeAdapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
+$dnsBackup = @()
+foreach ($adapter in $activeAdapters) {
+    $dnsConfig = Get-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+    $dnsBackup += @{
+        InterfaceIndex = $adapter.InterfaceIndex
+        InterfaceName  = $adapter.Name
+        ServerAddresses = @($dnsConfig.ServerAddresses)
+    }
+    Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ServerAddresses ("${FAKE_DNS_IP}")
+}
+$dnsBackup | ConvertTo-Json -Depth 3 | Set-Content -Path "${dnsBackupPath}" -Encoding UTF8
 
-Write-Host "post-up: routes and DNS configured"
+# Flush DNS cache
+Clear-DnsClientCache
+
+Write-Host "post-up: routes and DNS configured ($($activeAdapters.Count) adapters)"
 `
   }
 
   /**
-   * Generate Windows pre-down.ps1: remove routes + DNS.
+   * Generate Windows pre-down.ps1: remove routes + restore DNS from backup.
    */
-  private generatePreDownWin(proxyHostIp: string): string {
+  private generatePreDownWin(proxyIps: string[]): string {
+    const removeRoutes = proxyIps.map(ip =>
+      `Remove-NetRoute -DestinationPrefix "${ip}/32" -Confirm:$false`
+    ).join('\n')
+    const dnsBackupPath = join(this.tunDir, 'dns-backup.json').replace(/\\/g, '\\\\')
     return `# pre-down.ps1 - clean up routes and DNS
 $ErrorActionPreference = "SilentlyContinue"
 
-Remove-NetRoute -DestinationPrefix "${proxyHostIp}/32" -Confirm:$false
+# Remove bypass routes
+${removeRoutes}
 Remove-NetRoute -DestinationPrefix "0.0.0.0/1" -Confirm:$false
 Remove-NetRoute -DestinationPrefix "128.0.0.0/1" -Confirm:$false
 
-# Reset DNS on TUN interface
-$tunIf = Get-NetAdapter -Name "${TUN_NAME_WIN}"
-if ($tunIf) {
-    Set-DnsClientServerAddress -InterfaceIndex $tunIf.InterfaceIndex -ResetServerAddresses
+# Restore DNS from backup if available
+$backupPath = "${dnsBackupPath}"
+if (Test-Path $backupPath) {
+    $dnsBackup = Get-Content -Path $backupPath -Raw | ConvertFrom-Json
+    foreach ($entry in $dnsBackup) {
+        if ($entry.ServerAddresses -and $entry.ServerAddresses.Count -gt 0) {
+            Set-DnsClientServerAddress -InterfaceIndex $entry.InterfaceIndex -ServerAddresses $entry.ServerAddresses
+        } else {
+            Set-DnsClientServerAddress -InterfaceIndex $entry.InterfaceIndex -ResetServerAddresses
+        }
+    }
+    Remove-Item -Path $backupPath -Force
+} else {
+    # Fallback: reset DNS on all active adapters
+    $activeAdapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
+    foreach ($adapter in $activeAdapters) {
+        Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ResetServerAddresses
+    }
 }
+
+# Flush DNS cache
+Clear-DnsClientCache
 
 Write-Host "pre-down: routes and DNS cleaned up"
 `
   }
 
   /**
-   * Resolve a hostname to an IP address.
+   * Resolve a hostname to all IPv4 addresses.
    * Falls back to the hostname itself if resolution fails (might already be an IP).
    */
-  private resolveHostToIp(host: string): string {
+  private async resolveAllIps(host: string): Promise<string[]> {
     // If already an IP, return as-is
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return host
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return [host]
+    // Validate hostname format to prevent injection
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,253}[a-zA-Z0-9]$/.test(host)) {
+      log.warn(`[tun] invalid hostname format: ${host}`)
+      return [host]
+    }
     try {
-      if (os.platform() === 'win32') {
-        const out = execSync(
-          `powershell -NoProfile -Command "[System.Net.Dns]::GetHostAddresses('${host.replace(/'/g, "''")}')[0].IPAddressToString"`,
-          { timeout: 5000, encoding: 'utf-8' }
-        ).trim()
-        if (out && /^\d{1,3}(\.\d{1,3}){3}$/.test(out)) return out
-      } else {
-        const out = execSync(`dig +short "${host}" A | head -1`, {
-          timeout: 5000,
-          encoding: 'utf-8',
-        }).trim()
-        if (out && /^\d{1,3}(\.\d{1,3}){3}$/.test(out)) return out
+      const addresses = await dnsResolve4(host)
+      if (addresses.length > 0) {
+        log.info(`[tun] resolved ${host} → ${addresses.join(', ')}`)
+        return addresses
       }
     } catch (err) {
       log.warn(`[tun] DNS resolve failed for ${host}: ${(err as Error).message}`)
     }
-    return host
+    return [host]
   }
 
   /**
    * Parse a SOCKS5 proxy URL into host and port.
    * Supports: socks5://host:port, socks5://user:pass@host:port
    */
-  private parseSocksUrl(proxyUrl: string): { host: string; port: number } {
+  private parseSocksUrl(proxyUrl: string): { host: string; port: number; username?: string; password?: string } {
     try {
       const url = new URL(proxyUrl)
       return {
         host: url.hostname,
         port: parseInt(url.port) || 1080,
+        username: url.username ? decodeURIComponent(url.username) : undefined,
+        password: url.password ? decodeURIComponent(url.password) : undefined,
       }
     } catch {
       // Fallback: try to parse as host:port
@@ -297,26 +350,27 @@ Write-Host "pre-down: routes and DNS cleaned up"
   /**
    * Write config + route scripts to disk.
    */
-  private writeConfigAndScripts(proxyUrl: string): void {
-    const { host, port } = this.parseSocksUrl(proxyUrl)
-    const proxyHostIp = this.resolveHostToIp(host)
+  private async writeConfigAndScripts(proxyUrl: string): Promise<void> {
+    const { host, port, username, password } = this.parseSocksUrl(proxyUrl)
+    const proxyIps = await this.resolveAllIps(host)
 
-    // Write YAML config
-    const config = this.generateConfig(host, port)
-    writeFileSync(this.configPath, config)
+    // Write YAML config — use first resolved IP to prevent DNS circular dependency
+    // (TUN hijacks DNS to fake DNS, so hostname would fail to resolve)
+    const config = this.generateConfig(proxyIps[0], port, username, password)
+    writeFileSync(this.configPath, config, { mode: 0o600 })
     log.info(`[tun] config written to ${this.configPath}`)
 
     // Write route scripts
     if (os.platform() === 'win32') {
-      writeFileSync(this.postUpPath, this.generatePostUpWin(proxyHostIp))
-      writeFileSync(this.preDownPath, this.generatePreDownWin(proxyHostIp))
+      writeFileSync(this.postUpPath, this.generatePostUpWin(proxyIps))
+      writeFileSync(this.preDownPath, this.generatePreDownWin(proxyIps))
     } else {
-      writeFileSync(this.postUpPath, this.generatePostUpMac(proxyHostIp))
-      writeFileSync(this.preDownPath, this.generatePreDownMac(proxyHostIp))
+      writeFileSync(this.postUpPath, this.generatePostUpMac(proxyIps))
+      writeFileSync(this.preDownPath, this.generatePreDownMac(proxyIps))
       chmodSync(this.postUpPath, 0o755)
       chmodSync(this.preDownPath, 0o755)
     }
-    log.info(`[tun] route scripts written`)
+    log.info(`[tun] route scripts written (${proxyIps.length} bypass IPs)`)
   }
 
   // --- Process lifecycle helpers ---
@@ -415,8 +469,8 @@ Write-Host "pre-down: routes and DNS cleaned up"
           log.info(
             `[tun] startup cleanup: pid=${pid} needs sudo to kill, will clean up on next startTun`
           )
-          this._mode = 'tun'
-          this._status = 'running'
+          // Don't set mode=tun/status=running — routes/DNS may be stale.
+          // startTun() will call stop() which uses sudo to properly kill and re-setup.
           return
         }
       }
@@ -503,11 +557,12 @@ Write-Host "pre-down: routes and DNS cleaned up"
           { timeout: 10000, stdio: 'pipe' }
         )
       } else if (sudo) {
+        // Use execFileSync to avoid shell parsing issues with spaces in path
         const safeScript = this.preDownPath.replace(/'/g, "'\\''")
-        execSync(
-          `osascript -e 'do shell script "bash \\'${safeScript}\\'" with administrator privileges'`,
-          { timeout: 15000, stdio: 'pipe' }
-        )
+        execFileSync('osascript', [
+          '-e',
+          `do shell script "bash '${safeScript}'" with administrator privileges`,
+        ], { timeout: 15000, stdio: 'pipe' })
       } else {
         execSync(`bash "${this.preDownPath}"`, { timeout: 10000, stdio: 'pipe' })
       }
@@ -543,16 +598,30 @@ Write-Host "pre-down: routes and DNS cleaned up"
    * Blocks until confirmed running or fails.
    */
   async startTun(proxyUrl: string): Promise<void> {
+    // Mutex: prevent concurrent startTun calls
+    if (this._startPromise) {
+      await this._startPromise
+      return
+    }
+    this._startPromise = this._startTunImpl(proxyUrl)
+    try {
+      await this._startPromise
+    } finally {
+      this._startPromise = null
+    }
+  }
+
+  private async _startTunImpl(proxyUrl: string): Promise<void> {
     this.reconcileStatus()
-    if (this._status === 'starting' || this._status === 'running') {
-      log.info(`[tun] startTun skipped -- status=${this._status}`)
+    if (this._status === 'running') {
+      log.info(`[tun] startTun skipped -- already running`)
       return
     }
 
     await this.ensureInstalled()
     await this.stop()
 
-    this.writeConfigAndScripts(proxyUrl)
+    await this.writeConfigAndScripts(proxyUrl)
 
     this._mode = 'tun'
     this._status = 'starting'
@@ -617,10 +686,13 @@ Write-Host "pre-down: routes and DNS cleaned up"
         const res = await fetchWithTimeout('https://www.google.com/generate_204', {}, 10000)
         if (res.status !== 204 && res.status !== 200) throw new Error(`HTTP ${res.status}`)
       } else {
-        execSync('curl -sI --connect-timeout 8 https://www.google.com/generate_204', {
-          timeout: 10000,
-          stdio: 'pipe',
-        })
+        // Use async execFile to avoid blocking the main process.
+        // curl as a separate process uses system routes (0.0.0.0/1 + 128.0.0.0/1 → TUN),
+        // unlike Electron's built-in fetch which may bypass TUN due to DNS caching.
+        await execFileAsync('curl', [
+          '-sI', '--connect-timeout', '8',
+          'https://www.google.com/generate_204',
+        ], { timeout: 10000 })
       }
       const latency = Date.now() - start
       log.info(`[testConnectivity] ok latency=${latency}ms`)
@@ -767,29 +839,41 @@ Write-Host "pre-down: routes and DNS cleaned up"
    */
   private startWithSudo(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const safeBin = this.binaryPath.replace(/'/g, "'\\''")
-      const safeCfg = this.configPath.replace(/'/g, "'\\''")
-      const safePostUp = this.postUpPath.replace(/'/g, "'\\''")
-      const safePreDown = this.preDownPath.replace(/'/g, "'\\''")
-      const logFile = join(this.tunDir, 'tun.log').replace(/'/g, "'\\''")
+      const logFile = join(this.tunDir, 'tun.log')
       const parentPid = process.pid
+      const runScript = join(this.tunDir, 'run-tun.sh')
 
-      // Shell command:
-      // 1. Start hev-socks5-tunnel in background (it writes its own PID file)
-      // 2. Wait briefly for PID file to appear
-      // 3. Run post-up script (routes + DNS)
-      // 4. Watchdog loop: monitor parent (Electron) and tunnel process
-      // 5. On exit: run pre-down, kill tunnel
-      const shellCmd = [
-        `'${safeBin}' '${safeCfg}' > '${logFile}' 2>&1 &`,
-        'TUN_PID=$!',
-        'sleep 1', // wait for PID file
-        `bash '${safePostUp}' >> '${logFile}' 2>&1 || true`,
-        `while kill -0 ${parentPid} 2>/dev/null && kill -0 $TUN_PID 2>/dev/null; do sleep 2; done`,
-        `bash '${safePreDown}' >> '${logFile}' 2>&1 || true`,
-        'kill -TERM $TUN_PID 2>/dev/null',
-        'kill -9 $TUN_PID 2>/dev/null',
-      ].join('; ')
+      // Write shell command to a temp script to avoid injection risks
+      // in osascript's double-quote context (paths could contain $, `, \, ")
+      const esc = (s: string): string => s.replace(/'/g, "'\\''")
+      const script = [
+        '#!/bin/bash',
+        'set -e',
+        '',
+        '# Start hev-socks5-tunnel (daemonizes, writes PID file)',
+        `'${esc(this.binaryPath)}' '${esc(this.configPath)}'`,
+        'sleep 1',
+        '',
+        '# Read daemon PID',
+        `TUN_PID=$(cat '${esc(this.pidFilePath)}' 2>/dev/null)`,
+        'if [ -z "$TUN_PID" ]; then',
+        `  echo "ERROR: no PID file" >> '${esc(logFile)}'`,
+        '  exit 1',
+        'fi',
+        '',
+        '# Configure routes and DNS',
+        `bash '${esc(this.postUpPath)}' >> '${esc(logFile)}' 2>&1 || true`,
+        '',
+        '# Watchdog: monitor parent (Electron) and tunnel daemon',
+        `while kill -0 ${parentPid} 2>/dev/null && kill -0 $TUN_PID 2>/dev/null; do`,
+        '  sleep 2',
+        'done',
+        '',
+        '# Cleanup: remove routes/DNS and kill tunnel',
+        `bash '${esc(this.preDownPath)}' >> '${esc(logFile)}' 2>&1 || true`,
+        'kill -TERM $TUN_PID 2>/dev/null; sleep 1; kill -9 $TUN_PID 2>/dev/null',
+      ].join('\n') + '\n'
+      writeFileSync(runScript, script, { mode: 0o755 })
 
       let settled = false
       let pidPollInterval: ReturnType<typeof setInterval> | null = null
@@ -823,11 +907,14 @@ Write-Host "pre-down: routes and DNS cleaned up"
       }
 
       try {
+        // Run the script via osascript with admin privileges.
+        // The script path is under {userData}/tun/ (safe, no special chars).
+        const safeScript = esc(runScript)
         this.process = spawn(
           'osascript',
           [
             '-e',
-            `do shell script "${shellCmd.replace(/"/g, '\\"')}" with administrator privileges`,
+            `do shell script "bash '${safeScript}'" with administrator privileges`,
           ],
           { stdio: ['ignore', 'pipe', 'pipe'] }
         )
@@ -888,10 +975,13 @@ Write-Host "pre-down: routes and DNS cleaned up"
       const safePreDown = this.preDownPath.replace(/'/g, "''")
       const parentPid = process.pid
 
-      // PowerShell: start elevated, run post-up, watchdog, pre-down on exit
+      const safePid = this.pidFilePath.replace(/'/g, "''")
+
+      // PowerShell: start elevated, wait for PID file, run post-up, watchdog, pre-down on exit
       const wrapper = [
         `$p = Start-Process -FilePath '${safeBin}' -ArgumentList '${safeCfg}' -Verb RunAs -WindowStyle Hidden -PassThru`,
-        `Start-Sleep -Seconds 1`,
+        // Wait for PID file (up to 10s) instead of fixed 1s sleep
+        `for ($i = 0; $i -lt 20; $i++) { if (Test-Path '${safePid}') { break }; Start-Sleep -Milliseconds 500 }`,
         `& '${safePostUp}'`,
         `while ((Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) -and (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) { Start-Sleep -Seconds 2 }`,
         `& '${safePreDown}'`,
