@@ -79,16 +79,18 @@ export function App() {
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // TUN disconnect detection — require 2 consecutive failures (10s hysteresis) to avoid flap
+  // TUN health monitoring:
+  // 1. Process check: 5s poll, 2 consecutive failures → kill PTYs + disconnect
+  // 2. Exit IP check: 5min poll, verify exit IP matches expected (DNS not polluted)
   useEffect(() => {
     if (!tunOk || !subscriptionLoggedIn) return
     let failCount = 0
-    const interval = setInterval(async () => {
+    // Process liveness check (lightweight, every 5s)
+    const processInterval = setInterval(async () => {
       const info = await window.api.tun.getInfo()
       if (!info.tunRunning) {
         failCount++
         if (failCount >= 2) {
-          // Kill all PTY sessions to prevent network leaks (same as subscription expiry)
           window.api.pty.killAll()
           setTunOk(false)
           window.api.browser.closeAll()
@@ -97,8 +99,24 @@ export function App() {
         failCount = 0
       }
     }, 5000)
-    return () => clearInterval(interval)
-  }, [tunOk, subscriptionLoggedIn])
+    // Exit IP verification (every 5 minutes)
+    const exitIp = subscriptionExitIp
+    const ipCheckInterval = exitIp ? setInterval(async () => {
+      try {
+        const result = await window.api.tun.testConnectivity(exitIp)
+        if (!result.success) {
+          console.warn(`[App] exit IP check failed: ${result.error}`)
+          window.api.pty.killAll()
+          setTunOk(false)
+          window.api.browser.closeAll()
+        }
+      } catch { /* ignore network errors during check */ }
+    }, 5 * 60 * 1000) : null
+    return () => {
+      clearInterval(processInterval)
+      if (ipCheckInterval) clearInterval(ipCheckInterval)
+    }
+  }, [tunOk, subscriptionLoggedIn, subscriptionExitIp])
 
   // Startup: check subscription login, then CLI
   useEffect(() => {
