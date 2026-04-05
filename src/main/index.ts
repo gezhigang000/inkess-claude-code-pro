@@ -238,7 +238,9 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => 
 
   const loginSession = electronSession.fromPartition('persist:claude')
 
-  if (proxySettings.enabled && proxySettings.url) {
+  // In TUN mode, don't set session proxy (traffic goes through TUN)
+  const tunInfo = singBoxManager.getInfo()
+  if (!tunInfo.tunRunning && proxySettings.enabled && proxySettings.url) {
     await loginSession.setProxy({ proxyRules: proxySettings.url })
   }
 
@@ -762,13 +764,19 @@ async function openBuiltinBrowser(url: string): Promise<{ success?: boolean; err
     ? electronSession.fromPartition('persist:claude')
     : electronSession.fromPartition(`browser-${Date.now()}-${Math.random().toString(36).slice(2)}`, { cache: false })
 
-  // Apply proxy to this isolated session
-  if (proxySettings.enabled && proxySettings.url) {
+  // In TUN mode, don't set session proxy — traffic naturally goes through TUN.
+  // Setting session.setProxy() would cause double-proxying (browser→SOCKS5→TUN→SOCKS5 again)
+  // and Electron's proxy DNS resolution may bypass sing-box's DNS hijack.
+  const sbInfo2 = singBoxManager.getInfo()
+  if (!sbInfo2.tunRunning && proxySettings.enabled && proxySettings.url) {
+    // Fallback: set proxy directly only when TUN is not running
     await browserSession.setProxy({
       proxyRules: proxySettings.url,
     })
     const redacted = proxySettings.url.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')
     log.info(`browser:open proxy set to: ${redacted}`)
+  } else {
+    log.info(`browser:open using TUN (no session proxy)`)
   }
 
   const win = new BrowserWindow({
