@@ -67,6 +67,15 @@ export function SetupScreen() {
             : t('setup.firstTime')}
         </p>
 
+        {/* Spinner for checking phase (no steps yet) */}
+        {phase === 'checking' && installSteps.length === 0 && (
+          <div style={{
+            width: 28, height: 28, margin: '0 auto 24px',
+            border: '2px solid var(--border)', borderTopColor: 'var(--accent)',
+            borderRadius: '50%', animation: 'spin 0.8s linear infinite',
+          }} />
+        )}
+
         {/* Steps */}
         {installSteps.length > 0 && (
           <div style={{ textAlign: 'left' }}>
