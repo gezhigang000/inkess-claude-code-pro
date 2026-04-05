@@ -88,6 +88,10 @@ export class TunManager {
       : join(this.tunDir, 'pre-down.sh')
   }
 
+  private get crashedMarkerPath(): string {
+    return join(this.tunDir, 'crashed')
+  }
+
   private get downloadUrl(): string {
     const platform = os.platform()
     const arch = os.arch()
@@ -444,39 +448,75 @@ Write-Host "pre-down: routes and DNS cleaned up"
     }
   }
 
+  /** Check if stale TUN routes remain in the routing table. */
+  private hasStaleRoutes(): boolean {
+    try {
+      if (os.platform() === 'win32') {
+        const out = execSync('route print', { encoding: 'utf-8', timeout: 5000 })
+        return out.includes('198.18.0.1')
+      } else {
+        const out = execSync('netstat -rn', { encoding: 'utf-8', timeout: 5000 })
+        return out.includes('198.18.0.1')
+      }
+    } catch {
+      return false
+    }
+  }
+
   // --- Public API ---
 
   /**
    * Clean up stale processes from previous app crashes.
-   * Uses non-interactive kill (no sudo dialog).
+   * Handles three scenarios:
+   * 1. Crash marker exists → watchdog already cleaned up
+   * 2. PID alive + needs sudo → call stop() with sudo elevation
+   * 3. Stale routes remain → runPreDown with sudo
    */
   async cleanupStaleProcesses(): Promise<void> {
-    const pid = this.readPidFile()
-    if (pid > 0) {
-      if (this.isProcessAlive(pid)) {
-        log.info(`[tun] startup cleanup: found stale process pid=${pid}`)
-        if (os.platform() === 'win32') {
-          try {
-            execSync(`taskkill /F /PID ${pid}`, { timeout: 3000, stdio: 'pipe' })
-          } catch {
-            /* ignore */
-          }
-        } else {
-          this.killProcess(pid, 'TERM', false)
-        }
-        const dead = await this.waitForProcessDeath(pid, 2000)
-        if (!dead) {
-          log.info(
-            `[tun] startup cleanup: pid=${pid} needs sudo to kill, will clean up on next startTun`
-          )
-          // Don't set mode=tun/status=running — routes/DNS may be stale.
-          // startTun() will call stop() which uses sudo to properly kill and re-setup.
-          return
-        }
-      }
-      // Run pre-down to clean up routes/DNS if scripts exist
-      this.runPreDown(false)
+    // 1. Check crash marker — watchdog already cleaned up
+    if (existsSync(this.crashedMarkerPath)) {
+      try { unlinkSync(this.crashedMarkerPath) } catch { /* ignore */ }
       this.removePidFile()
+      log.info('[tun] crash recovery: watchdog already cleaned up, marker removed')
+      this._mode = 'off'
+      this._status = 'stopped'
+      this._lastError = null
+      return
+    }
+
+    // 2. Check PID file — stale process may still be running
+    const pid = this.readPidFile()
+    if (pid > 0 && this.isProcessAlive(pid)) {
+      log.info(`[tun] startup cleanup: found stale process pid=${pid}`)
+      // Try non-interactive kill first
+      if (os.platform() === 'win32') {
+        try { execSync(`taskkill /F /PID ${pid}`, { timeout: 3000, stdio: 'pipe' }) } catch { /* ignore */ }
+      } else {
+        this.killProcess(pid, 'TERM', false)
+      }
+      const dead = await this.waitForProcessDeath(pid, 2000)
+      if (!dead) {
+        // Needs sudo — use stop() which handles sudo elevation
+        log.info(`[tun] startup cleanup: pid=${pid} needs sudo, calling stop()`)
+        try {
+          await this.stop()
+        } catch (err) {
+          log.warn(`[tun] startup cleanup: stop() failed: ${(err as Error).message}`)
+        }
+        return
+      }
+      // Process killed without sudo — still need to clean up routes/DNS with sudo
+      this.runPreDown(true)
+      this.removePidFile()
+    } else if (pid > 0) {
+      // PID file exists but process is dead — clean up
+      this.removePidFile()
+    }
+
+    // 3. Check for stale routes (may remain if watchdog failed or was killed)
+    if (this.hasStaleRoutes()) {
+      log.warn('[tun] startup cleanup: found stale routes, cleaning up with sudo')
+      this.runPreDown(true)
     }
 
     this._mode = 'off'
@@ -873,6 +913,9 @@ Write-Host "pre-down: routes and DNS cleaned up"
         '# Cleanup: remove routes/DNS and kill tunnel',
         `bash '${esc(this.preDownPath)}' >> '${esc(logFile)}' 2>&1 || true`,
         'kill -TERM $TUN_PID 2>/dev/null; sleep 1; kill -9 $TUN_PID 2>/dev/null',
+        '',
+        '# Write crash marker so next app launch knows watchdog cleaned up',
+        `echo "$(date +%s)" > '${esc(join(this.tunDir, 'crashed'))}'`,
       ].join('\n') + '\n'
       writeFileSync(runScript, script, { mode: 0o755 })
 
@@ -987,6 +1030,7 @@ Write-Host "pre-down: routes and DNS cleaned up"
         `while ((Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) -and (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) { Start-Sleep -Seconds 2 }`,
         `& '${safePreDown}'`,
         `Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue`,
+        `Set-Content -Path '${join(this.tunDir, 'crashed').replace(/'/g, "''")}' -Value (Get-Date -UFormat '%s')`,
       ].join('; ')
 
       let settled = false
