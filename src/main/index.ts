@@ -205,8 +205,13 @@ ipcMain.handle('subscription:getSession', () => {
   }
 })
 
-ipcMain.handle('subscription:logout', () => {
+ipcMain.handle('subscription:logout', async () => {
   subscriptionManager.logout()
+  // Clear Claude browser session cookies on logout
+  const { session: electronSession } = require('electron') as typeof import('electron')
+  try {
+    await electronSession.fromPartition('persist:claude').clearStorageData()
+  } catch { /* ignore */ }
 })
 
 // IPC: Auto-login Claude via browser
@@ -220,8 +225,7 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => 
   const regionEnv = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}
   const lang = regionEnv.LANG?.split('.')[0]?.replace('_', '-') || 'en-US'
 
-  const partition = `claude-login-${Date.now()}`
-  const loginSession = electronSession.fromPartition(partition, { cache: false })
+  const loginSession = electronSession.fromPartition('persist:claude')
 
   if (proxySettings.enabled && proxySettings.url) {
     await loginSession.setProxy({ proxyRules: proxySettings.url })
@@ -694,10 +698,12 @@ ipcMain.handle('browser:open', async (_event, url: string) => {
   const regionEnv = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}
   const lang = regionEnv.LANG?.split('.')[0]?.replace('_', '-') || 'en-US'
 
-  // Each browser window gets an isolated session to avoid proxy leaking to main app
+  // Claude URLs share persistent session (login state); other URLs get isolated sessions
   const { session: electronSession } = require('electron') as typeof import('electron')
-  const partition = `browser-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  const browserSession = electronSession.fromPartition(partition, { cache: false })
+  const isClaude = /claude\.ai/i.test(url)
+  const browserSession = isClaude
+    ? electronSession.fromPartition('persist:claude')
+    : electronSession.fromPartition(`browser-${Date.now()}-${Math.random().toString(36).slice(2)}`, { cache: false })
 
   // Apply proxy to this isolated session
   if (proxySettings.enabled && proxySettings.url) {
