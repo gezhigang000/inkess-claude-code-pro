@@ -90,7 +90,6 @@ export const zh: Record<TranslationKey, string> = {
   'settings.tunTestOk': '连接正常',
   'settings.tunTestFail': '连接失败 — 已停止 TUN 恢复网络',
   'settings.tunHint': 'TUN 模式创建虚拟网卡，macOS 会弹出管理员密码输入框。启动后系统所有流量都经过代理。',
-  'app.tunRequired': '代理未连接，请前往 设置 → 网络 启动 TUN。',
   'settings.proxyUrl': '代理地址',
   'settings.proxyUrlHint': '支持 http://, https://, socks5://, socks4:// — 可带认证 (user:pass@host:port)',
   'settings.proxySubUrl': '订阅地址',

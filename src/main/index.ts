@@ -264,35 +264,7 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => 
     }
 
     if (url.includes('claude.ai/login') || url.includes('clerk') || url.includes('accounts.anthropic.com')) {
-      win.webContents.executeJavaScript(`
-        (function() {
-          function tryFill() {
-            var emailInput = document.querySelector('input[type="email"], input[name="email"], input[name="identifier"]');
-            var passInput = document.querySelector('input[type="password"]');
-            if (emailInput) {
-              emailInput.value = ${safeEmail};
-              emailInput.dispatchEvent(new Event('input', { bubbles: true }));
-              emailInput.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-            if (passInput) {
-              passInput.value = ${safePass};
-              passInput.dispatchEvent(new Event('input', { bubbles: true }));
-              passInput.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-            // Auto-click submit after short delay
-            if (emailInput || passInput) {
-              setTimeout(function() {
-                var btn = document.querySelector('button[type="submit"]');
-                if (btn) btn.click();
-              }, 800);
-            } else {
-              // Retry — page may still be loading
-              setTimeout(tryFill, 1000);
-            }
-          }
-          setTimeout(tryFill, 500);
-        })()
-      `).catch(() => {})
+      win.webContents.executeJavaScript(claudeAutoFillScript(email, password)).catch(() => {})
     }
   })
 
@@ -604,7 +576,8 @@ ipcMain.handle('stats:clear', () => { statsCollector.clearAll(); return { succes
 // IPC: Claude credentials (in-memory only)
 ipcMain.handle('claude:setCredentials', (_event, args: unknown) => {
   const { email, password } = (args || {}) as Record<string, unknown>
-  if (typeof email === 'string' && typeof password === 'string' && email.length > 0 && password.length > 0) {
+  if (typeof email === 'string' && typeof password === 'string' &&
+      email.length > 0 && email.length <= 300 && password.length > 0 && password.length <= 500) {
     claudeCredentials = { email, password }
   }
 })
@@ -700,6 +673,39 @@ ipcMain.handle('clipboard:getImageSize', async (_event, filepath: string) => {
   }
 })
 
+/** Generate auto-fill script for Claude login pages (max 10 retries) */
+function claudeAutoFillScript(email: string, password: string): string {
+  const safeEmail = JSON.stringify(email)
+  const safePass = JSON.stringify(password)
+  return `(function() {
+    var attempts = 0;
+    function tryFill() {
+      if (++attempts > 10) return;
+      var emailInput = document.querySelector('input[type="email"], input[name="email"], input[name="identifier"]');
+      var passInput = document.querySelector('input[type="password"]');
+      if (emailInput) {
+        emailInput.value = ${safeEmail};
+        emailInput.dispatchEvent(new Event('input', { bubbles: true }));
+        emailInput.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (passInput) {
+        passInput.value = ${safePass};
+        passInput.dispatchEvent(new Event('input', { bubbles: true }));
+        passInput.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (emailInput || passInput) {
+        setTimeout(function() {
+          var btn = document.querySelector('button[type="submit"]');
+          if (btn) btn.click();
+        }, 800);
+      } else {
+        setTimeout(tryFill, 1000);
+      }
+    }
+    setTimeout(tryFill, 500);
+  })()`
+}
+
 // IPC: Built-in browser (uses proxy + region env)
 let browserWindows: BrowserWindow[] = []
 
@@ -780,75 +786,23 @@ ipcMain.handle('browser:open', async (_event, url: string) => {
     if (isClaude && claudeCredentials) {
       const pageUrl = win.webContents.getURL()
       if (pageUrl.includes('login') || pageUrl.includes('clerk') || pageUrl.includes('accounts.anthropic.com')) {
-        const safeEmail = JSON.stringify(claudeCredentials.email)
-        const safePass = JSON.stringify(claudeCredentials.password)
-        win.webContents.executeJavaScript(`
-          (function() {
-            function tryFill() {
-              var emailInput = document.querySelector('input[type="email"], input[name="email"], input[name="identifier"]');
-              var passInput = document.querySelector('input[type="password"]');
-              if (emailInput) {
-                emailInput.value = ${safeEmail};
-                emailInput.dispatchEvent(new Event('input', { bubbles: true }));
-                emailInput.dispatchEvent(new Event('change', { bubbles: true }));
-              }
-              if (passInput) {
-                passInput.value = ${safePass};
-                passInput.dispatchEvent(new Event('input', { bubbles: true }));
-                passInput.dispatchEvent(new Event('change', { bubbles: true }));
-              }
-              if (emailInput || passInput) {
-                setTimeout(function() {
-                  var btn = document.querySelector('button[type="submit"]');
-                  if (btn) btn.click();
-                }, 800);
-              } else {
-                setTimeout(tryFill, 1000);
-              }
-            }
-            setTimeout(tryFill, 500);
-          })()
-        `).catch(() => {})
+        win.webContents.executeJavaScript(claudeAutoFillScript(claudeCredentials.email, claudeCredentials.password)).catch(() => {})
       }
     }
   })
 
   win.loadURL(url)
 
-  // For Claude windows, handle navigation to login pages
+  // For Claude windows, handle navigation to login pages (e.g. redirect from main page to login)
   if (isClaude && claudeCredentials) {
+    let lastFilledUrl = ''
     win.webContents.on('did-navigate', (_navEvent, navUrl) => {
+      if (navUrl === lastFilledUrl) return // prevent double-injection
       if (navUrl.includes('login') || navUrl.includes('clerk') || navUrl.includes('accounts.anthropic.com')) {
-        const safeEmail = JSON.stringify(claudeCredentials!.email)
-        const safePass = JSON.stringify(claudeCredentials!.password)
+        lastFilledUrl = navUrl
+        if (!claudeCredentials) return
         setTimeout(() => {
-          win.webContents.executeJavaScript(`
-            (function() {
-              function tryFill() {
-                var emailInput = document.querySelector('input[type="email"], input[name="email"], input[name="identifier"]');
-                var passInput = document.querySelector('input[type="password"]');
-                if (emailInput) {
-                  emailInput.value = ${safeEmail};
-                  emailInput.dispatchEvent(new Event('input', { bubbles: true }));
-                  emailInput.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-                if (passInput) {
-                  passInput.value = ${safePass};
-                  passInput.dispatchEvent(new Event('input', { bubbles: true }));
-                  passInput.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-                if (emailInput || passInput) {
-                  setTimeout(function() {
-                    var btn = document.querySelector('button[type="submit"]');
-                    if (btn) btn.click();
-                  }, 800);
-                } else {
-                  setTimeout(tryFill, 1000);
-                }
-              }
-              setTimeout(tryFill, 500);
-            })()
-          `).catch(() => {})
+          win.webContents.executeJavaScript(claudeAutoFillScript(claudeCredentials!.email, claudeCredentials!.password)).catch(() => {})
         }, 500)
       }
     })

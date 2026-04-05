@@ -42,6 +42,7 @@ const IDE_SCHEMES: Record<string, string> = {
 export function App() {
   const { tabs, activeTabId, addTab, removeTab, setActiveTab } = useTerminalStore()
   const { phase, setPhase, setCliInfo } = useAppStore()
+  const proxyUrl = useSettingsStore(s => s.proxyUrl)
   const initRef = useRef(false)
   const [showSettings, setShowSettings] = useState(false)
   const [pendingCloseTabId, setPendingCloseTabId] = useState<string | null>(null)
@@ -679,7 +680,7 @@ export function App() {
       {/* TUN Gate — mandatory network overlay */}
       {subscriptionLoggedIn && !tunOk && (
         <TunGate
-          proxyUrl={useSettingsStore.getState().proxyUrl}
+          proxyUrl={proxyUrl}
           onReady={() => {
             setTunOk(true)
             if (phase !== 'ready') checkCliAndProceed()

@@ -88,7 +88,6 @@ export const en = {
   'settings.tunTestOk': 'Connected',
   'settings.tunTestFail': 'Connection failed — TUN stopped to restore network',
   'settings.tunHint': 'TUN mode creates a virtual network adapter. macOS will ask for admin password. All system traffic goes through the proxy.',
-  'app.tunRequired': 'Proxy not connected. Go to Settings → Network to start TUN.',
   'settings.proxyUrl': 'Proxy Address',
   'settings.proxyUrlHint': 'Supports http://, https://, socks5://, socks4:// — with optional auth (user:pass@host:port)',
   'settings.proxySubUrl': 'Subscription URL',
