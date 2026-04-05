@@ -16,6 +16,7 @@ import { SubscriptionManager } from './subscription/subscription-manager'
 import { fetchSubscription, detectRegion } from './proxy/subscription'
 import { SingBoxManager } from './proxy/sing-box-manager'
 import { StatsCollector } from './stats/stats-collector'
+import { BrowserInterceptor } from './browser/browser-interceptor'
 
 process.on('uncaughtException', (err) => log.error('Uncaught:', err))
 process.on('unhandledRejection', (reason) => log.error('Unhandled:', reason))
@@ -35,6 +36,7 @@ singBoxManager.cleanupStaleProcesses().catch(err => {
   log.warn('[startup] Failed to clean up stale sing-box processes:', err)
 })
 const statsCollector = new StatsCollector()
+const browserInterceptor = new BrowserInterceptor()
 
 /** Safely send to renderer, swallowing errors if window is destroyed */
 function safeSend(channel: string, ...args: unknown[]): void {
@@ -491,7 +493,18 @@ ipcMain.handle('pty:create', (_event, options: {
       hidden: DEFAULT_ENV_HIDDEN,
     }
 
-    const mergedEnv = { ...toolsEnv, ...proxyEnv, ...options.env, CLAUDE_CONFIG_DIR: claudeConfigDir }
+    // Inject browser interceptor env (BROWSER, INKESS_BROWSER_SOCK) + prepend bin dir to PATH
+    const interceptorEnv = browserInterceptor.getEnv()
+    const binDir = browserInterceptor.getBinDir()
+    const existingPath = toolsEnv.PATH || process.env.PATH || ''
+    const mergedEnv = {
+      ...toolsEnv,
+      ...proxyEnv,
+      ...interceptorEnv,
+      ...options.env,
+      CLAUDE_CONFIG_DIR: claudeConfigDir,
+      PATH: `${binDir}:${existingPath}`,
+    }
 
     const id = ptyManager.create(options.cwd, mergedEnv, command, args, envConfig)
     ptyMonitor.watch(id)
@@ -707,12 +720,9 @@ function claudeAutoFillScript(email: string, password: string): string {
 // IPC: Built-in browser (uses proxy + region env)
 let browserWindows: BrowserWindow[] = []
 
-ipcMain.handle('browser:closeAll', () => {
-  browserWindows.forEach(w => { try { if (!w.isDestroyed()) w.close() } catch { /* ignore */ } })
-  browserWindows = []
-})
-
-ipcMain.handle('browser:open', async (_event, url: string) => {
+/** Open a URL in the built-in browser with proxy + region masking applied.
+ *  Shared by IPC handler and BrowserInterceptor (PTY URL interception). */
+async function openBuiltinBrowser(url: string): Promise<{ success?: boolean; error?: string }> {
   // Validate URL
   if (!/^https?:\/\//i.test(url)) {
     log.warn(`browser:open blocked non-http URL: ${url}`)
@@ -828,6 +838,15 @@ ipcMain.handle('browser:open', async (_event, url: string) => {
   })
 
   return { success: true }
+}
+
+ipcMain.handle('browser:closeAll', () => {
+  browserWindows.forEach(w => { try { if (!w.isDestroyed()) w.close() } catch { /* ignore */ } })
+  browserWindows = []
+})
+
+ipcMain.handle('browser:open', async (_event, url: string) => {
+  return openBuiltinBrowser(url)
 })
 
 // IPC: Window controls (Windows only)
@@ -964,6 +983,11 @@ app.whenReady().then(() => {
     }
   } catch { /* ignore */ }
 
+  // Start browser interceptor — redirects PTY `open` / BROWSER calls to built-in browser
+  browserInterceptor.start((url) => {
+    openBuiltinBrowser(url).catch(err => log.error('[BrowserInterceptor] failed to open URL:', err))
+  })
+
   createWindow()
   setupMenu()
 
@@ -1009,6 +1033,7 @@ app.on('window-all-closed', async () => {
   // Close all browser windows
   browserWindows.forEach(w => { try { w.close() } catch { /* ignore */ } })
   browserWindows = []
+  browserInterceptor.stop()
   statsCollector.logEvent('app:quit')
   statsCollector.dispose()
   ptyManager.killAll()

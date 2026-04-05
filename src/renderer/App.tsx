@@ -698,7 +698,13 @@ export function App() {
 
       {/* === TunGate overlay — renders independently when logged in but TUN not ready === */}
       {subscriptionLoggedIn && !tunOk && (
-        <TunGate proxyUrl={proxyUrl} onReady={() => { console.log('[App] TunGate onReady → setTunOk(true)'); setTunOk(true); checkCliAndProceed() }} />
+        <TunGate proxyUrl={proxyUrl} onReady={() => {
+          console.log('[App] TunGate onReady → setTunOk(true)')
+          setTunOk(true)
+          checkCliAndProceed()
+          // Auto-open network detection website so user can verify proxy + environment masking
+          window.api.browser.open('https://browserleaks.com/ip').catch(() => {})
+        }} />
       )}
 
       {showStats && <StatsView onClose={() => setShowStats(false)} />}
