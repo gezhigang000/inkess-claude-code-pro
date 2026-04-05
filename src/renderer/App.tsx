@@ -10,6 +10,7 @@ import { UpdateToast } from './views/update/UpdateToast'
 import { StatusBar } from './views/statusbar/StatusBar'
 import { CommandPalette } from './views/command-palette/CommandPalette'
 import { HistoryView } from './views/history/HistoryView'
+import { StatsView } from './views/stats/StatsView'
 import { FilePreview } from './views/preview/FilePreview'
 import { LoginPage } from './views/subscription/LoginPage'
 import { useI18n } from './i18n'
@@ -54,6 +55,7 @@ export function App() {
   const [dragOver, setDragOver] = useState(false)
   const dragCounterRef = useRef(0)
   const [showHistory, setShowHistory] = useState(false)
+  const [showStats, setShowStats] = useState(false)
   const [previewFile, setPreviewFile] = useState<string | null>(null)
   const [tunOk, setTunOk] = useState(false)
   const tunOkRef = useRef(false)
@@ -399,6 +401,10 @@ export function App() {
         e.preventDefault()
         setShowHistory(prev => !prev)
       }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        setShowStats(prev => !prev)
+      }
       // Cmd+Shift+1~5: open pinned project
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key >= '1' && e.key <= '5') {
         e.preventDefault()
@@ -619,6 +625,7 @@ export function App() {
           onSettings={() => { setShowSettings(true); window.api.analytics?.track('settings_open') }}
           onNewSession={handleSelectDirectory}
           onCommandPalette={() => setShowCommandPalette(true)}
+          onStats={() => setShowStats(true)}
           onOpenProject={(cwd) => {
             const existing = tabs.find(t => t.cwd === cwd)
             if (existing) {
@@ -663,6 +670,7 @@ export function App() {
           )}
         </div>
       </div>
+      {showStats && <StatsView onClose={() => setShowStats(false)} />}
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} onLogout={() => { setShowSettings(false); forceExpiredLogout() }} onTunStatusChange={setTunOk} />}
       {showCommandPalette && (
         <CommandPalette

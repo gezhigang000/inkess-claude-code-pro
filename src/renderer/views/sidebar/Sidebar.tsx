@@ -16,11 +16,12 @@ export interface SessionRecord {
   status: 'active' | 'closed'
 }
 
-export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPalette }: {
+export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPalette, onStats }: {
   onSettings?: () => void
   onOpenProject?: (cwd: string) => void
   onNewSession?: () => void
   onCommandPalette?: () => void
+  onStats?: () => void
 }) {
   const { tabs } = useTerminalStore()
   const { sidebarCollapsed, setSidebarCollapsed, pinnedProjects, pinProject, unpinProject } = useSettingsStore()
@@ -176,6 +177,23 @@ export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPale
           </svg>
         </div>
         <div style={{ flex: 1 }} />
+        <div
+          onClick={onStats}
+          onMouseEnter={() => setHoveredAction('stats')}
+          onMouseLeave={() => setHoveredAction(null)}
+          title={t('sidebar.stats') + ' ⌘⇧S'}
+          style={{
+            width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            borderRadius: 6, cursor: 'pointer', marginBottom: 4,
+            color: hoveredAction === 'stats' ? 'var(--text-primary)' : 'var(--text-muted)',
+            background: hoveredAction === 'stats' ? 'var(--bg-hover)' : 'transparent',
+            transition: 'background 0.12s, color 0.12s',
+          }}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M18 20V10M12 20V4M6 20v-6" />
+          </svg>
+        </div>
         <div
           onClick={onSettings}
           onMouseEnter={() => setHoveredAction('settings')}
@@ -355,6 +373,14 @@ export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPale
 
       {/* Settings */}
       <div style={{ padding: '8px 10px', borderTop: '1px solid var(--border)' }}>
+        <div onClick={onStats} onMouseEnter={() => setHoveredAction('stats')} onMouseLeave={() => setHoveredAction(null)}
+          style={topActionBtnStyle('stats')}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M18 20V10M12 20V4M6 20v-6" />
+          </svg>
+          {t('sidebar.stats')}
+          <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-muted)', opacity: 0.7 }}>⌘⇧S</span>
+        </div>
         <div onClick={onSettings} onMouseEnter={() => setHoveredAction('settings')} onMouseLeave={() => setHoveredAction(null)}
           style={topActionBtnStyle('settings')}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
