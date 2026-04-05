@@ -13,7 +13,12 @@ export interface SingBoxOutbound {
 
 export interface SingBoxConfig {
   log: { level: string; timestamp: boolean }
-  dns: { servers: { address: string; tag: string }[]; rules?: { outbound?: string; server?: string }[]; final?: string }
+  dns: {
+    servers: { address: string; tag: string; address_resolver?: string; detour?: string; strategy?: string }[]
+    rules?: { outbound?: string; server?: string }[]
+    final?: string
+    independent_cache?: boolean
+  }
   inbounds: { type: string; tag: string; [key: string]: unknown }[]
   outbounds: SingBoxOutbound[]
   route: { rules: { protocol?: string; outbound?: string; action?: string }[]; auto_detect_interface: boolean; final: string }
@@ -40,9 +45,17 @@ export function buildTunConfig(proxyUrl: string, dnsServer = '8.8.8.8'): SingBox
     log: { level: 'info', timestamp: true },
     dns: {
       servers: [
-        { address: `${dnsServer}`, tag: 'remote-dns' },
+        // Remote DNS: queries go through proxy to prevent DNS leak
+        { address: `https://${dnsServer}/dns-query`, tag: 'remote-dns', detour: 'proxy', strategy: 'ipv4_only' },
+        // Bootstrap DNS: resolves the remote DNS server's own hostname (direct, for DoH bootstrap)
+        { address: '8.8.8.8', tag: 'bootstrap-dns', detour: 'direct', strategy: 'ipv4_only' },
+      ],
+      rules: [
+        // Use bootstrap DNS to resolve the proxy server address itself
+        { outbound: 'any', server: 'bootstrap-dns' },
       ],
       final: 'remote-dns',
+      independent_cache: true,
     },
     inbounds: [
       {
