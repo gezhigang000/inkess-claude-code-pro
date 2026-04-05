@@ -13,6 +13,7 @@ import { HistoryView } from './views/history/HistoryView'
 import { StatsView } from './views/stats/StatsView'
 import { FilePreview } from './views/preview/FilePreview'
 import { LoginPage } from './views/subscription/LoginPage'
+import { TunGate } from './views/tun/TunGate'
 import { useI18n } from './i18n'
 
 const DEFAULT_CWD = window.api?.homedir || '/'
@@ -60,17 +61,7 @@ export function App() {
   const [tunOk, setTunOk] = useState(false)
   const tunOkRef = useRef(false)
   const handleNewTabRef = useRef<(cwd?: string) => void>(() => {})
-  const pendingClaudeLoginRef = useRef<{ email: string; password: string } | null>(null)
   useEffect(() => { tunOkRef.current = tunOk }, [tunOk])
-
-  // Auto-login Claude when TUN becomes ready
-  useEffect(() => {
-    if (tunOk && pendingClaudeLoginRef.current) {
-      const { email, password } = pendingClaudeLoginRef.current
-      pendingClaudeLoginRef.current = null
-      window.api.subscription.autoLoginClaude(email, password)
-    }
-  }, [tunOk])
 
   const [subscriptionLoggedIn, setSubscriptionLoggedIn] = useState<boolean | null>(null) // null = checking
   const [subscriptionUsername, setSubscriptionUsername] = useState<string | null>(null)
@@ -80,6 +71,18 @@ export function App() {
   const expiryAtRef = useRef<string | null>(null)
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // TUN disconnect detection
+  useEffect(() => {
+    if (!tunOk || !subscriptionLoggedIn) return
+    const interval = setInterval(async () => {
+      const info = await window.api.singbox.getInfo()
+      if (info.status !== 'running') {
+        setTunOk(false)
+      }
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [tunOk, subscriptionLoggedIn])
 
   // Startup: check subscription login, then CLI
   useEffect(() => {
@@ -96,7 +99,6 @@ export function App() {
       setSubscriptionExpiry(session.session?.expiresAt || null)
       expiryAtRef.current = session.session?.expiresAt || null
       setSubscriptionPlan(session.session?.plan || 'monthly')
-      // Auto-apply saved proxy settings
       if (session.session?.proxyUrl) {
         const store = useSettingsStore.getState()
         store.setProxyEnabled(true)
@@ -105,7 +107,17 @@ export function App() {
         if (session.session.proxyRegion) store.setProxyRegion(session.session.proxyRegion)
       }
       startStatusPolling(session.session?.plan || 'monthly')
-      checkCliAndProceed()
+      // Check if TUN is already running and connected
+      const singboxInfo = await window.api.singbox.getInfo()
+      if (singboxInfo.status === 'running') {
+        const test = await window.api.singbox.testConnectivity()
+        if (test.success) {
+          setTunOk(true)
+          checkCliAndProceed()
+          return
+        }
+      }
+      // TUN not ready — TunGate will show (tunOk remains false)
     } else {
       setSubscriptionLoggedIn(false)
     }
@@ -126,18 +138,20 @@ export function App() {
     store.setProxyUrl(config.proxyUrl)
     store.setProxyRegion(config.proxyRegion)
 
-    // 2. Save Claude credentials for auto-login when TUN is ready
+    // 2. Send Claude credentials to main process for browser auto-fill
     if (config.claudeEmail && config.claudePassword) {
-      pendingClaudeLoginRef.current = { email: config.claudeEmail, password: config.claudePassword }
+      window.api.claude.setCredentials(config.claudeEmail, config.claudePassword)
     }
 
     // 3. Start status polling
     startStatusPolling(config.plan || 'monthly')
 
-    // 4. Continue to CLI check
+    // 4. Get username
     const session = await window.api.subscription.getSession()
     setSubscriptionUsername(session.username)
-    checkCliAndProceed()
+
+    // TunGate will show automatically (tunOk is false)
+    // TunGate.onReady → setTunOk(true) + checkCliAndProceed()
   }, [])
 
   const forceExpiredLogout = useCallback(() => {
@@ -151,7 +165,8 @@ export function App() {
     // Clear polling
     if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null }
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null }
-    // Logout and go back to login page
+    // Clear Claude credentials and logout
+    window.api.claude.clearCredentials()
     window.api.subscription.logout()
     setSubscriptionLoggedIn(false)
     setSubscriptionExpiry(null)
@@ -260,13 +275,6 @@ export function App() {
     }
 
     setPhase('ready')
-
-    // Check if TUN is already running and connected
-    const singboxInfo = await window.api.singbox.getInfo()
-    if (singboxInfo.status === 'running') {
-      const test = await window.api.singbox.testConnectivity()
-      setTunOk(test.success)
-    }
   }, [setCliInfo, setPhase])
 
   const handleNewTab = useCallback(async (cwd?: string) => {
@@ -616,20 +624,6 @@ export function App() {
         onCommandPalette={() => setShowCommandPalette(true)}
         onSettings={() => { setShowSettings(true); window.api.analytics?.track('settings_open') }}
       />
-      {/* TUN not connected banner */}
-      {!tunOk && (
-        <div
-          onClick={() => setShowSettings(true)}
-          style={{
-            padding: '6px 16px', fontSize: 12, fontWeight: 500,
-            background: 'var(--warning-text, #f59e0b)', color: '#000',
-            textAlign: 'center', cursor: 'pointer', flexShrink: 0,
-          }}
-        >
-          {t('app.tunRequired')}
-        </div>
-      )}
-
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
           onSettings={() => { setShowSettings(true); window.api.analytics?.track('settings_open') }}
@@ -682,6 +676,16 @@ export function App() {
       </div>
       {showStats && <StatsView onClose={() => setShowStats(false)} />}
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} onLogout={() => { setShowSettings(false); forceExpiredLogout() }} onTunStatusChange={setTunOk} />}
+      {/* TUN Gate — mandatory network overlay */}
+      {subscriptionLoggedIn && !tunOk && (
+        <TunGate
+          proxyUrl={useSettingsStore.getState().proxyUrl}
+          onReady={() => {
+            setTunOk(true)
+            if (phase !== 'ready') checkCliAndProceed()
+          }}
+        />
+      )}
       {showCommandPalette && (
         <CommandPalette
           onClose={() => setShowCommandPalette(false)}
