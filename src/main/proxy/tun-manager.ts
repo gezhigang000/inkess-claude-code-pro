@@ -682,16 +682,17 @@ Write-Host "pre-down: routes and DNS cleaned up"
     try {
       const start = Date.now()
       log.info('[testConnectivity] testing connectivity...')
+      // Use IP-direct URL to avoid DNS resolution (which would leak through TUN's fake DNS).
+      // Cloudflare 1.1.1.1 has a valid HTTPS cert, so TLS validates identity.
       if (os.platform() === 'win32') {
-        const res = await fetchWithTimeout('https://www.google.com/generate_204', {}, 10000)
-        if (res.status !== 204 && res.status !== 200) throw new Error(`HTTP ${res.status}`)
+        const res = await fetchWithTimeout('https://1.1.1.1/cdn-cgi/trace', {}, 10000)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
       } else {
-        // Use async execFile to avoid blocking the main process.
         // curl as a separate process uses system routes (0.0.0.0/1 + 128.0.0.0/1 → TUN),
         // unlike Electron's built-in fetch which may bypass TUN due to DNS caching.
         await execFileAsync('curl', [
           '-sI', '--connect-timeout', '8',
-          'https://www.google.com/generate_204',
+          'https://1.1.1.1/cdn-cgi/trace',
         ], { timeout: 10000 })
       }
       const latency = Date.now() - start
