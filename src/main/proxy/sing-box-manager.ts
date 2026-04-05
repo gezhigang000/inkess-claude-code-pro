@@ -1,11 +1,14 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, chmodSync, readFileSync } from 'fs'
-import { execSync, spawn, type ChildProcess } from 'child_process'
+import { execSync, execFile, spawn, type ChildProcess } from 'child_process'
+import { promisify } from 'util'
 import * as os from 'os'
 import log from '../logger'
 import { buildTunConfig, buildLocalProxyConfig, type SingBoxConfig } from './sing-box-config'
 import { fetchWithTimeout } from '../utils/fetch'
+
+const execFileAsync = promisify(execFile)
 
 const SINGBOX_VERSION = '1.11.0'
 const SINGBOX_DOWNLOAD_BASE = 'https://inkess-install-file.oss-cn-beijing.aliyuncs.com/singbox-mirror'
@@ -228,15 +231,15 @@ export class SingBoxManager {
    * Blocks until sing-box is confirmed running or fails.
    */
   async startTun(proxyUrl: string): Promise<void> {
-    // Guard: if already starting or running, skip
+    // Guard: if already starting, skip (concurrent call)
     this.reconcileStatus()
-    if (this._status === 'starting' || this._status === 'running') {
-      log.info(`[sing-box] startTun skipped — status=${this._status}`)
+    if (this._status === 'starting') {
+      log.info(`[sing-box] startTun skipped — already starting`)
       return
     }
 
     await this.ensureInstalled()
-    await this.stop() // async — waits for old process to die
+    await this.stop() // always stop first to apply new config
 
     const config = buildTunConfig(proxyUrl)
     this.writeConfig(config)
@@ -322,10 +325,24 @@ export class SingBoxManager {
     try {
       const start = Date.now()
       log.info(`[testConnectivity] verifying exit IP (expected: ${exitIp || 'any'})...`)
-      const res = await fetchWithTimeout('https://ip.oxylabs.io/location', {}, 15000)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      const actualIp = data.ip as string
+
+      let actualIp: string
+      if (os.platform() === 'win32') {
+        // Windows: use fetch (curl may not be available)
+        const res = await fetchWithTimeout('https://ip.oxylabs.io/location', {}, 15000)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = await res.json()
+        actualIp = data.ip as string
+      } else {
+        // macOS/Linux: use curl subprocess to ensure traffic goes through TUN routes.
+        // Electron's built-in fetch may use cached DNS/routes that bypass TUN.
+        const { stdout } = await execFileAsync('curl', [
+          '-s', '--connect-timeout', '10', 'https://ip.oxylabs.io/location',
+        ], { timeout: 15000 })
+        const data = JSON.parse(stdout)
+        actualIp = data.ip as string
+      }
+
       const latency = Date.now() - start
       log.info(`[testConnectivity] exit IP: ${actualIp}, latency: ${latency}ms`)
 

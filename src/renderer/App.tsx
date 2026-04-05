@@ -204,8 +204,10 @@ export function App() {
     // Clear Claude credentials and logout
     window.api.claude.clearCredentials()
     window.api.subscription.logout()
+    setTunOk(false)
     setSubscriptionLoggedIn(false)
     setSubscriptionExpiry(null)
+    setSubscriptionExitIp('')
     expiryAtRef.current = null
     setExpiryMinutesRemaining(null)
   }, [])
@@ -228,7 +230,7 @@ export function App() {
         // Only force logout if manager already cleared session (401 case).
         const session = await window.api.subscription.getSession()
         if (!session.isLoggedIn) {
-          setSubscriptionLoggedIn(false)
+          forceExpiredLogout()
         }
         // Network error: do nothing, let local countdown continue but don't force logout
         return
