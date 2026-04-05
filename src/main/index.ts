@@ -17,6 +17,7 @@ import { fetchSubscription, detectRegion } from './proxy/subscription'
 import { SingBoxManager } from './proxy/sing-box-manager'
 import { StatsCollector } from './stats/stats-collector'
 import { BrowserInterceptor } from './browser/browser-interceptor'
+import { buildFingerprintMaskScript, FINGERPRINT_PROFILES } from './browser/fingerprint-mask'
 
 process.on('uncaughtException', (err) => log.error('Uncaught:', err))
 process.on('unhandledRejection', (reason) => log.error('Unhandled:', reason))
@@ -769,13 +770,27 @@ async function openBuiltinBrowser(url: string): Promise<{ success?: boolean; err
       nodeIntegration: false,
       sandbox: true,
       session: browserSession,
-      // Disable WebRTC to prevent real IP leak via STUN/TURN
-      webgl: true,
     }
   })
 
   // Block WebRTC IP leak: force proxy-only or disable non-proxied UDP
   win.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
+
+  // Strip Client Hints headers (Sec-CH-UA-*) that leak browser/OS info
+  win.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers = { ...details.requestHeaders }
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase().startsWith('sec-ch-')) delete headers[key]
+    }
+    callback({ requestHeaders: headers })
+  })
+
+  // Inject fingerprint masking at document start (before page scripts)
+  const fpProfile = FINGERPRINT_PROFILES[proxySettings.region] || FINGERPRINT_PROFILES.default
+  const fpScript = buildFingerprintMaskScript(fpProfile)
+  win.webContents.on('dom-ready', () => {
+    win.webContents.executeJavaScript(fpScript).catch(() => {})
+  })
 
   // Set language header to match region
   win.webContents.session.setUserAgent(
