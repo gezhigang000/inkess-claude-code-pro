@@ -210,6 +210,7 @@ ipcMain.handle('subscription:getSession', () => {
       expiresAt: s.expiresAt,
       proxyUrl: s.proxyUrl,
       proxyRegion: s.proxyRegion,
+      exitIp: s.exitIp || '',
     } : null,
   }
 })
@@ -337,7 +338,7 @@ ipcMain.handle('tun:stop', async () => {
   return { success: true }
 })
 
-ipcMain.handle('tun:testConnectivity', () => singBoxManager.testConnectivity())
+ipcMain.handle('tun:testConnectivity', (_event, exitIp?: string) => singBoxManager.testConnectivity(exitIp))
 
 // IPC: Proxy settings (stored in main process, applied to PTY env on create)
 interface ProxySettings {

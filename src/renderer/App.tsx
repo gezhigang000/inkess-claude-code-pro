@@ -72,6 +72,7 @@ export function App() {
   const [subscriptionLoggedIn, setSubscriptionLoggedIn] = useState<boolean | null>(null) // null = checking
   const [subscriptionUsername, setSubscriptionUsername] = useState<string | null>(null)
   const [subscriptionExpiry, setSubscriptionExpiry] = useState<string | null>(null)
+  const [subscriptionExitIp, setSubscriptionExitIp] = useState<string>('')
   const [subscriptionPlan, setSubscriptionPlan] = useState<string>('monthly')
   const [expiryMinutesRemaining, setExpiryMinutesRemaining] = useState<number | null>(null)
   const expiryAtRef = useRef<string | null>(null)
@@ -121,11 +122,12 @@ export function App() {
         store.setProxyUrl(session.session.proxyUrl)
         if (session.session.proxyRegion) store.setProxyRegion(session.session.proxyRegion)
       }
+      setSubscriptionExitIp(session.session?.exitIp || '')
       startStatusPolling(session.session?.plan || 'monthly')
       // Check if TUN is already running and connected
       const tunInfo = await window.api.tun.getInfo()
       if (tunInfo.tunRunning) {
-        const test = await window.api.tun.testConnectivity()
+        const test = await window.api.tun.testConnectivity(session.session?.exitIp || undefined)
         if (test.success) {
           setTunOk(true)
           checkCliAndProceed()
@@ -139,12 +141,13 @@ export function App() {
   }, [])
 
   const handleSubscriptionLogin = useCallback(async (config: {
-    claudeEmail: string; claudePassword: string; proxyUrl: string; proxyRegion: string; expiresAt: string; status: string; plan?: string
+    claudeEmail: string; claudePassword: string; proxyUrl: string; proxyRegion: string; exitIp?: string; expiresAt: string; status: string; plan?: string
   }) => {
     setSubscriptionLoggedIn(true)
     setSubscriptionExpiry(config.expiresAt)
     expiryAtRef.current = config.expiresAt
     setSubscriptionPlan(config.plan || 'monthly')
+    setSubscriptionExitIp(config.exitIp || '')
 
     // 1. Auto-configure proxy
     const store = useSettingsStore.getState()
@@ -707,6 +710,7 @@ export function App() {
       {subscriptionLoggedIn && !tunOk && (
         <TunGate
           proxyUrl={proxyUrl}
+          exitIp={subscriptionExitIp}
           isReconnect={tunWasOkRef.current}
           onReady={() => {
             console.log(`[App] TunGate onReady (reconnect=${tunWasOkRef.current})`)

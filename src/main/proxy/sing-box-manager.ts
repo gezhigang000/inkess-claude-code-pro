@@ -305,8 +305,12 @@ export class SingBoxManager {
     }
   }
 
-  /** Test internet connectivity through TUN. Updates internal state. */
-  async testConnectivity(): Promise<{ success: boolean; latency?: number; error?: string }> {
+  /**
+   * Test connectivity through TUN by verifying exit IP.
+   * Fetches ip.oxylabs.io/location and compares with expected exit IP.
+   * If exitIp is empty, only checks that the request succeeds (proxy is working).
+   */
+  async testConnectivity(exitIp?: string): Promise<{ success: boolean; latency?: number; error?: string; actualIp?: string }> {
     this.reconcileStatus()
     if (this._status !== 'running') {
       this._internetReachable = false
@@ -317,17 +321,24 @@ export class SingBoxManager {
 
     try {
       const start = Date.now()
-      log.info('[testConnectivity] testing connectivity via DNS probe...')
-      const dns = require('dns') as typeof import('dns')
-      const { promisify } = require('util') as typeof import('util')
-      const resolve4 = promisify(dns.resolve4)
-      const addresses = await resolve4('cloudflare.com')
-      if (!addresses || addresses.length === 0) throw new Error('DNS returned no addresses')
+      log.info(`[testConnectivity] verifying exit IP (expected: ${exitIp || 'any'})...`)
+      const res = await fetchWithTimeout('https://ip.oxylabs.io/location', {}, 15000)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      const actualIp = data.ip as string
       const latency = Date.now() - start
-      log.info(`[testConnectivity] ok latency=${latency}ms, resolved: ${addresses.join(',')}`)
+      log.info(`[testConnectivity] exit IP: ${actualIp}, latency: ${latency}ms`)
+
+      if (exitIp && actualIp !== exitIp) {
+        log.error(`[testConnectivity] exit IP mismatch: got ${actualIp}, expected ${exitIp}`)
+        this._internetReachable = false
+        this._latencyMs = latency
+        return { success: false, latency, actualIp, error: `Exit IP mismatch: got ${actualIp}, expected ${exitIp}` }
+      }
+
       this._internetReachable = true
       this._latencyMs = latency
-      return { success: true, latency }
+      return { success: true, latency, actualIp }
     } catch (err) {
       log.error('[testConnectivity] failed:', (err as Error).message)
       this._internetReachable = false

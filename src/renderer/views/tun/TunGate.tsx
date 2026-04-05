@@ -5,13 +5,14 @@ type Phase = 'idle' | 'installing' | 'resolving' | 'starting' | 'testing' | 'con
 
 interface TunGateProps {
   proxyUrl: string
+  exitIp: string
   onReady: () => void
   isReconnect: boolean
 }
 
 const WORKING_PHASES: Phase[] = ['idle', 'installing', 'resolving', 'starting', 'testing']
 
-export function TunGate({ proxyUrl, onReady, isReconnect }: TunGateProps) {
+export function TunGate({ proxyUrl, exitIp, onReady, isReconnect }: TunGateProps) {
   const { t } = useI18n()
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -51,8 +52,8 @@ export function TunGate({ proxyUrl, onReady, isReconnect }: TunGateProps) {
         // Running but not tested — test connectivity
         setPhase('testing')
         console.log(`[TunGate:${id}] TUN running, testing connectivity...`)
-        const result = await window.api.tun.testConnectivity()
-        console.log(`[TunGate:${id}] testConnectivity: success=${result.success}, latency=${result.latency}`)
+        const result = await window.api.tun.testConnectivity(exitIp || undefined)
+        console.log(`[TunGate:${id}] testConnectivity: success=${result.success}, latency=${result.latency}, actualIp=${result.actualIp}`)
         if (result.success) {
           setLatency(result.latency ?? null)
           setPhase('connected')
@@ -106,11 +107,11 @@ export function TunGate({ proxyUrl, onReady, isReconnect }: TunGateProps) {
       // Test connectivity with retries (routes may take a moment to take effect)
       setPhase('testing')
       console.log(`[TunGate:${id}] testing connectivity (up to 3 attempts)...`)
-      let connectResult: { success: boolean; latency?: number; error?: string } = { success: false }
+      let connectResult: { success: boolean; latency?: number; error?: string; actualIp?: string } = { success: false }
       for (let attempt = 1; attempt <= 3; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 1000))
-        connectResult = await window.api.tun.testConnectivity()
-        console.log(`[TunGate:${id}] attempt ${attempt}: success=${connectResult.success}, latency=${connectResult.latency}`)
+        connectResult = await window.api.tun.testConnectivity(exitIp || undefined)
+        console.log(`[TunGate:${id}] attempt ${attempt}: success=${connectResult.success}, latency=${connectResult.latency}, actualIp=${connectResult.actualIp}`)
         if (connectResult.success) break
       }
 

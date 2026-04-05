@@ -12,6 +12,7 @@ export interface SubscriptionConfig {
   claudePassword: string
   proxyUrl: string
   proxyRegion: string
+  exitIp?: string
   expiresAt: string
   status: 'active' | 'expired' | 'suspended'
   plan?: string
@@ -36,6 +37,7 @@ interface StoredSession {
   expiresAt: string
   proxyUrl: string
   proxyRegion: string
+  exitIp: string
 }
 
 export class SubscriptionManager {
@@ -134,6 +136,7 @@ export class SubscriptionManager {
         expiresAt: config.expiresAt,
         proxyUrl: config.proxyUrl,
         proxyRegion: config.proxyRegion,
+        exitIp: config.exitIp || '',
       })
 
       log.info(`Subscription login success: ${username}`)
