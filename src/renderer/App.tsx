@@ -61,8 +61,13 @@ export function App() {
   const [previewFile, setPreviewFile] = useState<string | null>(null)
   const [tunOk, setTunOk] = useState(false)
   const tunOkRef = useRef(false)
+  const tunWasOkRef = useRef(false)
   const handleNewTabRef = useRef<(cwd?: string) => void>(() => {})
-  useEffect(() => { tunOkRef.current = tunOk; console.log(`[App] tunOk changed → ${tunOk}`) }, [tunOk])
+  useEffect(() => {
+    if (tunOk) tunWasOkRef.current = true
+    tunOkRef.current = tunOk
+    console.log(`[App] tunOk changed → ${tunOk}`)
+  }, [tunOk])
 
   const [subscriptionLoggedIn, setSubscriptionLoggedIn] = useState<boolean | null>(null) // null = checking
   const [subscriptionUsername, setSubscriptionUsername] = useState<string | null>(null)
@@ -78,7 +83,7 @@ export function App() {
     if (!tunOk || !subscriptionLoggedIn) return
     let failCount = 0
     const interval = setInterval(async () => {
-      const info = await window.api.singbox.getInfo()
+      const info = await window.api.tun.getInfo()
       if (!info.tunRunning) {
         failCount++
         if (failCount >= 2) {
@@ -118,9 +123,9 @@ export function App() {
       }
       startStatusPolling(session.session?.plan || 'monthly')
       // Check if TUN is already running and connected
-      const singboxInfo = await window.api.singbox.getInfo()
-      if (singboxInfo.tunRunning) {
-        const test = await window.api.singbox.testConnectivity()
+      const tunInfo = await window.api.tun.getInfo()
+      if (tunInfo.tunRunning) {
+        const test = await window.api.tun.testConnectivity()
         if (test.success) {
           setTunOk(true)
           checkCliAndProceed()
@@ -700,13 +705,20 @@ export function App() {
 
       {/* === TunGate overlay — renders independently when logged in but TUN not ready === */}
       {subscriptionLoggedIn && !tunOk && (
-        <TunGate proxyUrl={proxyUrl} onReady={() => {
-          console.log('[App] TunGate onReady → setTunOk(true)')
-          setTunOk(true)
-          checkCliAndProceed()
-          // Auto-open network detection website so user can verify proxy + environment masking
-          window.api.browser.open('https://browserleaks.com/ip').catch(() => {})
-        }} />
+        <TunGate
+          proxyUrl={proxyUrl}
+          isReconnect={tunWasOkRef.current}
+          onReady={() => {
+            console.log(`[App] TunGate onReady (reconnect=${tunWasOkRef.current})`)
+            setTunOk(true)
+            if (!tunWasOkRef.current) {
+              // First connection: full initialization
+              checkCliAndProceed()
+              window.api.browser.open('https://browserleaks.com/ip').catch(() => {})
+            }
+            // Reconnect: just restore tunOk, don't re-check CLI or open browser
+          }}
+        />
       )}
 
       {showStats && <StatsView onClose={() => setShowStats(false)} />}

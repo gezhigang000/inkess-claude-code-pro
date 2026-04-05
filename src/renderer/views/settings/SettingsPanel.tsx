@@ -480,8 +480,8 @@ function TunControl({ proxyUrl, onTunStatusChange }: { proxyUrl: string; onTunSt
   const [testResult, setTestResult] = useState<{ status: 'idle' | 'testing' | 'ok' | 'fail'; latency?: number; error?: string }>({ status: 'idle' })
 
   useEffect(() => {
-    window.api.singbox.getInfo().then(setInfo)
-    const interval = setInterval(() => window.api.singbox.getInfo().then(setInfo), 3000)
+    window.api.tun.getInfo().then(setInfo)
+    const interval = setInterval(() => window.api.tun.getInfo().then(setInfo), 3000)
     return () => clearInterval(interval)
   }, [])
 
@@ -489,7 +489,7 @@ function TunControl({ proxyUrl, onTunStatusChange }: { proxyUrl: string; onTunSt
     setLoading(true)
     setTestResult({ status: 'idle' })
     if (!info.installed) {
-      const install = await window.api.singbox.install()
+      const install = await window.api.tun.install()
       if (!install.success) { setLoading(false); return }
     }
     // Resolve subscription URL → protocol URL if needed
@@ -505,7 +505,7 @@ function TunControl({ proxyUrl, onTunStatusChange }: { proxyUrl: string; onTunSt
       setInfo(prev => ({ ...prev, lastError: 'No proxy URL available' }))
       return
     }
-    const result = await window.api.singbox.startTun(tunUrl)
+    const result = await window.api.tun.startTun(tunUrl)
     if (!result.success) {
       setLoading(false)
       setInfo(prev => ({ ...prev, lastError: result.error || 'Failed to start' }))
@@ -513,9 +513,9 @@ function TunControl({ proxyUrl, onTunStatusChange }: { proxyUrl: string; onTunSt
     }
     // Auto-test after start — wait a moment for TUN to be ready
     await new Promise(r => setTimeout(r, 1500))
-    window.api.singbox.getInfo().then(setInfo)
+    window.api.tun.getInfo().then(setInfo)
     setTestResult({ status: 'testing' })
-    const test = await window.api.singbox.testConnectivity()
+    const test = await window.api.tun.testConnectivity()
     setLoading(false)
     if (test.success) {
       setTestResult({ status: 'ok', latency: test.latency })
@@ -528,16 +528,16 @@ function TunControl({ proxyUrl, onTunStatusChange }: { proxyUrl: string; onTunSt
   }
 
   const handleStop = async () => {
-    await window.api.singbox.stop()
+    await window.api.tun.stop()
     setTestResult({ status: 'idle' })
     onTunStatusChange?.(false)
     killAllPtySessions()
-    window.api.singbox.getInfo().then(setInfo)
+    window.api.tun.getInfo().then(setInfo)
   }
 
   const handleTest = async () => {
     setTestResult({ status: 'testing' })
-    const result = await window.api.singbox.testConnectivity()
+    const result = await window.api.tun.testConnectivity()
     if (result.success) {
       setTestResult({ status: 'ok', latency: result.latency })
       onTunStatusChange?.(true)

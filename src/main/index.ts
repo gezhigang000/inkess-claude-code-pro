@@ -297,13 +297,13 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => 
   return { success: true }
 })
 
-// IPC: TUN proxy (channel names kept as singbox:* for renderer compatibility)
-ipcMain.handle('singbox:getInfo', () => tunManager.getInfo())
+// IPC: TUN proxy (hev-socks5-tunnel)
+ipcMain.handle('tun:getInfo', () => tunManager.getInfo())
 
-ipcMain.handle('singbox:install', async () => {
+ipcMain.handle('tun:install', async () => {
   try {
     await tunManager.install((step, pct) => {
-      safeSend('singbox:installProgress', { step, pct })
+      safeSend('tun:installProgress', { step, pct })
     })
     return { success: true }
   } catch (err) {
@@ -311,7 +311,7 @@ ipcMain.handle('singbox:install', async () => {
   }
 })
 
-ipcMain.handle('singbox:startTun', async (_event, proxyUrl: string) => {
+ipcMain.handle('tun:startTun', async (_event, proxyUrl: string) => {
   log.info(`[startTun] url: ${proxyUrl?.replace(/:\/\/.*@/, '://***@').replace(/:\/\/([^/]+)/, '://***.***:***')}`)
   if (typeof proxyUrl !== 'string' || proxyUrl.length > 500 || proxyUrl.length < 5) {
     log.error(`[startTun] invalid proxy URL (len=${proxyUrl?.length})`)
@@ -328,7 +328,7 @@ ipcMain.handle('singbox:startTun', async (_event, proxyUrl: string) => {
   }
 })
 
-ipcMain.handle('singbox:stop', async () => {
+ipcMain.handle('tun:stop', async () => {
   await tunManager.stop()
   statsCollector.logEvent('tun:stop')
   // Close all browser windows when TUN stops
@@ -337,7 +337,7 @@ ipcMain.handle('singbox:stop', async () => {
   return { success: true }
 })
 
-ipcMain.handle('singbox:testConnectivity', () => tunManager.testConnectivity())
+ipcMain.handle('tun:testConnectivity', () => tunManager.testConnectivity())
 
 // IPC: Proxy settings (stored in main process, applied to PTY env on create)
 interface ProxySettings {

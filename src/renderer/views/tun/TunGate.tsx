@@ -6,11 +6,12 @@ type Phase = 'idle' | 'installing' | 'resolving' | 'starting' | 'testing' | 'con
 interface TunGateProps {
   proxyUrl: string
   onReady: () => void
+  isReconnect: boolean
 }
 
 const WORKING_PHASES: Phase[] = ['idle', 'installing', 'resolving', 'starting', 'testing']
 
-export function TunGate({ proxyUrl, onReady }: TunGateProps) {
+export function TunGate({ proxyUrl, onReady, isReconnect }: TunGateProps) {
   const { t } = useI18n()
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -33,8 +34,8 @@ export function TunGate({ proxyUrl, onReady }: TunGateProps) {
     setLatency(null)
 
     try {
-      // Check if sing-box already running
-      const info = await window.api.singbox.getInfo()
+      // Check if TUN already running
+      const info = await window.api.tun.getInfo()
       console.log(`[TunGate:${id}] getInfo: tunRunning=${info.tunRunning}, installed=${info.installed}, reachable=${info.internetReachable}`)
 
       if (info.tunRunning && info.internetReachable) {
@@ -50,7 +51,7 @@ export function TunGate({ proxyUrl, onReady }: TunGateProps) {
         // Running but not tested — test connectivity
         setPhase('testing')
         console.log(`[TunGate:${id}] TUN running, testing connectivity...`)
-        const result = await window.api.singbox.testConnectivity()
+        const result = await window.api.tun.testConnectivity()
         console.log(`[TunGate:${id}] testConnectivity: success=${result.success}, latency=${result.latency}`)
         if (result.success) {
           setLatency(result.latency ?? null)
@@ -60,14 +61,14 @@ export function TunGate({ proxyUrl, onReady }: TunGateProps) {
         }
         // Connectivity test failed even though running — fall through to restart
         console.log(`[TunGate:${id}] connectivity failed, restarting TUN`)
-        await window.api.singbox.stop()
+        await window.api.tun.stop()
       }
 
       // Install if needed
       if (!info.installed) {
         setPhase('installing')
-        console.log(`[TunGate:${id}] installing sing-box...`)
-        const installResult = await window.api.singbox.install()
+        console.log(`[TunGate:${id}] installing TUN...`)
+        const installResult = await window.api.tun.install()
         if (!installResult.success) {
           setPhase('failed')
           setError(installResult.error ?? 'Installation failed')
@@ -91,10 +92,10 @@ export function TunGate({ proxyUrl, onReady }: TunGateProps) {
         useSettingsStore.getState().setProxyRegion(resolveResult.detectedRegion)
       }
 
-      // Start TUN (blocks until sing-box confirmed running or fails)
+      // Start TUN (blocks until tunnel confirmed running or fails)
       setPhase('starting')
       console.log(`[TunGate:${id}] starting TUN...`)
-      const startResult = await window.api.singbox.startTun(resolveResult.resolved)
+      const startResult = await window.api.tun.startTun(resolveResult.resolved)
       console.log(`[TunGate:${id}] startTun result: success=${startResult.success}, error=${startResult.error}`)
       if (!startResult.success) {
         setPhase('failed')
@@ -102,35 +103,16 @@ export function TunGate({ proxyUrl, onReady }: TunGateProps) {
         return
       }
 
-      // Wait for TUN to be confirmed running (handles case where startTun was skipped
-      // because another call is already in progress)
-      console.log(`[TunGate:${id}] waiting for TUN to be running...`)
-      let tunReady = false
-      for (let i = 0; i < 120; i++) { // up to 60s
-        const status = await window.api.singbox.getInfo()
-        if (status.tunRunning) { tunReady = true; break }
-        if (status.lastError?.includes('User canceled') || status.lastError?.includes('exited')) {
-          setPhase('failed')
-          setError(status.lastError)
-          return
-        }
-        await new Promise(resolve => setTimeout(resolve, 500))
-      }
-      if (!tunReady) {
-        setPhase('failed')
-        setError('Timed out waiting for TUN')
-        return
-      }
-
-      // TUN is confirmed running — wait briefly for network routes to take effect
-      console.log(`[TunGate:${id}] TUN running, waiting 1s for routes...`)
-      await new Promise(resolve => setTimeout(resolve, 1000))
-
-      // Test connectivity
+      // Test connectivity with retries (routes may take a moment to take effect)
       setPhase('testing')
-      console.log(`[TunGate:${id}] testing connectivity...`)
-      const connectResult = await window.api.singbox.testConnectivity()
-      console.log(`[TunGate:${id}] result: success=${connectResult.success}, latency=${connectResult.latency}`)
+      console.log(`[TunGate:${id}] testing connectivity (up to 3 attempts)...`)
+      let connectResult: { success: boolean; latency?: number; error?: string } = { success: false }
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        connectResult = await window.api.tun.testConnectivity()
+        console.log(`[TunGate:${id}] attempt ${attempt}: success=${connectResult.success}, latency=${connectResult.latency}`)
+        if (connectResult.success) break
+      }
 
       if (connectResult.success) {
         setLatency(connectResult.latency ?? null)

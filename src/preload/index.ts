@@ -158,19 +158,19 @@ const api = {
       ipcRenderer.send('analytics:track', { event, props })
   },
 
-  singbox: {
-    getInfo: () => ipcRenderer.invoke('singbox:getInfo') as Promise<{
+  tun: {
+    getInfo: () => ipcRenderer.invoke('tun:getInfo') as Promise<{
       mode: string; tunRunning: boolean; installed: boolean; lastError: string | null
       internetReachable: boolean | null; latencyMs: number | null
     }>,
-    install: () => ipcRenderer.invoke('singbox:install') as Promise<{ success: boolean; error?: string }>,
-    startTun: (proxyUrl: string) => ipcRenderer.invoke('singbox:startTun', proxyUrl) as Promise<{ success: boolean; error?: string }>,
-    stop: () => ipcRenderer.invoke('singbox:stop') as Promise<{ success: boolean }>,
-    testConnectivity: () => ipcRenderer.invoke('singbox:testConnectivity') as Promise<{ success: boolean; latency?: number; error?: string }>,
+    install: () => ipcRenderer.invoke('tun:install') as Promise<{ success: boolean; error?: string }>,
+    startTun: (proxyUrl: string) => ipcRenderer.invoke('tun:startTun', proxyUrl) as Promise<{ success: boolean; error?: string }>,
+    stop: () => ipcRenderer.invoke('tun:stop') as Promise<{ success: boolean }>,
+    testConnectivity: () => ipcRenderer.invoke('tun:testConnectivity') as Promise<{ success: boolean; latency?: number; error?: string }>,
     onInstallProgress: (callback: (event: { step: string; pct: number }) => void) => {
       const listener = (_: unknown, event: { step: string; pct: number }) => callback(event)
-      ipcRenderer.on('singbox:installProgress', listener)
-      return () => ipcRenderer.removeListener('singbox:installProgress', listener)
+      ipcRenderer.on('tun:installProgress', listener)
+      return () => ipcRenderer.removeListener('tun:installProgress', listener)
     },
   },
 
