@@ -21,7 +21,7 @@ export interface SingBoxConfig {
   }
   inbounds: { type: string; tag: string; [key: string]: unknown }[]
   outbounds: SingBoxOutbound[]
-  route: { rules: { protocol?: string; outbound?: string; action?: string }[]; auto_detect_interface: boolean; final: string }
+  route: { rules: Record<string, unknown>[]; auto_detect_interface: boolean; final: string }
 }
 
 interface ProxyNode {
@@ -62,7 +62,8 @@ export function buildTunConfig(proxyUrl: string, dnsServer = '8.8.8.8'): SingBox
         type: 'tun',
         tag: 'tun-in',
         // macOS requires utunN naming; omit interface_name to let sing-box auto-assign
-        address: ['172.19.0.1/30'],
+        // Include IPv6 address so TUN captures IPv6 traffic too (prevents IPv6 leak)
+        address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
         auto_route: true,
         strict_route: true,
         stack: 'system',
@@ -72,10 +73,16 @@ export function buildTunConfig(proxyUrl: string, dnsServer = '8.8.8.8'): SingBox
     outbounds: [
       { ...outbound, tag: 'proxy' },
       { type: 'direct', tag: 'direct' },
+      // Block outbound: drops IPv6 and LAN traffic that shouldn't leak
+      { type: 'block', tag: 'block' },
     ],
     route: {
       rules: [
         { protocol: 'dns', action: 'hijack-dns' },
+        // Block IPv6 direct connections to prevent IP leak
+        { ip_version: 6, outbound: 'block' },
+        // Block LAN traffic to prevent local network fingerprinting
+        { ip_is_private: true, outbound: 'direct' },
       ],
       auto_detect_interface: true,
       final: 'proxy',

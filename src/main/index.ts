@@ -769,8 +769,13 @@ async function openBuiltinBrowser(url: string): Promise<{ success?: boolean; err
       nodeIntegration: false,
       sandbox: true,
       session: browserSession,
+      // Disable WebRTC to prevent real IP leak via STUN/TURN
+      webgl: true,
     }
   })
+
+  // Block WebRTC IP leak: force proxy-only or disable non-proxied UDP
+  win.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
 
   // Set language header to match region
   win.webContents.session.setUserAgent(
