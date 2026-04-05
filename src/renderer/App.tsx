@@ -268,20 +268,27 @@ export function App() {
   }, [forceExpiredLogout])
 
   const checkCliAndProceed = useCallback(async () => {
+    console.log('[checkCli] start')
     const info = await window.api.cli.getInfo()
+    console.log('[checkCli] cli:', info.installed, info.version)
     setCliInfo(info.installed, info.version)
 
     if (!info.installed) {
+      console.log('[checkCli] installing CLI...')
       await startInstall()
       const newInfo = await window.api.cli.getInfo()
-      if (!newInfo.installed) return
+      if (!newInfo.installed) { console.log('[checkCli] CLI install failed'); return }
     } else {
       const toolsInstalled = await window.api.tools.isAllInstalled()
+      console.log('[checkCli] tools installed:', toolsInstalled)
       if (!toolsInstalled) {
+        console.log('[checkCli] installing tools...')
         await startToolsInstall()
+        console.log('[checkCli] tools install done')
       }
     }
 
+    console.log('[checkCli] → ready')
     setPhase('ready')
   }, [setCliInfo, setPhase])
 
@@ -581,6 +588,16 @@ export function App() {
       <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
         {plainTitleBar}
         <SetupScreen />
+        {/* TUN Gate must render on top of SetupScreen so it can auto-connect and trigger checkCliAndProceed */}
+        {subscriptionLoggedIn && !tunOk && (
+          <TunGate
+            proxyUrl={proxyUrl}
+            onReady={() => {
+              setTunOk(true)
+              checkCliAndProceed()
+            }}
+          />
+        )}
       </div>
     )
   }
