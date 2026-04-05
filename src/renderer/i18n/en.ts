@@ -13,7 +13,7 @@ export const en = {
   // Setup
   'setup.checking': 'Checking environment...',
   'setup.settingUp': 'Setting up Claude Code CLI',
-  'setup.verifying': 'Verifying Claude Code CLI installation',
+  'setup.verifying': 'Verifying Claude Code Pro',
   'setup.firstTime': 'First-time setup — this only takes a moment',
   'setup.checkEnv': 'Checking environment',
   'setup.downloading': 'Downloading Claude Code CLI...',

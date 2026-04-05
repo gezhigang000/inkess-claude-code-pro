@@ -15,7 +15,7 @@ export const zh: Record<TranslationKey, string> = {
   // Setup
   'setup.checking': '检查环境中...',
   'setup.settingUp': '正在安装 Claude Code CLI',
-  'setup.verifying': '正在验证 Claude Code CLI 安装',
+  'setup.verifying': '正在验证 Claude Code Pro',
   'setup.firstTime': '首次安装 — 只需片刻',
   'setup.checkEnv': '检查环境',
   'setup.downloading': '下载 Claude Code CLI...',
