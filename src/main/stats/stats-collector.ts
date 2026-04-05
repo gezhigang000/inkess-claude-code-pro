@@ -51,7 +51,7 @@ interface ActiveSession {
   outputTokens?: number
   totalTokens?: number
   cost?: string
-  ttfbMs?: number
+  ttfbValues: number[]
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -80,7 +80,8 @@ export class StatsCollector {
     this.sessionsPath = join(this.statsDir, 'sessions.jsonl')
     this.latencyPath = join(this.statsDir, 'latency.jsonl')
 
-    this.cleanup()
+    // Defer cleanup to avoid blocking app startup
+    setTimeout(() => this.cleanup(), 5000)
     this.startPingTimer()
   }
 
@@ -138,7 +139,7 @@ export class StatsCollector {
   // ── Session lifecycle ──────────────────────────────────────────────────────
 
   sessionStart(sessionId: string, cwd: string): void {
-    this.activeSessions.set(sessionId, { startTs: Date.now(), cwd })
+    this.activeSessions.set(sessionId, { startTs: Date.now(), cwd, ttfbValues: [] })
   }
 
   sessionSetTokens(
@@ -156,7 +157,7 @@ export class StatsCollector {
   sessionRecordTtfb(sessionId: string, ms: number): void {
     const session = this.activeSessions.get(sessionId)
     if (!session) return
-    session.ttfbMs = ms
+    session.ttfbValues.push(ms)
     this.appendLatency({ ts: Date.now(), type: 'ttfb', ms } satisfies LatencyEntry)
   }
 
@@ -175,7 +176,9 @@ export class StatsCollector {
       ...(session.outputTokens !== undefined && { outputTokens: session.outputTokens }),
       ...(session.totalTokens !== undefined && { totalTokens: session.totalTokens }),
       ...(session.cost !== undefined && { cost: session.cost }),
-      ...(session.ttfbMs !== undefined && { avgLatency: session.ttfbMs }),
+      ...(session.ttfbValues.length > 0 && {
+        avgLatency: Math.round(session.ttfbValues.reduce((a, b) => a + b, 0) / session.ttfbValues.length)
+      }),
     }
     this.appendSession(entry satisfies SessionEntry)
   }
@@ -211,33 +214,33 @@ export class StatsCollector {
 
   // ── Query methods ──────────────────────────────────────────────────────────
 
-  getEvents(): EventEntry[] {
+  async getEvents(): Promise<EventEntry[]> {
     return this.readJsonl<EventEntry>(this.eventsPath)
   }
 
-  getSessions(): SessionEntry[] {
+  async getSessions(): Promise<SessionEntry[]> {
     return this.readJsonl<SessionEntry>(this.sessionsPath)
   }
 
-  getLatency(): LatencyEntry[] {
+  async getLatency(): Promise<LatencyEntry[]> {
     return this.readJsonl<LatencyEntry>(this.latencyPath)
   }
 
-  getSummary(): StatsSummary {
+  async getSummary(): Promise<StatsSummary> {
     const todayStart = new Date()
     todayStart.setHours(0, 0, 0, 0)
     const todayTs = todayStart.getTime()
 
-    const sessions = this.getSessions().filter(s => s.ts >= todayTs)
+    const sessions = (await this.getSessions()).filter(s => s.ts >= todayTs)
     const todayTokens = sessions.reduce((sum, s) => sum + (s.totalTokens ?? 0), 0)
     const todaySessionCount = sessions.length
 
-    const latencies = this.getLatency()
+    const latencies = (await this.getLatency()).filter(l => l.ts >= todayTs)
     const pings = latencies.filter(l => l.type === 'ping').map(l => l.ms)
     const ttfbs = latencies.filter(l => l.type === 'ttfb').map(l => l.ms)
 
     const avg = (arr: number[]): number | null =>
-      arr.length === 0 ? null : arr.reduce((a, b) => a + b, 0) / arr.length
+      arr.length === 0 ? null : Math.round(arr.reduce((a, b) => a + b, 0) / arr.length)
 
     return {
       todayTokens,
@@ -260,11 +263,15 @@ export class StatsCollector {
     return total
   }
 
-  getSystemLog(): string {
+  async getSystemLog(maxLines = 500): Promise<string> {
     try {
       const logPath = log.transports.file.getFile()?.path
       if (!logPath || !existsSync(logPath)) return ''
-      return readFileSync(logPath, 'utf-8')
+      const { readFile } = await import('fs/promises')
+      const content = await readFile(logPath, 'utf-8')
+      const lines = content.split('\n')
+      // Return last N lines, newest last (chronological)
+      return lines.slice(-maxLines).join('\n')
     } catch (err) {
       log.warn('StatsCollector: failed to read system log:', err)
       return ''
@@ -293,10 +300,11 @@ export class StatsCollector {
 
   // ── Private helpers ────────────────────────────────────────────────────────
 
-  private readJsonl<T>(filePath: string): T[] {
+  private async readJsonl<T>(filePath: string): Promise<T[]> {
     if (!existsSync(filePath)) return []
     try {
-      const raw = readFileSync(filePath, 'utf-8')
+      const { readFile } = await import('fs/promises')
+      const raw = await readFile(filePath, 'utf-8')
       const results: T[] = []
       for (const line of raw.split('\n')) {
         if (!line.trim()) continue

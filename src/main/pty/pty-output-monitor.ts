@@ -83,24 +83,6 @@ export class PtyOutputMonitor extends EventEmitter {
       this.emit('activity', { id, type: 'mode-change', payload: mode } as PtyActivityEvent)
     }
 
-    // Check for token usage patterns in the buffer
-    const cleanBuffer = PtyOutputMonitor.stripAnsi(session.buffer)
-    const inputMatch = cleanBuffer.match(/input\s+tokens?:\s*([\d,]+)/i)
-    const outputMatch = cleanBuffer.match(/output\s+tokens?:\s*([\d,]+)/i)
-    const totalMatch = cleanBuffer.match(/total\s+tokens?:\s*([\d,]+)/i)
-    const costMatch = cleanBuffer.match(/cost:\s*\$?([\d.]+)/i)
-    if (inputMatch || outputMatch || totalMatch || costMatch) {
-      const input = inputMatch ? parseInt(inputMatch[1].replace(/,/g, ''), 10) : undefined
-      const output = outputMatch ? parseInt(outputMatch[1].replace(/,/g, ''), 10) : undefined
-      const total = totalMatch ? parseInt(totalMatch[1].replace(/,/g, ''), 10) : undefined
-      const cost = costMatch ? parseFloat(costMatch[1]) : undefined
-      this.emit('activity', {
-        id,
-        type: 'token-usage',
-        payload: JSON.stringify({ input, output, total, cost })
-      } as PtyActivityEvent)
-    }
-
     // Reset idle timer
     if (session.idleTimer) clearTimeout(session.idleTimer)
     session.idleTimer = setTimeout(() => {
@@ -108,6 +90,23 @@ export class PtyOutputMonitor extends EventEmitter {
       if (!session.isStreaming) return
       session.isStreaming = false
       session.lastIdleTime = Date.now()
+
+      // Check for token usage patterns in the buffer (only on idle transition, not every feed)
+      const cleanBuffer = PtyOutputMonitor.stripAnsi(session.buffer)
+      const inputMatch = cleanBuffer.match(/input\s+tokens?[:\s]+([\d,]+)/i)
+      const outputMatch = cleanBuffer.match(/output\s+tokens?[:\s]+([\d,]+)/i)
+      const totalMatch = cleanBuffer.match(/total\s+tokens?[:\s]+([\d,]+)/i)
+      const costMatch = cleanBuffer.match(/total\s+cost[:\s]+\$([\d.]+)/i)
+      if (inputMatch || outputMatch || totalMatch || costMatch) {
+        const input = inputMatch ? parseInt(inputMatch[1].replace(/,/g, ''), 10) : undefined
+        const output = outputMatch ? parseInt(outputMatch[1].replace(/,/g, ''), 10) : undefined
+        const total = totalMatch ? parseInt(totalMatch[1].replace(/,/g, ''), 10) : undefined
+        const cost = costMatch ? parseFloat(costMatch[1]) : undefined
+        this.emit('activity', {
+          id, type: 'token-usage',
+          payload: JSON.stringify({ input, output, total, cost })
+        } as PtyActivityEvent)
+      }
 
       // Check if output ended with a prompt (task complete)
       const tail = PtyOutputMonitor.stripAnsi(session.buffer.slice(-200))

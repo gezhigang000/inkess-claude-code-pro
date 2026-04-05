@@ -127,6 +127,7 @@ ipcMain.handle('cli:install', async () => {
       safeSend('cli:installProgress', { step, progress })
     })
     analytics.track('cli_install')
+    statsCollector.logEvent('cli:install')
     return { success: true }
   } catch (err) {
     log.error('CLI install failed:', err)
@@ -144,6 +145,7 @@ ipcMain.handle('cli:update', async () => {
       safeSend('cli:updateProgress', { step, progress })
     })
     analytics.track('cli_update')
+    statsCollector.logEvent('cli:update')
     return { success: true }
   } catch (err) {
     log.error('CLI update failed:', err)
@@ -332,6 +334,7 @@ ipcMain.handle('singbox:startTun', async (_event, proxyUrl: string) => {
   try {
     await singBoxManager.startTun(proxyUrl)
     log.info(`[startTun] success`)
+    statsCollector.logEvent('tun:start')
     return { success: true }
   } catch (err) {
     log.error(`[startTun] error:`, err)
@@ -353,6 +356,7 @@ ipcMain.handle('singbox:startLocalProxy', async (_event, proxyUrl: string, port?
 
 ipcMain.handle('singbox:stop', () => {
   singBoxManager.stop()
+  statsCollector.logEvent('tun:stop')
   return { success: true }
 })
 
@@ -798,10 +802,10 @@ ptyMonitor.on('activity', (event: PtyActivityEvent) => {
     try {
       const parsed = JSON.parse(event.payload ?? '{}')
       statsCollector.sessionSetTokens(event.id, {
-        inputTokens: parsed.inputTokens,
-        outputTokens: parsed.outputTokens,
-        totalTokens: parsed.totalTokens,
-        cost: parsed.cost,
+        inputTokens: typeof parsed.input === 'number' ? parsed.input : undefined,
+        outputTokens: typeof parsed.output === 'number' ? parsed.output : undefined,
+        totalTokens: typeof parsed.total === 'number' ? parsed.total : undefined,
+        cost: typeof parsed.cost === 'number' ? `$${parsed.cost}` : undefined,
       })
     } catch { /* ignore malformed payload */ }
   }
