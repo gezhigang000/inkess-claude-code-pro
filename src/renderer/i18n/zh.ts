@@ -186,6 +186,18 @@ export const zh: Record<TranslationKey, string> = {
   'update.updating': '更新中...',
   'update.later': '稍后',
 
+  // TUN Gate
+  'tun.title': '网络连接',
+  'tun.connecting': '连接中...',
+  'tun.installing': '安装网络组件...',
+  'tun.resolving': '解析代理地址...',
+  'tun.starting': '启动 TUN...',
+  'tun.testing': '检测连通性...',
+  'tun.connected': '已连接',
+  'tun.failed': '连接失败',
+  'tun.retry': '重试',
+  'tun.disconnected': '网络已断开，请重新连接后继续使用。',
+
   // Stats
   'stats.title': '统计 & 日志',
   'stats.todayTokens': '今日 Token',

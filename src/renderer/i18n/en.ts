@@ -184,6 +184,18 @@ export const en = {
   'update.updating': 'Updating...',
   'update.later': 'Later',
 
+  // TUN Gate
+  'tun.title': 'Network Connection',
+  'tun.connecting': 'Connecting...',
+  'tun.installing': 'Installing network components...',
+  'tun.resolving': 'Resolving proxy address...',
+  'tun.starting': 'Starting TUN...',
+  'tun.testing': 'Testing connectivity...',
+  'tun.connected': 'Connected',
+  'tun.failed': 'Connection failed',
+  'tun.retry': 'Retry',
+  'tun.disconnected': 'Network disconnected. Reconnect to continue.',
+
   // Stats
   'stats.title': 'Stats & Logs',
   'stats.todayTokens': 'Today Tokens',
