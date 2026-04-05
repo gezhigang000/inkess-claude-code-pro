@@ -207,6 +207,7 @@ ipcMain.handle('subscription:getSession', () => {
 
 ipcMain.handle('subscription:logout', async () => {
   subscriptionManager.logout()
+  claudeCredentials = null
   // Clear Claude browser session cookies on logout
   const { session: electronSession } = require('electron') as typeof import('electron')
   try {
@@ -388,6 +389,9 @@ interface ProxySettings {
 }
 
 let proxySettings: ProxySettings = { enabled: false, url: '', region: 'us' }
+
+// Claude credentials — in-memory only, never persisted to disk
+let claudeCredentials: { email: string; password: string } | null = null
 
 /** Region → environment variable overrides (timezone, locale) */
 const REGION_ENV: Record<string, Record<string, string>> = {
@@ -597,6 +601,17 @@ ipcMain.handle('stats:getSystemLog', () => statsCollector.getSystemLog())
 ipcMain.handle('stats:getStorageSize', () => statsCollector.getStorageSize())
 ipcMain.handle('stats:clear', () => { statsCollector.clearAll(); return { success: true } })
 
+// IPC: Claude credentials (in-memory only)
+ipcMain.handle('claude:setCredentials', (_event, args: unknown) => {
+  const { email, password } = (args || {}) as Record<string, unknown>
+  if (typeof email === 'string' && typeof password === 'string' && email.length > 0 && password.length > 0) {
+    claudeCredentials = { email, password }
+  }
+})
+ipcMain.handle('claude:clearCredentials', () => {
+  claudeCredentials = null
+})
+
 // IPC: Session history
 ipcMain.handle('session:list', () => sessionRecorder.listSessions())
 ipcMain.handle('session:read', (_event, id: string) => sessionRecorder.readSession(id))
@@ -761,9 +776,84 @@ ipcMain.handle('browser:open', async (_event, url: string) => {
         })();
       `).catch(() => {})
     }
+    // Auto-fill Claude login if credentials are available
+    if (isClaude && claudeCredentials) {
+      const pageUrl = win.webContents.getURL()
+      if (pageUrl.includes('login') || pageUrl.includes('clerk') || pageUrl.includes('accounts.anthropic.com')) {
+        const safeEmail = JSON.stringify(claudeCredentials.email)
+        const safePass = JSON.stringify(claudeCredentials.password)
+        win.webContents.executeJavaScript(`
+          (function() {
+            function tryFill() {
+              var emailInput = document.querySelector('input[type="email"], input[name="email"], input[name="identifier"]');
+              var passInput = document.querySelector('input[type="password"]');
+              if (emailInput) {
+                emailInput.value = ${safeEmail};
+                emailInput.dispatchEvent(new Event('input', { bubbles: true }));
+                emailInput.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+              if (passInput) {
+                passInput.value = ${safePass};
+                passInput.dispatchEvent(new Event('input', { bubbles: true }));
+                passInput.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+              if (emailInput || passInput) {
+                setTimeout(function() {
+                  var btn = document.querySelector('button[type="submit"]');
+                  if (btn) btn.click();
+                }, 800);
+              } else {
+                setTimeout(tryFill, 1000);
+              }
+            }
+            setTimeout(tryFill, 500);
+          })()
+        `).catch(() => {})
+      }
+    }
   })
 
   win.loadURL(url)
+
+  // For Claude windows, handle navigation to login pages
+  if (isClaude && claudeCredentials) {
+    win.webContents.on('did-navigate', (_navEvent, navUrl) => {
+      if (navUrl.includes('login') || navUrl.includes('clerk') || navUrl.includes('accounts.anthropic.com')) {
+        const safeEmail = JSON.stringify(claudeCredentials!.email)
+        const safePass = JSON.stringify(claudeCredentials!.password)
+        setTimeout(() => {
+          win.webContents.executeJavaScript(`
+            (function() {
+              function tryFill() {
+                var emailInput = document.querySelector('input[type="email"], input[name="email"], input[name="identifier"]');
+                var passInput = document.querySelector('input[type="password"]');
+                if (emailInput) {
+                  emailInput.value = ${safeEmail};
+                  emailInput.dispatchEvent(new Event('input', { bubbles: true }));
+                  emailInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                if (passInput) {
+                  passInput.value = ${safePass};
+                  passInput.dispatchEvent(new Event('input', { bubbles: true }));
+                  passInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                if (emailInput || passInput) {
+                  setTimeout(function() {
+                    var btn = document.querySelector('button[type="submit"]');
+                    if (btn) btn.click();
+                  }, 800);
+                } else {
+                  setTimeout(tryFill, 1000);
+                }
+              }
+              setTimeout(tryFill, 500);
+            })()
+          `).catch(() => {})
+        }, 500)
+      }
+    })
+  }
+
   browserWindows.push(win)
 
   win.on('closed', () => {
