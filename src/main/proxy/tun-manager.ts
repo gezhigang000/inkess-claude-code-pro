@@ -24,7 +24,7 @@ const TUN_MIRROR_BASE = `https://inkess-install-file.oss-cn-beijing.aliyuncs.com
 // TUN network constants
 const TUN_IP = '198.18.0.1'
 const FAKE_DNS_IP = '198.18.0.2'
-const TUN_NAME_MAC = 'utun99'
+const TUN_NAME_MAC = 'utun199'
 const TUN_NAME_WIN = 'tun0'
 const CGNAT_RANGE = '100.64.0.0/10'
 
