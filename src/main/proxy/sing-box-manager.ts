@@ -10,6 +10,11 @@ import { fetchWithTimeout } from '../utils/fetch'
 
 const execFileAsync = promisify(execFile)
 
+// DNS server to set via scutil — 198.18.0.2 is a safe non-routable IP.
+// sing-box hijack-dns intercepts DNS packets to ANY IP on port 53,
+// so the actual IP doesn't matter. We just need macOS to send DNS through TUN.
+const SYSTEM_DNS_OVERRIDE = '198.18.0.2'
+
 const SINGBOX_VERSION = '1.11.0'
 const SINGBOX_DOWNLOAD_BASE = 'https://inkess-install-file.oss-cn-beijing.aliyuncs.com/singbox-mirror'
 
@@ -190,8 +195,46 @@ export class SingBoxManager {
     }
   }
 
+  /**
+   * Override macOS system DNS to force DNS queries through TUN.
+   * Without this, macOS mDNSResponder uses ISP DNS directly, bypassing sing-box hijack-dns.
+   */
+  private setSystemDns(): void {
+    if (os.platform() !== 'darwin') return
+    try {
+      execSync(`scutil <<EOF
+d.init
+d.add ServerAddresses * ${SYSTEM_DNS_OVERRIDE}
+d.add SupplementalMatchDomains * ""
+set State:/Network/Service/sing-box-tun/DNS
+EOF`, { timeout: 5000, stdio: 'pipe' })
+      // Flush DNS cache to force mDNSResponder to use new config
+      execSync('dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null', { timeout: 5000, stdio: 'pipe' })
+      log.info(`[sing-box] system DNS set to ${SYSTEM_DNS_OVERRIDE} + cache flushed`)
+    } catch (err) {
+      log.warn(`[sing-box] failed to set system DNS: ${(err as Error).message}`)
+    }
+  }
+
+  /** Restore macOS system DNS to default. */
+  private restoreSystemDns(): void {
+    if (os.platform() !== 'darwin') return
+    try {
+      execSync(`scutil <<EOF
+remove State:/Network/Service/sing-box-tun/DNS
+EOF`, { timeout: 5000, stdio: 'pipe' })
+      execSync('dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null', { timeout: 5000, stdio: 'pipe' })
+      log.info('[sing-box] system DNS restored')
+    } catch (err) {
+      log.warn(`[sing-box] failed to restore system DNS: ${(err as Error).message}`)
+    }
+  }
+
   private async _stopImpl(): Promise<void> {
     log.info(`[sing-box] stop() called, mode=${this._mode} status=${this._status}`)
+
+    // Restore system DNS before killing sing-box
+    this.restoreSystemDns()
 
     // Kill the osascript/powershell wrapper process (if any)
     const proc = this.process
@@ -255,6 +298,12 @@ export class SingBoxManager {
       await this.startWithAdmin()
     } else {
       this.startProcess()
+    }
+
+    // Override system DNS to force queries through TUN (sing-box hijack-dns)
+    // Without this, macOS mDNSResponder uses ISP DNS directly → DNS leak
+    if (this._status as string === 'running') {
+      this.setSystemDns()
     }
   }
 
@@ -486,7 +535,12 @@ export class SingBoxManager {
       // When parent dies (app crash/force-quit), the watchdog loop detects it and kills sing-box.
       // This prevents process leak when before-quit cleanup fails.
       const parentPid = process.pid
-      const shellCmd = `'${safeBin}' run -c '${safeCfg}' > '${logFile}' 2>&1 & SB_PID=$!; echo $SB_PID > '${safePid}'; while kill -0 ${parentPid} 2>/dev/null && kill -0 $SB_PID 2>/dev/null; do sleep 2; done; kill -TERM $SB_PID 2>/dev/null; kill -9 $SB_PID 2>/dev/null`
+      // Watchdog: start sing-box, monitor parent PID, cleanup on exit (kill + restore DNS)
+      const dnsCleanup = `scutil <<DNSEOF
+remove State:/Network/Service/sing-box-tun/DNS
+DNSEOF
+dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
+      const shellCmd = `'${safeBin}' run -c '${safeCfg}' > '${logFile}' 2>&1 & SB_PID=$!; echo $SB_PID > '${safePid}'; while kill -0 ${parentPid} 2>/dev/null && kill -0 $SB_PID 2>/dev/null; do sleep 2; done; ${dnsCleanup}; kill -TERM $SB_PID 2>/dev/null; kill -9 $SB_PID 2>/dev/null`
 
       let settled = false
       let pidPollInterval: ReturnType<typeof setInterval> | null = null
