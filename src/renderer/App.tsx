@@ -62,7 +62,7 @@ export function App() {
   const [tunOk, setTunOk] = useState(false)
   const tunOkRef = useRef(false)
   const handleNewTabRef = useRef<(cwd?: string) => void>(() => {})
-  useEffect(() => { tunOkRef.current = tunOk }, [tunOk])
+  useEffect(() => { tunOkRef.current = tunOk; console.log(`[App] tunOk changed → ${tunOk}`) }, [tunOk])
 
   const [subscriptionLoggedIn, setSubscriptionLoggedIn] = useState<boolean | null>(null) // null = checking
   const [subscriptionUsername, setSubscriptionUsername] = useState<string | null>(null)
@@ -79,7 +79,7 @@ export function App() {
     let failCount = 0
     const interval = setInterval(async () => {
       const info = await window.api.singbox.getInfo()
-      if (info.status !== 'running') {
+      if (!info.tunRunning) {
         failCount++
         if (failCount >= 2) {
           setTunOk(false)
@@ -117,7 +117,7 @@ export function App() {
       startStatusPolling(session.session?.plan || 'monthly')
       // Check if TUN is already running and connected
       const singboxInfo = await window.api.singbox.getInfo()
-      if (singboxInfo.status === 'running') {
+      if (singboxInfo.tunRunning) {
         const test = await window.api.singbox.testConnectivity()
         if (test.success) {
           setTunOk(true)
@@ -293,8 +293,12 @@ export function App() {
   }, [setCliInfo, setPhase])
 
   const handleNewTab = useCallback(async (cwd?: string) => {
+    console.log(`[handleNewTab] tunOkRef=${tunOkRef.current} cwd=${cwd}`)
     // Block new sessions if TUN is not connected
-    if (!tunOkRef.current) return
+    if (!tunOkRef.current) {
+      console.warn('[handleNewTab] BLOCKED — tunOkRef is false')
+      return
+    }
 
     const targetCwd = cwd || (tabs.length > 0 ? tabs[tabs.length - 1].cwd : DEFAULT_CWD)
     const { cliInstalled } = useAppStore.getState()
@@ -561,55 +565,45 @@ export function App() {
     </div>
   )
 
-  // Show login page if not logged in
-  if (subscriptionLoggedIn === false) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-        {plainTitleBar}
-        <LoginPage onLoginSuccess={handleSubscriptionLogin} />
-      </div>
-    )
-  }
-
-  // Still checking subscription or loading
-  if (subscriptionLoggedIn === null) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-        {plainTitleBar}
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
-          <div style={{ width: 24, height: 24, border: '2px solid var(--border)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.75s linear infinite' }} />
-        </div>
-      </div>
-    )
-  }
-
-  if (phase === 'checking' || phase === 'installing' || phase === 'error') {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-        {plainTitleBar}
-        <SetupScreen />
-        {/* TUN Gate must render on top of SetupScreen so it can auto-connect and trigger checkCliAndProceed */}
-        {subscriptionLoggedIn && !tunOk && (
-          <TunGate
-            proxyUrl={proxyUrl}
-            onReady={() => {
-              setTunOk(true)
-              checkCliAndProceed()
-            }}
-          />
-        )}
-      </div>
-    )
-  }
+  // Determine which layer to show as main content
+  const showLogin = subscriptionLoggedIn === false
+  const showLoading = subscriptionLoggedIn === null
+  const showSetup = subscriptionLoggedIn === true && (phase === 'checking' || phase === 'installing' || phase === 'error')
+  const showTerminal = subscriptionLoggedIn === true && phase === 'ready'
 
   return (
     <div
       style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}
-      onDragEnter={handleDragEnter}
-      onDragLeave={handleDragLeave}
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
+      onDragEnter={showTerminal ? handleDragEnter : undefined}
+      onDragLeave={showTerminal ? handleDragLeave : undefined}
+      onDragOver={showTerminal ? handleDragOver : undefined}
+      onDrop={showTerminal ? handleDrop : undefined}
     >
+      {/* === Layer 0: Login / Loading / Setup === */}
+      {showLogin && (
+        <>
+          {plainTitleBar}
+          <LoginPage onLoginSuccess={handleSubscriptionLogin} />
+        </>
+      )}
+      {showLoading && (
+        <>
+          {plainTitleBar}
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
+            <div style={{ width: 24, height: 24, border: '2px solid var(--border)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.75s linear infinite' }} />
+          </div>
+        </>
+      )}
+      {showSetup && (
+        <>
+          {plainTitleBar}
+          <SetupScreen />
+        </>
+      )}
+
+      {/* === Layer 1: Terminal UI (renders when ready, stays mounted on TUN disconnect) === */}
+      {showTerminal && (
+        <>
       {/* Drag overlay */}
       {dragOver && (
         <div style={{
@@ -699,18 +693,16 @@ export function App() {
           )}
         </div>
       </div>
+      </>
+      )}
+
+      {/* === TunGate overlay — renders independently when logged in but TUN not ready === */}
+      {subscriptionLoggedIn && !tunOk && (
+        <TunGate proxyUrl={proxyUrl} onReady={() => { console.log('[App] TunGate onReady → setTunOk(true)'); setTunOk(true); checkCliAndProceed() }} />
+      )}
+
       {showStats && <StatsView onClose={() => setShowStats(false)} />}
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} onLogout={() => { setShowSettings(false); forceExpiredLogout() }} onTunStatusChange={setTunOk} />}
-      {/* TUN Gate — mandatory network overlay */}
-      {subscriptionLoggedIn && !tunOk && (
-        <TunGate
-          proxyUrl={proxyUrl}
-          onReady={() => {
-            setTunOk(true)
-            if (phase !== 'ready') checkCliAndProceed()
-          }}
-        />
-      )}
       {showCommandPalette && (
         <CommandPalette
           onClose={() => setShowCommandPalette(false)}

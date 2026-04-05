@@ -1,6 +1,6 @@
 {
   "name": "inkess-claude-code-pro",
-  "version": "0.3.24",
+  "version": "0.3.25",
   "description": "Inkess Claude Code Pro — Zero-config Claude Code terminal for Inkess users",
   "author": "Inkess",
   "main": "./out/main/index.js",
@@ -36,15 +36,13 @@
         {
           "target": "dmg",
           "arch": [
-            "arm64",
-            "x64"
+            "arm64"
           ]
         },
         {
           "target": "zip",
           "arch": [
-            "arm64",
-            "x64"
+            "arm64"
           ]
         }
       ],

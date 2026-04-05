@@ -4,7 +4,7 @@ import { join, resolve, normalize } from 'path'
 import { existsSync, mkdirSync, statSync } from 'fs'
 import { execSync } from 'child_process'
 import * as os from 'os'
-import { PtyManager } from './pty/pty-manager'
+import { PtyManager, DEFAULT_ENV_OVERRIDES, DEFAULT_ENV_HIDDEN } from './pty/pty-manager'
 import { PtyOutputMonitor, type PtyActivityEvent } from './pty/pty-output-monitor'
 import { CliManager } from './cli/cli-manager'
 import { ToolsManager } from './tools/tools-manager'
@@ -13,7 +13,7 @@ import { Analytics } from './analytics'
 import { ErrorReporter } from './error-reporter'
 import { SessionRecorder } from './session/session-recorder'
 import { SubscriptionManager } from './subscription/subscription-manager'
-import { fetchSubscription } from './proxy/subscription'
+import { fetchSubscription, detectRegion } from './proxy/subscription'
 import { SingBoxManager } from './proxy/sing-box-manager'
 import { StatsCollector } from './stats/stats-collector'
 
@@ -30,6 +30,10 @@ const errorReporter = new ErrorReporter()
 const sessionRecorder = new SessionRecorder()
 const subscriptionManager = new SubscriptionManager()
 const singBoxManager = new SingBoxManager()
+// Clean up any stale sing-box processes from previous crashes
+singBoxManager.cleanupStaleProcesses().catch(err => {
+  log.warn('[startup] Failed to clean up stale sing-box processes:', err)
+})
 const statsCollector = new StatsCollector()
 
 /** Safely send to renderer, swallowing errors if window is destroyed */
@@ -102,6 +106,8 @@ function createWindow(): void {
   mainWindow.webContents.on('console-message', (_event, level, message) => {
     if (level >= 2) {
       log.warn(`[Renderer Console] ${message}`)
+    } else {
+      log.info(`[R] ${message}`)
     }
   })
 
@@ -331,8 +337,8 @@ ipcMain.handle('singbox:startLocalProxy', async (_event, proxyUrl: string, port?
   }
 })
 
-ipcMain.handle('singbox:stop', () => {
-  singBoxManager.stop()
+ipcMain.handle('singbox:stop', async () => {
+  await singBoxManager.stop()
   statsCollector.logEvent('tun:stop')
   // Close all browser windows when TUN stops
   browserWindows.forEach(w => { try { if (!w.isDestroyed()) w.close() } catch { /* ignore */ } })
@@ -340,21 +346,7 @@ ipcMain.handle('singbox:stop', () => {
   return { success: true }
 })
 
-ipcMain.handle('singbox:testConnectivity', async () => {
-  try {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 10000)
-    const start = Date.now()
-    const res = await fetch('https://www.google.com/generate_204', {
-      method: 'HEAD',
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timer))
-    const latency = Date.now() - start
-    return { success: res.ok || res.status === 204, latency }
-  } catch (err) {
-    return { success: false, error: (err as Error).message }
-  }
-})
+ipcMain.handle('singbox:testConnectivity', () => singBoxManager.testConnectivity())
 
 // IPC: Proxy settings (stored in main process, applied to PTY env on create)
 interface ProxySettings {
@@ -448,7 +440,10 @@ ipcMain.handle('proxy:resolveUrl', async (_event, url: string) => {
     const resolved = (node.raw && /^[a-z]+:\/\//i.test(node.raw)) ? node.raw : node.url
     log.info(`[resolveUrl] picked node: ${node.name}, resolved: ${resolved?.substring(0, 80)}`)
     if (!resolved) return { resolved: '', isSubscription: true, error: `No usable proxy URL in ${nodes.length} nodes` }
-    return { resolved, isSubscription: true, nodeName: node.name, nodeCount: nodes.length }
+    // Detect region from node name for auto environment masking
+    const detected = detectRegion(node.name)
+    log.info(`[resolveUrl] detected region: ${detected.region} (${detected.flag}) from "${node.name}"`)
+    return { resolved, isSubscription: true, nodeName: node.name, nodeCount: nodes.length, detectedRegion: detected.region }
   } catch (err) {
     log.error(`[resolveUrl] error:`, err)
     return { resolved: '', isSubscription: true, error: (err as Error).message }
@@ -489,7 +484,7 @@ ipcMain.handle('pty:create', (_event, options: {
     const proxyEnv = proxySettings.enabled ? buildProxyEnv(proxySettings.url) : {}
 
     // Build env config with region-based overrides
-    const { DEFAULT_ENV_OVERRIDES, DEFAULT_ENV_HIDDEN } = require('./pty/pty-manager') as typeof import('./pty/pty-manager')
+    // DEFAULT_ENV_OVERRIDES, DEFAULT_ENV_HIDDEN imported at top level
     const regionOverrides = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}
     const envConfig = {
       overrides: { ...DEFAULT_ENV_OVERRIDES, ...regionOverrides },
@@ -727,7 +722,7 @@ ipcMain.handle('browser:open', async (_event, url: string) => {
   // Block browser when TUN is not running
   if (proxySettings.enabled) {
     const sbInfo = singBoxManager.getInfo()
-    if (sbInfo.status !== 'running') {
+    if (!sbInfo.tunRunning) {
       log.warn('browser:open blocked — TUN not running')
       return { error: 'Network not connected. Please start TUN first.' }
     }
@@ -990,9 +985,27 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('window-all-closed', () => {
-  // Stop sing-box TUN/proxy
+// Ensure sing-box is stopped before app quits (async cleanup)
+let _quitting = false
+app.on('before-quit', (event) => {
+  if (_quitting || singBoxManager.mode === 'off') return
+  event.preventDefault()
+  _quitting = true
   singBoxManager.stop()
+    .catch(err => log.error('[before-quit] Failed to stop sing-box:', err))
+    .finally(() => app.quit())
+})
+
+// Handle process signals for cleanup
+for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(sig, () => {
+    singBoxManager.stop()
+      .catch(() => { /* best effort */ })
+      .finally(() => process.exit(0))
+  })
+}
+
+app.on('window-all-closed', async () => {
   // Close all browser windows
   browserWindows.forEach(w => { try { w.close() } catch { /* ignore */ } })
   browserWindows = []
@@ -1007,6 +1020,7 @@ app.on('window-all-closed', () => {
     sleepBlockerId = null
   }
   if (process.platform !== 'darwin') {
+    // before-quit handler will stop sing-box
     setTimeout(() => app.quit(), 500)
   }
 })

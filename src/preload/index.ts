@@ -55,7 +55,7 @@ const api = {
       enabled: boolean; url: string; region: string
     }) => ipcRenderer.invoke('proxy:updateSettings', settings),
     resolveUrl: (url: string) => ipcRenderer.invoke('proxy:resolveUrl', url) as Promise<{
-      resolved: string; isSubscription: boolean; nodeName?: string; nodeCount?: number; error?: string
+      resolved: string; isSubscription: boolean; nodeName?: string; nodeCount?: number; detectedRegion?: string; error?: string
     }>,
     fetchSubscription: (url: string) => ipcRenderer.invoke('proxy:fetchSubscription', url) as Promise<{
       success: boolean; error?: string; nodes: Array<{
@@ -158,7 +158,8 @@ const api = {
 
   singbox: {
     getInfo: () => ipcRenderer.invoke('singbox:getInfo') as Promise<{
-      mode: string; status: string; installed: boolean; lastError: string | null
+      mode: string; tunRunning: boolean; installed: boolean; lastError: string | null
+      internetReachable: boolean | null; latencyMs: number | null
     }>,
     install: () => ipcRenderer.invoke('singbox:install') as Promise<{ success: boolean; error?: string }>,
     startTun: (proxyUrl: string) => ipcRenderer.invoke('singbox:startTun', proxyUrl) as Promise<{ success: boolean; error?: string }>,

@@ -28,7 +28,7 @@ const REGION_DETECT: [RegExp, string, string][] = [
   [/\b(RU|俄罗斯|Russia|Moscow)/i, 'de', '🇷🇺'],
 ]
 
-function detectRegion(name: string): { region: string; flag: string } {
+export function detectRegion(name: string): { region: string; flag: string } {
   for (const [re, region, flag] of REGION_DETECT) {
     if (re.test(name)) return { region, flag }
   }

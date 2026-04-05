@@ -475,7 +475,7 @@ function killAllPtySessions() {
 
 function TunControl({ proxyUrl, onTunStatusChange }: { proxyUrl: string; onTunStatusChange?: (ok: boolean) => void }) {
   const { t } = useI18n()
-  const [info, setInfo] = useState<{ mode: string; status: string; installed: boolean; lastError: string | null }>({ mode: 'off', status: 'stopped', installed: false, lastError: null })
+  const [info, setInfo] = useState<{ mode: string; tunRunning: boolean; installed: boolean; lastError: string | null; internetReachable: boolean | null; latencyMs: number | null }>({ mode: 'off', tunRunning: false, installed: false, lastError: null, internetReachable: null, latencyMs: null })
   const [loading, setLoading] = useState(false)
   const [testResult, setTestResult] = useState<{ status: 'idle' | 'testing' | 'ok' | 'fail'; latency?: number; error?: string }>({ status: 'idle' })
 
@@ -549,8 +549,8 @@ function TunControl({ proxyUrl, onTunStatusChange }: { proxyUrl: string; onTunSt
     }
   }
 
-  const isRunning = info.status === 'running'
-  const statusColor = isRunning ? 'var(--success)' : info.status === 'error' ? 'var(--error)' : 'var(--text-muted)'
+  const isRunning = info.tunRunning
+  const statusColor = isRunning ? 'var(--success)' : info.lastError ? 'var(--error)' : 'var(--text-muted)'
 
   return (
     <SettingsGroup title="TUN">

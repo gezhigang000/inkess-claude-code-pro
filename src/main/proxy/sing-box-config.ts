@@ -13,10 +13,10 @@ export interface SingBoxOutbound {
 
 export interface SingBoxConfig {
   log: { level: string; timestamp: boolean }
-  dns: { servers: { address: string; tag: string }[]; rules: { outbound: string; server: string }[]; final?: string }
+  dns: { servers: { address: string; tag: string }[]; rules?: { outbound?: string; server?: string }[]; final?: string }
   inbounds: { type: string; tag: string; [key: string]: unknown }[]
   outbounds: SingBoxOutbound[]
-  route: { rules: { protocol?: string; outbound: string }[]; auto_detect_interface: boolean; final: string }
+  route: { rules: { protocol?: string; outbound?: string; action?: string }[]; auto_detect_interface: boolean; final: string }
 }
 
 interface ProxyNode {
@@ -37,23 +37,19 @@ export function buildTunConfig(proxyUrl: string, dnsServer = '8.8.8.8'): SingBox
   const outbound = parseProxyUrl(proxyUrl)
 
   return {
-    log: { level: 'warn', timestamp: true },
+    log: { level: 'info', timestamp: true },
     dns: {
       servers: [
         { address: `${dnsServer}`, tag: 'remote-dns' },
-        { address: 'local', tag: 'local-dns' },
       ],
-      rules: [
-        { outbound: 'any', server: 'local-dns' },  // proxy outbound DNS bootstrap
-      ],
-      final: 'remote-dns', // all other DNS goes through proxy (prevents DNS leak)
+      final: 'remote-dns',
     },
     inbounds: [
       {
         type: 'tun',
         tag: 'tun-in',
-        interface_name: 'inkess-tun',
-        inet4_address: '172.19.0.1/30',
+        // macOS requires utunN naming; omit interface_name to let sing-box auto-assign
+        address: ['172.19.0.1/30'],
         auto_route: true,
         strict_route: true,
         stack: 'system',
@@ -63,11 +59,10 @@ export function buildTunConfig(proxyUrl: string, dnsServer = '8.8.8.8'): SingBox
     outbounds: [
       { ...outbound, tag: 'proxy' },
       { type: 'direct', tag: 'direct' },
-      { type: 'dns', tag: 'dns-out' },
     ],
     route: {
       rules: [
-        { protocol: 'dns', outbound: 'dns-out' },
+        { protocol: 'dns', action: 'hijack-dns' },
       ],
       auto_detect_interface: true,
       final: 'proxy',

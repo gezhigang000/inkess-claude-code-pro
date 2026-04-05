@@ -15,12 +15,19 @@ export function TunGate({ proxyUrl, onReady }: TunGateProps) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [latency, setLatency] = useState<number | null>(null)
-  const cancelledRef = useRef(false)
   const proxyUrlRef = useRef(proxyUrl)
+  const connectingRef = useRef(false)
   useEffect(() => { proxyUrlRef.current = proxyUrl }, [proxyUrl])
 
   const connect = async () => {
-    cancelledRef.current = false
+    if (connectingRef.current) return
+    connectingRef.current = true
+    try { await _connect() } finally { connectingRef.current = false }
+  }
+
+  const _connect = async () => {
+    const id = Math.random().toString(36).slice(2, 6)
+    console.log(`[TunGate:${id}] connect start`)
     setPhase('idle')
     setError(null)
     setLatency(null)
@@ -28,30 +35,39 @@ export function TunGate({ proxyUrl, onReady }: TunGateProps) {
     try {
       // Check if sing-box already running
       const info = await window.api.singbox.getInfo()
-      if (cancelledRef.current) return
+      console.log(`[TunGate:${id}] getInfo: tunRunning=${info.tunRunning}, installed=${info.installed}, reachable=${info.internetReachable}`)
 
-      if (info.status === 'running') {
-        // Already running — test connectivity
+      if (info.tunRunning && info.internetReachable) {
+        // Already running and tested — skip directly
+        console.log(`[TunGate:${id}] already connected, calling onReady`)
+        setLatency(info.latencyMs)
+        setPhase('connected')
+        setTimeout(() => onReady(), 300)
+        return
+      }
+
+      if (info.tunRunning) {
+        // Running but not tested — test connectivity
         setPhase('testing')
+        console.log(`[TunGate:${id}] TUN running, testing connectivity...`)
         const result = await window.api.singbox.testConnectivity()
-        if (cancelledRef.current) return
-
+        console.log(`[TunGate:${id}] testConnectivity: success=${result.success}, latency=${result.latency}`)
         if (result.success) {
           setLatency(result.latency ?? null)
           setPhase('connected')
-          setTimeout(() => { if (!cancelledRef.current) onReady() }, 500)
+          setTimeout(() => onReady(), 300)
           return
         }
         // Connectivity test failed even though running — fall through to restart
+        console.log(`[TunGate:${id}] connectivity failed, restarting TUN`)
         await window.api.singbox.stop()
-        if (cancelledRef.current) return
       }
 
       // Install if needed
       if (!info.installed) {
         setPhase('installing')
+        console.log(`[TunGate:${id}] installing sing-box...`)
         const installResult = await window.api.singbox.install()
-        if (cancelledRef.current) return
         if (!installResult.success) {
           setPhase('failed')
           setError(installResult.error ?? 'Installation failed')
@@ -61,52 +77,82 @@ export function TunGate({ proxyUrl, onReady }: TunGateProps) {
 
       // Resolve subscription URL
       setPhase('resolving')
+      console.log(`[TunGate:${id}] resolving URL...`)
       const resolveResult = await window.api.proxy.resolveUrl(proxyUrlRef.current)
-      if (cancelledRef.current) return
       if (resolveResult.error) {
         setPhase('failed')
         setError(resolveResult.error)
         return
       }
+      // Auto-set environment region from detected proxy node location
+      if (resolveResult.detectedRegion && resolveResult.detectedRegion !== 'auto') {
+        console.log(`[TunGate:${id}] auto-setting region: ${resolveResult.detectedRegion}`)
+        const { useSettingsStore } = await import('../../stores/settings')
+        useSettingsStore.getState().setProxyRegion(resolveResult.detectedRegion)
+      }
 
-      // Start TUN
+      // Start TUN (blocks until sing-box confirmed running or fails)
       setPhase('starting')
+      console.log(`[TunGate:${id}] starting TUN...`)
       const startResult = await window.api.singbox.startTun(resolveResult.resolved)
-      if (cancelledRef.current) return
+      console.log(`[TunGate:${id}] startTun result: success=${startResult.success}, error=${startResult.error}`)
       if (!startResult.success) {
         setPhase('failed')
         setError(startResult.error ?? 'Failed to start TUN')
         return
       }
 
-      // Wait 1.5s for TUN to initialize
-      await new Promise(resolve => setTimeout(resolve, 1500))
-      if (cancelledRef.current) return
+      // Wait for TUN to be confirmed running (handles case where startTun was skipped
+      // because another call is already in progress)
+      console.log(`[TunGate:${id}] waiting for TUN to be running...`)
+      let tunReady = false
+      for (let i = 0; i < 120; i++) { // up to 60s
+        const status = await window.api.singbox.getInfo()
+        if (status.tunRunning) { tunReady = true; break }
+        if (status.lastError?.includes('User canceled') || status.lastError?.includes('exited')) {
+          setPhase('failed')
+          setError(status.lastError)
+          return
+        }
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+      if (!tunReady) {
+        setPhase('failed')
+        setError('Timed out waiting for TUN')
+        return
+      }
+
+      // TUN is confirmed running — wait briefly for network routes to take effect
+      console.log(`[TunGate:${id}] TUN running, waiting 1s for routes...`)
+      await new Promise(resolve => setTimeout(resolve, 1000))
 
       // Test connectivity
       setPhase('testing')
+      console.log(`[TunGate:${id}] testing connectivity...`)
       const connectResult = await window.api.singbox.testConnectivity()
-      if (cancelledRef.current) return
+      console.log(`[TunGate:${id}] result: success=${connectResult.success}, latency=${connectResult.latency}`)
 
       if (connectResult.success) {
         setLatency(connectResult.latency ?? null)
         setPhase('connected')
-        setTimeout(() => { if (!cancelledRef.current) onReady() }, 500)
+        setTimeout(() => onReady(), 300)
       } else {
         setPhase('failed')
         setError(connectResult.error ?? 'Connectivity test failed')
       }
     } catch (err) {
-      if (!cancelledRef.current) {
-        setPhase('failed')
-        setError(err instanceof Error ? err.message : String(err))
-      }
+      console.error(`[TunGate:${id}] error:`, err)
+      setPhase('failed')
+      setError(err instanceof Error ? err.message : String(err))
     }
   }
 
   useEffect(() => {
     connect()
-    return () => { cancelledRef.current = true }
+    // NOTE: No cancelledRef cleanup — React StrictMode double-mount is handled by
+    // the idempotent nature of the operations (startTun skips if already starting,
+    // getInfo returns current state). The second mount will detect TUN is already
+    // running and skip to connectivity test.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

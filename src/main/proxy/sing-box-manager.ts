@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { join } from 'path'
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, chmodSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, chmodSync, readFileSync } from 'fs'
 import { execSync, spawn, type ChildProcess } from 'child_process'
 import * as os from 'os'
 import log from '../logger'
@@ -12,6 +12,15 @@ const SINGBOX_DOWNLOAD_BASE = 'https://github.com/SagerNet/sing-box/releases/dow
 
 type SingBoxMode = 'tun' | 'local-proxy' | 'off'
 
+export interface NetworkStatus {
+  mode: SingBoxMode
+  tunRunning: boolean
+  installed: boolean
+  lastError: string | null
+  internetReachable: boolean | null
+  latencyMs: number | null
+}
+
 export class SingBoxManager {
   private singboxDir: string
   private configPath: string
@@ -19,6 +28,9 @@ export class SingBoxManager {
   private _mode: SingBoxMode = 'off'
   private _status: 'stopped' | 'starting' | 'running' | 'error' = 'stopped'
   private _lastError: string | null = null
+  private _internetReachable: boolean | null = null
+  private _latencyMs: number | null = null
+  private _stopPromise: Promise<void> | null = null
 
   constructor() {
     this.singboxDir = join(app.getPath('userData'), 'sing-box')
@@ -35,6 +47,10 @@ export class SingBoxManager {
     return join(this.singboxDir, name)
   }
 
+  private get pidFilePath(): string {
+    return join(this.singboxDir, 'sing-box.pid')
+  }
+
   private get platformKey(): string {
     const platform = os.platform()
     const arch = os.arch()
@@ -47,9 +63,283 @@ export class SingBoxManager {
     return existsSync(this.binaryPath)
   }
 
+  // --- Process lifecycle helpers ---
+
+  /** Check if a process is alive. Uses `ps` on macOS (root process = EPERM from kill). */
+  private isProcessAlive(pid: number): boolean {
+    try {
+      if (os.platform() === 'darwin' || os.platform() === 'linux') {
+        execSync(`ps -p ${pid} -o pid=`, { timeout: 2000, stdio: 'pipe' })
+        return true
+      }
+      // Windows: check via tasklist
+      const out = execSync(`tasklist /FI "PID eq ${pid}" /NH`, { timeout: 2000, encoding: 'utf-8' })
+      return out.includes(String(pid))
+    } catch {
+      return false
+    }
+  }
+
+  /** Wait for a process to die, polling every 200ms. Returns true if dead. */
+  private async waitForProcessDeath(pid: number, timeoutMs: number): Promise<boolean> {
+    const start = Date.now()
+    while (Date.now() - start < timeoutMs) {
+      if (!this.isProcessAlive(pid)) return true
+      await new Promise(r => setTimeout(r, 200))
+    }
+    return !this.isProcessAlive(pid)
+  }
+
+  /** Kill a process. If sudo=true, uses osascript/UAC (requires GUI interaction). */
+  private killProcess(pid: number, signal: 'TERM' | 'KILL', sudo = true): void {
+    const sig = signal === 'KILL' ? '-9' : '-TERM'
+    try {
+      if (os.platform() === 'win32') {
+        // Windows: taskkill always force-kills; /F required for elevated processes
+        execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, stdio: 'pipe' })
+      } else if (sudo) {
+        execSync(
+          `osascript -e 'do shell script "kill ${sig} ${pid}" with administrator privileges'`,
+          { timeout: 15000, stdio: 'pipe' }
+        )
+      } else {
+        execSync(`kill ${sig} ${pid}`, { timeout: 3000, stdio: 'pipe' })
+      }
+      log.info(`[sing-box] killed pid=${pid} signal=${signal}`)
+    } catch (err) {
+      log.warn(`[sing-box] kill pid=${pid} signal=${signal} failed: ${(err as Error).message}`)
+    }
+  }
+
+  /** Read PID from PID file. Returns 0 if not found or invalid. */
+  private readPidFile(): number {
+    try {
+      if (!existsSync(this.pidFilePath)) return 0
+      const content = readFileSync(this.pidFilePath, 'utf-8').trim()
+      const pid = parseInt(content)
+      return pid > 0 ? pid : 0
+    } catch {
+      return 0
+    }
+  }
+
+  /** Remove PID file. */
+  private removePidFile(): void {
+    try { unlinkSync(this.pidFilePath) } catch { /* ignore */ }
+  }
+
+  // --- Public API ---
+
   /**
-   * Download and install sing-box binary
+   * Clean up stale sing-box processes from previous app crashes.
+   * Call once at app startup.
    */
+  /**
+   * Clean up stale sing-box processes from previous app crashes.
+   * Uses non-interactive kill (no sudo dialog). If the root process can't be killed
+   * without sudo, it will be killed when startTun() calls stop() with sudo.
+   */
+  async cleanupStaleProcesses(): Promise<void> {
+    const pid = this.readPidFile()
+    if (pid > 0) {
+      if (this.isProcessAlive(pid)) {
+        log.info(`[sing-box] startup cleanup: found stale process pid=${pid}`)
+        // Try non-interactive kill (may fail for root/elevated processes, that's OK)
+        if (os.platform() === 'win32') {
+          // taskkill may work if Electron has sufficient rights
+          try { execSync(`taskkill /F /PID ${pid}`, { timeout: 3000, stdio: 'pipe' }) } catch { /* ignore */ }
+        } else {
+          this.killProcess(pid, 'TERM', false)
+        }
+        const dead = await this.waitForProcessDeath(pid, 2000)
+        if (!dead) {
+          // Root process can't be killed without sudo — leave it for stop() to handle
+          log.info(`[sing-box] startup cleanup: pid=${pid} needs sudo to kill, will clean up on next startTun`)
+          // Mark it as running so reconcileStatus works correctly
+          this._mode = 'tun'
+          this._status = 'running'
+          return
+        }
+      }
+      this.removePidFile()
+    }
+
+    this._mode = 'off'
+    this._status = 'stopped'
+    this._lastError = null
+  }
+
+  /**
+   * Stop sing-box. Async — waits for process to be confirmed dead.
+   * Safe to call multiple times (mutex prevents concurrent stop).
+   */
+  async stop(): Promise<void> {
+    // Mutex: if already stopping, wait for that to finish
+    if (this._stopPromise) {
+      await this._stopPromise
+      return
+    }
+    this._stopPromise = this._stopImpl()
+    try {
+      await this._stopPromise
+    } finally {
+      this._stopPromise = null
+    }
+  }
+
+  private async _stopImpl(): Promise<void> {
+    log.info(`[sing-box] stop() called, mode=${this._mode} status=${this._status}`)
+
+    // Kill the osascript/powershell wrapper process (if any)
+    const proc = this.process
+    this.process = null
+    if (proc) {
+      try { proc.kill('SIGTERM') } catch { /* ignore */ }
+    }
+
+    // Kill the actual sing-box root process via PID file
+    const pid = this.readPidFile()
+    if (pid > 0 && this.isProcessAlive(pid)) {
+      log.info(`[sing-box] stopping pid=${pid} with SIGTERM...`)
+      this.killProcess(pid, 'TERM')
+      const dead = await this.waitForProcessDeath(pid, 5000)
+
+      if (!dead) {
+        log.warn(`[sing-box] pid=${pid} still alive after SIGTERM, sending SIGKILL`)
+        this.killProcess(pid, 'KILL')
+        const killed = await this.waitForProcessDeath(pid, 3000)
+        if (!killed) {
+          log.error(`[sing-box] FAILED to kill pid=${pid} — process may be orphaned`)
+        }
+      }
+      log.info(`[sing-box] pid=${pid} confirmed dead`)
+    }
+
+    this.removePidFile()
+    this._mode = 'off'
+    this._status = 'stopped'
+    this._lastError = null
+    this._internetReachable = null
+    this._latencyMs = null
+  }
+
+  /**
+   * Start sing-box in TUN mode (requires admin/root).
+   * Blocks until sing-box is confirmed running or fails.
+   */
+  async startTun(proxyUrl: string): Promise<void> {
+    // Guard: if already starting or running, skip
+    this.reconcileStatus()
+    if (this._status === 'starting' || this._status === 'running') {
+      log.info(`[sing-box] startTun skipped — status=${this._status}`)
+      return
+    }
+
+    await this.ensureInstalled()
+    await this.stop() // async — waits for old process to die
+
+    const config = buildTunConfig(proxyUrl)
+    this.writeConfig(config)
+
+    this._mode = 'tun'
+    this._status = 'starting'
+
+    if (os.platform() === 'darwin') {
+      await this.startWithSudo()
+    } else if (os.platform() === 'win32') {
+      await this.startWithAdmin()
+    } else {
+      this.startProcess()
+    }
+  }
+
+  /**
+   * Start sing-box in local proxy mode (no admin needed)
+   */
+  async startLocalProxy(proxyUrl: string, port = 7891): Promise<number> {
+    await this.ensureInstalled()
+    await this.stop()
+
+    const config = buildLocalProxyConfig(proxyUrl, port)
+    this.writeConfig(config)
+
+    this._mode = 'local-proxy'
+    this._status = 'starting'
+    this.startProcess()
+
+    return port
+  }
+
+  /** Reconcile in-memory status with actual process state. */
+  private reconcileStatus(): void {
+    const pid = this.readPidFile()
+    if (pid > 0) {
+      if (this.isProcessAlive(pid)) {
+        if (this._status !== 'running') {
+          this._status = 'running'
+          if (this._mode === 'off') this._mode = 'tun'
+        }
+        return
+      }
+      // PID file exists but process dead — clean up
+      this.removePidFile()
+    }
+    if (this._status === 'running') {
+      this._status = 'stopped'
+      this._mode = 'off'
+      this._internetReachable = null
+      this._latencyMs = null
+    }
+  }
+
+  /** Unified network status — single source of truth */
+  getInfo(): NetworkStatus {
+    this.reconcileStatus()
+    return {
+      mode: this._mode,
+      tunRunning: this._status === 'running',
+      installed: this.isInstalled(),
+      lastError: this._lastError,
+      internetReachable: this._internetReachable,
+      latencyMs: this._latencyMs,
+    }
+  }
+
+  /** Test internet connectivity through TUN. Updates internal state. */
+  async testConnectivity(): Promise<{ success: boolean; latency?: number; error?: string }> {
+    this.reconcileStatus()
+    if (this._status !== 'running') {
+      this._internetReachable = false
+      this._latencyMs = null
+      log.info(`[testConnectivity] skipped — TUN status=${this._status}`)
+      return { success: false, error: 'TUN is not running' }
+    }
+
+    try {
+      const start = Date.now()
+      log.info('[testConnectivity] testing connectivity...')
+      // Use curl on macOS (Electron fetch may bypass TUN), fetchWithTimeout on Windows
+      if (os.platform() === 'win32') {
+        const res = await fetchWithTimeout('https://www.google.com/generate_204', {}, 10000)
+        if (res.status !== 204 && res.status !== 200) throw new Error(`HTTP ${res.status}`)
+      } else {
+        execSync('curl -sI --connect-timeout 8 https://www.google.com/generate_204', { timeout: 10000, stdio: 'pipe' })
+      }
+      const latency = Date.now() - start
+      log.info(`[testConnectivity] ok latency=${latency}ms`)
+      this._internetReachable = true
+      this._latencyMs = latency
+      return { success: true, latency }
+    } catch (err) {
+      log.error('[testConnectivity] failed:', (err as Error).message)
+      this._internetReachable = false
+      this._latencyMs = null
+      return { success: false, error: (err as Error).message }
+    }
+  }
+
+  // --- Install ---
+
   async install(onProgress?: (step: string, pct: number) => void): Promise<void> {
     const key = this.platformKey
     const ext = os.platform() === 'win32' ? '.zip' : '.tar.gz'
@@ -59,7 +349,7 @@ export class SingBoxManager {
     onProgress?.('Downloading sing-box...', 0.1)
     log.info(`SingBox: downloading ${url}`)
 
-    const res = await fetchWithTimeout(url, {}, 300000) // 5min
+    const res = await fetchWithTimeout(url, {}, 300000)
     if (!res.ok || !res.body) throw new Error(`Download failed: HTTP ${res.status}`)
 
     const tmpPath = join(this.singboxDir, `sing-box${ext}.tmp`)
@@ -72,7 +362,6 @@ export class SingBoxManager {
 
     onProgress?.('Extracting...', 0.7)
 
-    // Extract binary
     if (os.platform() === 'win32') {
       const zipPath = tmpPath.replace('.tmp', '')
       const { renameSync } = require('fs') as typeof import('fs')
@@ -85,7 +374,6 @@ export class SingBoxManager {
       } finally {
         try { unlinkSync(zipPath) } catch { /* ignore */ }
       }
-      // Move binary from extracted dir to singboxDir
       const extracted = join(this.singboxDir, filename, 'sing-box.exe')
       if (existsSync(extracted)) {
         const { copyFileSync } = require('fs') as typeof import('fs')
@@ -94,7 +382,6 @@ export class SingBoxManager {
     } else {
       execSync(`tar -xzf "${tmpPath}" -C "${this.singboxDir}"`, { timeout: 60000 })
       unlinkSync(tmpPath)
-      // Move binary from extracted dir
       const extracted = join(this.singboxDir, filename, 'sing-box')
       if (existsSync(extracted)) {
         const { copyFileSync } = require('fs') as typeof import('fs')
@@ -103,12 +390,10 @@ export class SingBoxManager {
       }
     }
 
-    // macOS: clear quarantine
     if (os.platform() === 'darwin') {
       try { execSync(`xattr -cr "${this.binaryPath}"`, { timeout: 5000 }) } catch { /* ignore */ }
     }
 
-    // Verify
     onProgress?.('Verifying...', 0.9)
     try {
       execSync(`"${this.binaryPath}" version`, { timeout: 5000, encoding: 'utf-8' })
@@ -120,95 +405,7 @@ export class SingBoxManager {
     onProgress?.('Ready', 1.0)
   }
 
-  /**
-   * Start sing-box in TUN mode (requires admin/root)
-   */
-  async startTun(proxyUrl: string): Promise<void> {
-    await this.ensureInstalled()
-    this.stop()
-
-    const config = buildTunConfig(proxyUrl)
-    this.writeConfig(config)
-
-    this._mode = 'tun'
-    this._status = 'starting'
-
-    // TUN mode needs root/admin
-    if (os.platform() === 'darwin') {
-      await this.startWithSudo()
-    } else if (os.platform() === 'win32') {
-      await this.startWithAdmin()
-    } else {
-      this.startProcess()
-    }
-  }
-
-  /**
-   * Start sing-box in local proxy mode (no admin needed)
-   * Returns the local proxy port
-   */
-  async startLocalProxy(proxyUrl: string, port = 7891): Promise<number> {
-    await this.ensureInstalled()
-    this.stop()
-
-    const config = buildLocalProxyConfig(proxyUrl, port)
-    this.writeConfig(config)
-
-    this._mode = 'local-proxy'
-    this._status = 'starting'
-    this.startProcess()
-
-    return port
-  }
-
-  /**
-   * Stop sing-box
-   */
-  stop(): void {
-    const proc = this.process
-    this.process = null
-
-    if (proc) {
-      try { proc.kill('SIGTERM') } catch { /* ignore */ }
-      // Force kill after 3s if still alive
-      const forceKillTimer = setTimeout(() => {
-        try { proc.kill('SIGKILL') } catch { /* ignore */ }
-      }, 3000)
-      proc.on('exit', () => clearTimeout(forceKillTimer))
-    }
-
-    // TUN mode: sing-box was started via sudo/UAC, not a direct child
-    // Use PID file to kill only our instance
-    const pidFile = join(this.singboxDir, 'sing-box.pid')
-    if (existsSync(pidFile)) {
-      try {
-        const { readFileSync: readF } = require('fs') as typeof import('fs')
-        const pid = parseInt(readF(pidFile, 'utf-8').trim())
-        if (pid > 0) {
-          if (os.platform() === 'win32') {
-            execSync(`taskkill /F /PID ${pid}`, { timeout: 3000 })
-          } else {
-            process.kill(pid, 'SIGTERM')
-            setTimeout(() => { try { process.kill(pid, 'SIGKILL') } catch { /* already dead */ } }, 3000)
-          }
-        }
-        unlinkSync(pidFile)
-      } catch { /* ignore — process may already be dead */ }
-    }
-
-    this._mode = 'off'
-    this._status = 'stopped'
-    this._lastError = null
-  }
-
-  getInfo(): { mode: SingBoxMode; status: string; installed: boolean; lastError: string | null } {
-    return {
-      mode: this._mode,
-      status: this._status,
-      installed: this.isInstalled(),
-      lastError: this._lastError,
-    }
-  }
+  // --- Internal start methods ---
 
   private writeConfig(config: SingBoxConfig): void {
     writeFileSync(this.configPath, JSON.stringify(config, null, 2))
@@ -245,7 +442,6 @@ export class SingBoxManager {
       this.process = null
     })
 
-    // Give it a moment to start
     setTimeout(() => {
       if (this._status === 'starting' && this.process) {
         this._status = 'running'
@@ -253,100 +449,173 @@ export class SingBoxManager {
     }, 2000)
   }
 
-  private async startWithSudo(): Promise<void> {
-    // macOS: use osascript to prompt for admin password
-    // Escape paths safely for shell: use single quotes + escape single quotes
-    const safeBin = this.binaryPath.replace(/'/g, "'\\''")
-    const safeCfg = this.configPath.replace(/'/g, "'\\''")
-    const pidFile = join(this.singboxDir, 'sing-box.pid').replace(/'/g, "'\\''")
-    // Shell cmd: start sing-box, write its PID to file
-    const shellCmd = `'${safeBin}' run -c '${safeCfg}' & echo $! > '${pidFile}'; wait`
-    try {
-      this.process = spawn('osascript', [
-        '-e', `do shell script "${shellCmd.replace(/"/g, '\\"')}" with administrator privileges`,
-      ], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
+  /**
+   * Start sing-box via osascript (macOS sudo).
+   * Returns a Promise that resolves when sing-box is confirmed running.
+   */
+  private startWithSudo(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const safeBin = this.binaryPath.replace(/'/g, "'\\''")
+      const safeCfg = this.configPath.replace(/'/g, "'\\''")
+      const safePid = this.pidFilePath.replace(/'/g, "'\\''")
+      const logFile = join(this.singboxDir, 'sing-box.log').replace(/'/g, "'\\''")
+      const shellCmd = `'${safeBin}' run -c '${safeCfg}' > '${logFile}' 2>&1 & echo $! > '${safePid}'; wait`
 
-      this.process.on('exit', (code) => {
-        this._status = code === 0 ? 'stopped' : 'error'
-        this.process = null
-      })
+      let settled = false
+      let pidPollInterval: ReturnType<typeof setInterval> | null = null
+      let timeoutTimer: ReturnType<typeof setTimeout> | null = null
 
-      this.process.stderr?.on('data', (data: Buffer) => {
-        const msg = data.toString().trim()
-        if (msg && !msg.includes('User canceled')) {
-          this._lastError = msg
-          log.warn(`[sing-box sudo] ${msg}`)
+      const cleanup = () => {
+        if (pidPollInterval) { clearInterval(pidPollInterval); pidPollInterval = null }
+        if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null }
+      }
+
+      const settle = (ok: boolean, err?: string) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        if (ok) {
+          this._status = 'running'
+          log.info('[sing-box] confirmed running via PID file')
+          resolve()
+        } else {
+          this._status = 'error'
+          this._lastError = err || 'Failed to start sing-box'
+          log.error(`[sing-box] startWithSudo failed: ${err}`)
+          reject(new Error(err))
         }
-        if (msg.includes('User canceled')) {
-          this._status = 'stopped'
-          this._lastError = 'User canceled admin authorization'
-        }
-      })
+      }
 
-      // Check PID file to confirm actually running
-      setTimeout(() => {
-        const pidPath = join(this.singboxDir, 'sing-box.pid')
-        if (this._status === 'starting') {
-          if (existsSync(pidPath)) {
-            this._status = 'running'
-          } else {
-            this._status = 'error'
-            this._lastError = this._lastError || 'sing-box failed to start (no PID file)'
+      try {
+        this.process = spawn('osascript', [
+          '-e', `do shell script "${shellCmd.replace(/"/g, '\\"')}" with administrator privileges`,
+        ], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+
+        // Poll for PID file (written after user enters password)
+        pidPollInterval = setInterval(() => {
+          const pid = this.readPidFile()
+          if (pid > 0) {
+            if (this.isProcessAlive(pid)) {
+              settle(true)
+            } else {
+              settle(false, 'sing-box exited immediately after start')
+            }
           }
-        }
-      }, 3000)
+        }, 300)
 
-    } catch (err) {
-      this._status = 'error'
-      this._lastError = (err as Error).message
-    }
+        // Timeout: 60s
+        timeoutTimer = setTimeout(() => {
+          settle(false, 'Timed out waiting for sing-box to start (60s)')
+        }, 60000)
+
+        this.process.on('exit', (code) => {
+          this.process = null
+          // Check if sing-box is alive (runs as separate root process)
+          const pid = this.readPidFile()
+          if (pid > 0 && this.isProcessAlive(pid)) {
+            settle(true)
+            return
+          }
+          if (!settled) {
+            settle(false, code === 0 ? 'sing-box exited' : `osascript exited with code ${code}`)
+          }
+        })
+
+        this.process.stderr?.on('data', (data: Buffer) => {
+          const msg = data.toString().trim()
+          if (msg) log.warn(`[sing-box sudo] ${msg}`)
+          if (msg.includes('User canceled')) {
+            this._status = 'stopped'
+            this._lastError = 'User canceled admin authorization'
+            settle(false, 'User canceled')
+          }
+        })
+
+      } catch (err) {
+        settle(false, (err as Error).message)
+      }
+    })
   }
 
-  private async startWithAdmin(): Promise<void> {
-    // Windows: use PowerShell Start-Process -Verb RunAs for UAC prompt
-    // Write PID to file so stop() can find it
-    const safeBin = this.binaryPath.replace(/'/g, "''")
-    const safeCfg = this.configPath.replace(/'/g, "''")
-    const pidFile = join(this.singboxDir, 'sing-box.pid').replace(/'/g, "''")
-    // Start sing-box, capture its PID, then wait for it
-    const wrapper = `$p = Start-Process -FilePath '${safeBin}' -ArgumentList 'run','-c','${safeCfg}' -Verb RunAs -WindowStyle Hidden -PassThru; $p.Id | Out-File -Encoding ascii '${pidFile}'; Wait-Process -Id $p.Id`
-    try {
-      // Start wrapper in background (don't block on wait)
-      this.process = spawn('powershell', ['-NoProfile', '-Command', wrapper], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-      })
+  /** Start sing-box via PowerShell UAC (Windows). Event-driven like startWithSudo. */
+  private startWithAdmin(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const safeBin = this.binaryPath.replace(/'/g, "''")
+      const safeCfg = this.configPath.replace(/'/g, "''")
+      const pidFile = this.pidFilePath.replace(/'/g, "''")
+      const wrapper = `$p = Start-Process -FilePath '${safeBin}' -ArgumentList 'run','-c','${safeCfg}' -Verb RunAs -WindowStyle Hidden -PassThru; $p.Id | Out-File -Encoding ascii '${pidFile}'; Wait-Process -Id $p.Id`
 
-      this.process.on('exit', (code) => {
-        this._status = code === 0 ? 'stopped' : 'error'
-        this.process = null
-      })
+      let settled = false
+      let pidPollInterval: ReturnType<typeof setInterval> | null = null
+      let timeoutTimer: ReturnType<typeof setTimeout> | null = null
 
-      this.process.stderr?.on('data', (data: Buffer) => {
-        const msg = data.toString().trim()
-        if (msg) {
-          this._lastError = msg
-          log.warn(`[sing-box admin] ${msg}`)
+      const cleanup = () => {
+        if (pidPollInterval) { clearInterval(pidPollInterval); pidPollInterval = null }
+        if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null }
+      }
+
+      const settle = (ok: boolean, err?: string) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        if (ok) {
+          this._status = 'running'
+          log.info('[sing-box] confirmed running via PID file (Windows)')
+          resolve()
+        } else {
+          this._status = 'error'
+          this._lastError = err || 'Failed to start sing-box'
+          log.error(`[sing-box] startWithAdmin failed: ${err}`)
+          reject(new Error(err))
         }
-      })
+      }
 
-      // Check PID file after a short delay to confirm running
-      setTimeout(() => {
-        const pidPath = join(this.singboxDir, 'sing-box.pid')
-        if (this._status === 'starting') {
-          if (existsSync(pidPath)) {
-            this._status = 'running'
-          } else {
-            this._status = 'error'
-            this._lastError = this._lastError || 'sing-box failed to start (no PID file)'
+      try {
+        this.process = spawn('powershell', ['-NoProfile', '-Command', wrapper], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        })
+
+        pidPollInterval = setInterval(() => {
+          const pid = this.readPidFile()
+          if (pid > 0) {
+            if (this.isProcessAlive(pid)) {
+              settle(true)
+            } else {
+              settle(false, 'sing-box exited immediately after start')
+            }
           }
-        }
-      }, 5000)
-    } catch (err) {
-      this._status = 'error'
-      this._lastError = (err as Error).message
-    }
+        }, 300)
+
+        timeoutTimer = setTimeout(() => {
+          settle(false, 'Timed out waiting for sing-box to start (60s)')
+        }, 60000)
+
+        this.process.on('exit', (code) => {
+          this.process = null
+          const pid = this.readPidFile()
+          if (pid > 0 && this.isProcessAlive(pid)) {
+            settle(true)
+            return
+          }
+          if (!settled) {
+            settle(false, code === 0 ? 'sing-box exited' : `PowerShell exited with code ${code}`)
+          }
+        })
+
+        this.process.stderr?.on('data', (data: Buffer) => {
+          const msg = data.toString().trim()
+          if (msg) {
+            this._lastError = msg
+            log.warn(`[sing-box admin] ${msg}`)
+          }
+        })
+
+      } catch (err) {
+        settle(false, (err as Error).message)
+      }
+    })
   }
 }
