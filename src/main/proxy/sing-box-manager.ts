@@ -459,7 +459,11 @@ export class SingBoxManager {
       const safeCfg = this.configPath.replace(/'/g, "'\\''")
       const safePid = this.pidFilePath.replace(/'/g, "'\\''")
       const logFile = join(this.singboxDir, 'sing-box.log').replace(/'/g, "'\\''")
-      const shellCmd = `'${safeBin}' run -c '${safeCfg}' > '${logFile}' 2>&1 & echo $! > '${safePid}'; wait`
+      // Start sing-box in background, write PID, then monitor parent (Electron) process.
+      // When parent dies (app crash/force-quit), the watchdog loop detects it and kills sing-box.
+      // This prevents process leak when before-quit cleanup fails.
+      const parentPid = process.pid
+      const shellCmd = `'${safeBin}' run -c '${safeCfg}' > '${logFile}' 2>&1 & SB_PID=$!; echo $SB_PID > '${safePid}'; while kill -0 ${parentPid} 2>/dev/null && kill -0 $SB_PID 2>/dev/null; do sleep 2; done; kill -TERM $SB_PID 2>/dev/null; kill -9 $SB_PID 2>/dev/null`
 
       let settled = false
       let pidPollInterval: ReturnType<typeof setInterval> | null = null
@@ -545,7 +549,10 @@ export class SingBoxManager {
       const safeBin = this.binaryPath.replace(/'/g, "''")
       const safeCfg = this.configPath.replace(/'/g, "''")
       const pidFile = this.pidFilePath.replace(/'/g, "''")
-      const wrapper = `$p = Start-Process -FilePath '${safeBin}' -ArgumentList 'run','-c','${safeCfg}' -Verb RunAs -WindowStyle Hidden -PassThru; $p.Id | Out-File -Encoding ascii '${pidFile}'; Wait-Process -Id $p.Id`
+      // Start sing-box elevated, write PID, then monitor parent (Electron) process.
+      // When parent dies, the watchdog kills sing-box to prevent process leak.
+      const parentPid = process.pid
+      const wrapper = `$p = Start-Process -FilePath '${safeBin}' -ArgumentList 'run','-c','${safeCfg}' -Verb RunAs -WindowStyle Hidden -PassThru; $p.Id | Out-File -Encoding ascii '${pidFile}'; while ((Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) -and (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) { Start-Sleep -Seconds 2 }; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue`
 
       let settled = false
       let pidPollInterval: ReturnType<typeof setInterval> | null = null
