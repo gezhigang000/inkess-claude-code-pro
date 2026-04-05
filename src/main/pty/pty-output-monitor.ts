@@ -2,7 +2,7 @@ import { EventEmitter } from 'events'
 
 export interface PtyActivityEvent {
   id: string
-  type: 'task-complete' | 'prompt-idle' | 'streaming' | 'model-info' | 'mode-change'
+  type: 'task-complete' | 'prompt-idle' | 'streaming' | 'model-info' | 'mode-change' | 'token-usage' | 'ttfb-ready'
   payload?: string
 }
 
@@ -16,6 +16,8 @@ export class PtyOutputMonitor extends EventEmitter {
     idleTimer: ReturnType<typeof setTimeout> | null
     isStreaming: boolean
     buffer: string
+    lastIdleTime: number
+    streamingStartTime: number
   }>()
 
   private static IDLE_TIMEOUT = 2000 // 2s no output = idle
@@ -35,7 +37,9 @@ export class PtyOutputMonitor extends EventEmitter {
       lastDataTime: Date.now(),
       idleTimer: null,
       isStreaming: false,
-      buffer: ''
+      buffer: '',
+      lastIdleTime: Date.now(),
+      streamingStartTime: 0
     })
   }
 
@@ -57,7 +61,12 @@ export class PtyOutputMonitor extends EventEmitter {
     // Mark as streaming
     if (!session.isStreaming) {
       session.isStreaming = true
+      session.streamingStartTime = Date.now()
       this.emit('activity', { id, type: 'streaming' } as PtyActivityEvent)
+      const ttfb = Date.now() - session.lastIdleTime
+      if (ttfb > 0 && ttfb < 300000) {
+        this.emit('activity', { id, type: 'ttfb-ready', payload: String(ttfb) } as PtyActivityEvent)
+      }
     }
 
     // Check for model info (e.g. "claude-sonnet-4-6" in status output)
@@ -74,12 +83,31 @@ export class PtyOutputMonitor extends EventEmitter {
       this.emit('activity', { id, type: 'mode-change', payload: mode } as PtyActivityEvent)
     }
 
+    // Check for token usage patterns in the buffer
+    const cleanBuffer = PtyOutputMonitor.stripAnsi(session.buffer)
+    const inputMatch = cleanBuffer.match(/input\s+tokens?:\s*([\d,]+)/i)
+    const outputMatch = cleanBuffer.match(/output\s+tokens?:\s*([\d,]+)/i)
+    const totalMatch = cleanBuffer.match(/total\s+tokens?:\s*([\d,]+)/i)
+    const costMatch = cleanBuffer.match(/cost:\s*\$?([\d.]+)/i)
+    if (inputMatch || outputMatch || totalMatch || costMatch) {
+      const input = inputMatch ? parseInt(inputMatch[1].replace(/,/g, ''), 10) : undefined
+      const output = outputMatch ? parseInt(outputMatch[1].replace(/,/g, ''), 10) : undefined
+      const total = totalMatch ? parseInt(totalMatch[1].replace(/,/g, ''), 10) : undefined
+      const cost = costMatch ? parseFloat(costMatch[1]) : undefined
+      this.emit('activity', {
+        id,
+        type: 'token-usage',
+        payload: JSON.stringify({ input, output, total, cost })
+      } as PtyActivityEvent)
+    }
+
     // Reset idle timer
     if (session.idleTimer) clearTimeout(session.idleTimer)
     session.idleTimer = setTimeout(() => {
       if (!this.sessions.has(id)) return
       if (!session.isStreaming) return
       session.isStreaming = false
+      session.lastIdleTime = Date.now()
 
       // Check if output ended with a prompt (task complete)
       const tail = PtyOutputMonitor.stripAnsi(session.buffer.slice(-200))
