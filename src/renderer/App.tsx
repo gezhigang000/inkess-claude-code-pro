@@ -82,6 +82,8 @@ export function App() {
       if (!info.tunRunning) {
         failCount++
         if (failCount >= 2) {
+          // Kill all PTY sessions to prevent network leaks (same as subscription expiry)
+          window.api.pty.killAll()
           setTunOk(false)
           window.api.browser.closeAll()
         }

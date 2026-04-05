@@ -537,6 +537,10 @@ ipcMain.on('pty:kill', (_event, { id }: { id: string }) => {
   analytics.track('tab_close')
 })
 
+ipcMain.on('pty:killAll', () => {
+  ptyManager.killAll()
+})
+
 // IPC: Shell actions
 ipcMain.handle('shell:openExternal', (_event, url: string) => {
   if (!/^https?:\/\//i.test(url)) {

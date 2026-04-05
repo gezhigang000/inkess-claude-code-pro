@@ -81,6 +81,8 @@ const api = {
       ipcRenderer.send('pty:resize', { id, cols, rows }),
     kill: (id: string) =>
       ipcRenderer.send('pty:kill', { id }),
+    killAll: () =>
+      ipcRenderer.send('pty:killAll'),
     onData: (callback: (event: { id: string; data: string }) => void) => {
       const listener = (_: unknown, event: { id: string; data: string }) => callback(event)
       ipcRenderer.on('pty:data', listener)
