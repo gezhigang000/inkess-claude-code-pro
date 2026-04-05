@@ -360,7 +360,7 @@ function AboutSection() {
             <span style={{ fontSize: 13, color: 'var(--text-primary)', fontFamily: 'var(--font-mono, monospace)' }}>v{appVersion}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 10px', background: 'var(--bg-tertiary)', borderRadius: 6 }}>
-            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Claude Code CLI</span>
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Claude Code Pro</span>
             <span style={{ fontSize: 13, color: 'var(--text-primary)', fontFamily: 'var(--font-mono, monospace)' }}>{cliVersion ? `v${cliVersion}` : '—'}</span>
           </div>
           <button

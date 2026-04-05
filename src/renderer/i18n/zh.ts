@@ -14,11 +14,11 @@ export const zh: Record<TranslationKey, string> = {
 
   // Setup
   'setup.checking': '检查环境中...',
-  'setup.settingUp': '正在安装 Claude Code CLI',
+  'setup.settingUp': '正在安装 Claude Code Pro',
   'setup.verifying': '正在验证 Claude Code Pro',
   'setup.firstTime': '首次安装 — 只需片刻',
   'setup.checkEnv': '检查环境',
-  'setup.downloading': '下载 Claude Code CLI...',
+  'setup.downloading': '下载 Claude Code Pro...',
   'setup.verifyInstall': '验证安装',
   'setup.downloadComplete': '下载完成',
   'setup.verifyingInstall': '正在验证安装...',
@@ -118,7 +118,7 @@ export const zh: Record<TranslationKey, string> = {
   'sidebar.recentProjects': '最近项目',
   'sidebar.noProjects': '暂无项目',
   'sidebar.settings': '设置',
-  'sidebar.cliStatus': 'Claude Code CLI',
+  'sidebar.cliStatus': 'Claude Code Pro',
   'sidebar.sessions': '会话',
   'sidebar.active': '活跃',
   'sidebar.recent': '最近',
@@ -180,7 +180,7 @@ export const zh: Record<TranslationKey, string> = {
 
   // Update
   'update.available': '有可用更新',
-  'update.description': 'Claude Code CLI {latest} 可用（当前: {current}）',
+  'update.description': 'Claude Code Pro {latest} 可用（当前: {current}）',
   'update.now': '立即更新',
   'update.updating': '更新中...',
   'update.later': '稍后',

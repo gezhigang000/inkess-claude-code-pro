@@ -167,7 +167,7 @@ export class CliManager {
 
     // Download binary
     const binaryUrl = `${MIRROR_BASE_URL}/${version}/${platformKey}/${platInfo.binary}`
-    onProgress?.(`Downloading Claude Code CLI v${version}...`, 0.2)
+    onProgress?.(`Downloading Claude Code Pro v${version}...`, 0.2)
     log.info(`CLI: downloading ${binaryUrl}`)
 
     const res = await fetchWithTimeout(binaryUrl, {}, 300000) // 5min for large binary
