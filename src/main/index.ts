@@ -423,8 +423,14 @@ ipcMain.handle('proxy:resolveUrl', async (_event, url: string) => {
   log.info(`[resolveUrl] input: ${url?.substring(0, 80)}...`)
   if (typeof url !== 'string' || !url) return { resolved: url, isSubscription: false }
 
-  // Direct URL (not subscription) — validate protocol
-  if (!/^https?:\/\//i.test(url)) {
+  // Distinguish proxy URL from subscription URL:
+  // - Proxy URL: socks5://..., http://user:pass@host:port (has userinfo or non-http protocol)
+  // - Subscription URL: https://panel.xxx/api/sub/... (no userinfo, https)
+  const isDirectProxy = !/^https?:\/\//i.test(url) || (() => {
+    try { return !!new URL(url).username } catch { return false }
+  })()
+
+  if (isDirectProxy) {
     try {
       const proto = new URL(url).protocol
       if (!ALLOWED_PROXY_PROTOCOLS.includes(proto)) {
@@ -434,7 +440,7 @@ ipcMain.handle('proxy:resolveUrl', async (_event, url: string) => {
     } catch {
       // Not a valid URL — could be host:port, let it pass
     }
-    log.info(`[resolveUrl] not a subscription URL, using directly`)
+    log.info(`[resolveUrl] direct proxy URL, using directly`)
     return { resolved: url, isSubscription: false }
   }
 
