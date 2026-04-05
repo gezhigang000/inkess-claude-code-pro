@@ -15,6 +15,7 @@ import { SessionRecorder } from './session/session-recorder'
 import { SubscriptionManager } from './subscription/subscription-manager'
 import { fetchSubscription } from './proxy/subscription'
 import { SingBoxManager } from './proxy/sing-box-manager'
+import { StatsCollector } from './stats/stats-collector'
 
 process.on('uncaughtException', (err) => log.error('Uncaught:', err))
 process.on('unhandledRejection', (reason) => log.error('Unhandled:', reason))
@@ -29,6 +30,7 @@ const errorReporter = new ErrorReporter()
 const sessionRecorder = new SessionRecorder()
 const subscriptionManager = new SubscriptionManager()
 const singBoxManager = new SingBoxManager()
+const statsCollector = new StatsCollector()
 
 /** Safely send to renderer, swallowing errors if window is destroyed */
 function safeSend(channel: string, ...args: unknown[]): void {
@@ -513,6 +515,8 @@ ipcMain.handle('pty:create', (_event, options: {
     ptyMonitor.watch(id)
     const title = options.cwd.replace(/\\/g, '/').split('/').pop() || 'terminal'
     sessionRecorder.startSession(id, options.cwd, title)
+    statsCollector.sessionStart(id, options.cwd)
+    statsCollector.logEvent('tab:create', options.cwd)
     ptyManager.onData(id, (data) => {
       safeSend('pty:data', { id, data })
       ptyMonitor.feed(id, data)
@@ -544,6 +548,8 @@ ipcMain.on('pty:resize', (_event, payload) => {
 
 ipcMain.on('pty:kill', (_event, { id }: { id: string }) => {
   ptyManager.kill(id)
+  statsCollector.sessionClose(id)
+  statsCollector.logEvent('tab:close', id)
   analytics.track('tab_close')
 })
 
@@ -573,6 +579,15 @@ ipcMain.handle('shell:selectDirectory', async () => {
   })
   return result.canceled ? null : result.filePaths[0]
 })
+
+// IPC: Stats
+ipcMain.handle('stats:getSummary', () => statsCollector.getSummary())
+ipcMain.handle('stats:getEvents', () => statsCollector.getEvents())
+ipcMain.handle('stats:getSessions', () => statsCollector.getSessions())
+ipcMain.handle('stats:getLatency', () => statsCollector.getLatency())
+ipcMain.handle('stats:getSystemLog', () => statsCollector.getSystemLog())
+ipcMain.handle('stats:getStorageSize', () => statsCollector.getStorageSize())
+ipcMain.handle('stats:clear', () => { statsCollector.clearAll(); return { success: true } })
 
 // IPC: Session history
 ipcMain.handle('session:list', () => sessionRecorder.listSessions())
@@ -777,6 +792,20 @@ let sleepInhibitorEnabled = true
 ptyMonitor.on('activity', (event: PtyActivityEvent) => {
   safeSend('pty:activity', event)
 
+  if (event.type === 'ttfb-ready') {
+    statsCollector.sessionRecordTtfb(event.id, parseInt(event.payload ?? '0'))
+  } else if (event.type === 'token-usage') {
+    try {
+      const parsed = JSON.parse(event.payload ?? '{}')
+      statsCollector.sessionSetTokens(event.id, {
+        inputTokens: parsed.inputTokens,
+        outputTokens: parsed.outputTokens,
+        totalTokens: parsed.totalTokens,
+        cost: parsed.cost,
+      })
+    } catch { /* ignore malformed payload */ }
+  }
+
   if (event.type === 'task-complete' && !isWindowFocused) {
     safeSend('notification:shouldShow', event)
   }
@@ -880,6 +909,7 @@ app.whenReady().then(() => {
   })
 
   setTimeout(() => checkForAppUpdate(), 5000)
+  statsCollector.logEvent('app:launch', app.getVersion())
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -894,6 +924,8 @@ app.on('window-all-closed', () => {
   // Close all browser windows
   browserWindows.forEach(w => { try { w.close() } catch { /* ignore */ } })
   browserWindows = []
+  statsCollector.logEvent('app:quit')
+  statsCollector.dispose()
   ptyManager.killAll()
   ptyMonitor.dispose()
   analytics.flushSync()

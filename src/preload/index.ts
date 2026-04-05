@@ -254,7 +254,29 @@ const api = {
     },
     setSleepInhibitorEnabled: (enabled: boolean) =>
       ipcRenderer.send('power:setSleepInhibitorEnabled', enabled)
-  }
+  },
+
+  stats: {
+    getSummary: () => ipcRenderer.invoke('stats:getSummary') as Promise<{
+      todayTokens: number; todaySessionCount: number
+      avgPingMs: number | null; avgTtfbMs: number | null
+      storageBytes: number
+    }>,
+    getEvents: () => ipcRenderer.invoke('stats:getEvents') as Promise<Array<{
+      ts: number; event: string; detail?: string
+    }>>,
+    getSessions: () => ipcRenderer.invoke('stats:getSessions') as Promise<Array<{
+      ts: number; sessionId: string; cwd: string; duration: number
+      inputTokens?: number; outputTokens?: number; totalTokens?: number
+      cost?: string; avgLatency?: number
+    }>>,
+    getLatency: () => ipcRenderer.invoke('stats:getLatency') as Promise<Array<{
+      ts: number; type: 'ping' | 'ttfb'; ms: number; target?: string
+    }>>,
+    getSystemLog: () => ipcRenderer.invoke('stats:getSystemLog') as Promise<string>,
+    getStorageSize: () => ipcRenderer.invoke('stats:getStorageSize') as Promise<number>,
+    clear: () => ipcRenderer.invoke('stats:clear') as Promise<{ success: boolean }>,
+  },
 }
 
 contextBridge.exposeInMainWorld('api', api)
