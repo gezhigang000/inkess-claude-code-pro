@@ -128,6 +128,12 @@ export class SubscriptionManager {
       const data = await res.json()
       const config = data.config as SubscriptionConfig
 
+      // Validate exitIp — must be a valid IPv4 address, required field
+      const exitIp = config.exitIp || ''
+      if (!exitIp || !/^\d{1,3}(\.\d{1,3}){3}$/.test(exitIp)) {
+        return { success: false, error: 'Server did not provide a valid exit IP. Contact support.' }
+      }
+
       // Save session (without Claude password — never persist)
       this.saveSession({
         token: data.token,
@@ -136,7 +142,7 @@ export class SubscriptionManager {
         expiresAt: config.expiresAt,
         proxyUrl: config.proxyUrl,
         proxyRegion: config.proxyRegion,
-        exitIp: config.exitIp || '',
+        exitIp,
       })
 
       log.info(`Subscription login success: ${username}`)

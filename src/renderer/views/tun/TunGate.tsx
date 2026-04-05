@@ -52,7 +52,7 @@ export function TunGate({ proxyUrl, exitIp, onReady, isReconnect }: TunGateProps
         // Running but not tested — test connectivity
         setPhase('testing')
         console.log(`[TunGate:${id}] TUN running, testing connectivity...`)
-        const result = await window.api.tun.testConnectivity(exitIp || undefined)
+        const result = await window.api.tun.testConnectivity(exitIp)
         console.log(`[TunGate:${id}] testConnectivity: success=${result.success}, latency=${result.latency}, actualIp=${result.actualIp}`)
         if (result.success) {
           setLatency(result.latency ?? null)
@@ -110,7 +110,7 @@ export function TunGate({ proxyUrl, exitIp, onReady, isReconnect }: TunGateProps
       let connectResult: { success: boolean; latency?: number; error?: string; actualIp?: string } = { success: false }
       for (let attempt = 1; attempt <= 3; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 1000))
-        connectResult = await window.api.tun.testConnectivity(exitIp || undefined)
+        connectResult = await window.api.tun.testConnectivity(exitIp)
         console.log(`[TunGate:${id}] attempt ${attempt}: success=${connectResult.success}, latency=${connectResult.latency}, actualIp=${connectResult.actualIp}`)
         if (connectResult.success) break
       }
