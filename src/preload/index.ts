@@ -215,6 +215,12 @@ const api = {
     },
   },
 
+  claude: {
+    setCredentials: (email: string, password: string) =>
+      ipcRenderer.invoke('claude:setCredentials', { email, password }),
+    clearCredentials: () => ipcRenderer.invoke('claude:clearCredentials'),
+  },
+
   session: {
     list: () => ipcRenderer.invoke('session:list') as Promise<Array<{
       id: string; cwd: string; title: string; createdAt: number; closedAt?: number; size: number
