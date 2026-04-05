@@ -414,24 +414,44 @@ ipcMain.handle('proxy:fetchSubscription', async (_event, url: string) => {
   }
 })
 
-// Resolve proxy URL: if it's a subscription URL (https://), fetch and return first usable node's raw URL
+// Resolve proxy URL: if it's a subscription URL (https://), fetch and return first usable node
+const ALLOWED_PROXY_PROTOCOLS = ['socks5:', 'socks:', 'http:', 'https:']
 ipcMain.handle('proxy:resolveUrl', async (_event, url: string) => {
   log.info(`[resolveUrl] input: ${url?.substring(0, 80)}...`)
   if (typeof url !== 'string' || !url) return { resolved: url, isSubscription: false }
+
+  // Direct URL (not subscription) — validate protocol
   if (!/^https?:\/\//i.test(url)) {
+    try {
+      const proto = new URL(url).protocol
+      if (!ALLOWED_PROXY_PROTOCOLS.includes(proto)) {
+        log.warn(`[resolveUrl] unsupported protocol: ${proto}`)
+        return { resolved: '', isSubscription: false, error: `Unsupported proxy protocol: ${proto} (only SOCKS5/HTTP supported)` }
+      }
+    } catch {
+      // Not a valid URL — could be host:port, let it pass
+    }
     log.info(`[resolveUrl] not a subscription URL, using directly`)
     return { resolved: url, isSubscription: false }
   }
+
+  // Subscription URL — fetch and filter usable nodes only
   try {
     const nodes = await fetchSubscription(url)
-    log.info(`[resolveUrl] fetched ${nodes.length} nodes: ${nodes.map(n => `${n.name}(${n.type}, url=${n.url?.substring(0,30)}, raw=${n.raw?.substring(0,30)})`).join(', ')}`)
+    log.info(`[resolveUrl] fetched ${nodes.length} nodes: ${nodes.map(n => `${n.name}(${n.type}, usable=${n.usable})`).join(', ')}`)
     if (!nodes.length) return { resolved: '', isSubscription: true, error: 'No nodes found in subscription' }
-    // Find first node with a protocol URL (raw starts with protocol://, not JSON)
-    const node = nodes.find(n => n.raw && /^[a-z]+:\/\//i.test(n.raw)) || nodes.find(n => n.url) || nodes[0]
-    const resolved = (node.raw && /^[a-z]+:\/\//i.test(node.raw)) ? node.raw : node.url
+
+    // Only use nodes marked as usable (socks5/http/https)
+    const usableNodes = nodes.filter(n => n.usable && n.url)
+    if (!usableNodes.length) {
+      const types = [...new Set(nodes.map(n => n.type))].join(', ')
+      return { resolved: '', isSubscription: true, error: `No SOCKS5/HTTP nodes in subscription (found: ${types})` }
+    }
+
+    const node = usableNodes[0]
+    const resolved = node.url
     log.info(`[resolveUrl] picked node: ${node.name}, resolved: ${resolved?.substring(0, 80)}`)
-    if (!resolved) return { resolved: '', isSubscription: true, error: `No usable proxy URL in ${nodes.length} nodes` }
-    // Detect region from node name for auto environment masking
+
     const detected = detectRegion(node.name)
     log.info(`[resolveUrl] detected region: ${detected.region} (${detected.flag}) from "${node.name}"`)
     return { resolved, isSubscription: true, nodeName: node.name, nodeCount: nodes.length, detectedRegion: detected.region }
