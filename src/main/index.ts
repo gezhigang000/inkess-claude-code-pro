@@ -14,7 +14,7 @@ import { ErrorReporter } from './error-reporter'
 import { SessionRecorder } from './session/session-recorder'
 import { SubscriptionManager } from './subscription/subscription-manager'
 import { fetchSubscription, detectRegion } from './proxy/subscription'
-import { SingBoxManager } from './proxy/sing-box-manager'
+import { TunManager } from './proxy/tun-manager'
 import { StatsCollector } from './stats/stats-collector'
 import { BrowserInterceptor } from './browser/browser-interceptor'
 import { buildFingerprintMaskScript, FINGERPRINT_PROFILES } from './browser/fingerprint-mask'
@@ -31,10 +31,10 @@ const analytics = new Analytics()
 const errorReporter = new ErrorReporter()
 const sessionRecorder = new SessionRecorder()
 const subscriptionManager = new SubscriptionManager()
-const singBoxManager = new SingBoxManager()
-// Clean up any stale sing-box processes from previous crashes
-singBoxManager.cleanupStaleProcesses().catch(err => {
-  log.warn('[startup] Failed to clean up stale sing-box processes:', err)
+const tunManager = new TunManager()
+// Clean up any stale tunnel processes from previous crashes
+tunManager.cleanupStaleProcesses().catch(err => {
+  log.warn('[startup] Failed to clean up stale tunnel processes:', err)
 })
 const statsCollector = new StatsCollector()
 const browserInterceptor = new BrowserInterceptor()
@@ -297,12 +297,12 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => 
   return { success: true }
 })
 
-// IPC: sing-box TUN/proxy
-ipcMain.handle('singbox:getInfo', () => singBoxManager.getInfo())
+// IPC: TUN proxy (channel names kept as singbox:* for renderer compatibility)
+ipcMain.handle('singbox:getInfo', () => tunManager.getInfo())
 
 ipcMain.handle('singbox:install', async () => {
   try {
-    await singBoxManager.install((step, pct) => {
+    await tunManager.install((step, pct) => {
       safeSend('singbox:installProgress', { step, pct })
     })
     return { success: true }
@@ -318,7 +318,7 @@ ipcMain.handle('singbox:startTun', async (_event, proxyUrl: string) => {
     return { success: false, error: 'Invalid proxy URL' }
   }
   try {
-    await singBoxManager.startTun(proxyUrl)
+    await tunManager.startTun(proxyUrl)
     log.info(`[startTun] success`)
     statsCollector.logEvent('tun:start')
     return { success: true }
@@ -328,20 +328,8 @@ ipcMain.handle('singbox:startTun', async (_event, proxyUrl: string) => {
   }
 })
 
-ipcMain.handle('singbox:startLocalProxy', async (_event, proxyUrl: string, port?: number) => {
-  if (typeof proxyUrl !== 'string' || proxyUrl.length > 500 || proxyUrl.length < 5) {
-    return { success: false, error: 'Invalid proxy URL' }
-  }
-  try {
-    const localPort = await singBoxManager.startLocalProxy(proxyUrl, port)
-    return { success: true, port: localPort }
-  } catch (err) {
-    return { success: false, error: (err as Error).message }
-  }
-})
-
 ipcMain.handle('singbox:stop', async () => {
-  await singBoxManager.stop()
+  await tunManager.stop()
   statsCollector.logEvent('tun:stop')
   // Close all browser windows when TUN stops
   browserWindows.forEach(w => { try { if (!w.isDestroyed()) w.close() } catch { /* ignore */ } })
@@ -349,7 +337,7 @@ ipcMain.handle('singbox:stop', async () => {
   return { success: true }
 })
 
-ipcMain.handle('singbox:testConnectivity', () => singBoxManager.testConnectivity())
+ipcMain.handle('singbox:testConnectivity', () => tunManager.testConnectivity())
 
 // IPC: Proxy settings (stored in main process, applied to PTY env on create)
 interface ProxySettings {
@@ -732,7 +720,7 @@ async function openBuiltinBrowser(url: string): Promise<{ success?: boolean; err
 
   // Block browser when TUN is not running
   if (proxySettings.enabled) {
-    const sbInfo = singBoxManager.getInfo()
+    const sbInfo = tunManager.getInfo()
     if (!sbInfo.tunRunning) {
       log.warn('browser:open blocked — TUN not running')
       return { error: 'Network not connected. Please start TUN first.' }
@@ -1029,21 +1017,21 @@ app.whenReady().then(() => {
   })
 })
 
-// Ensure sing-box is stopped before app quits (async cleanup)
+// Ensure tunnel is stopped before app quits (async cleanup)
 let _quitting = false
 app.on('before-quit', (event) => {
-  if (_quitting || singBoxManager.mode === 'off') return
+  if (_quitting || tunManager.mode === 'off') return
   event.preventDefault()
   _quitting = true
-  singBoxManager.stop()
-    .catch(err => log.error('[before-quit] Failed to stop sing-box:', err))
+  tunManager.stop()
+    .catch(err => log.error('[before-quit] Failed to stop tunnel:', err))
     .finally(() => app.quit())
 })
 
 // Handle process signals for cleanup
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, () => {
-    singBoxManager.stop()
+    tunManager.stop()
       .catch(() => { /* best effort */ })
       .finally(() => process.exit(0))
   })

@@ -163,7 +163,6 @@ const api = {
     }>,
     install: () => ipcRenderer.invoke('singbox:install') as Promise<{ success: boolean; error?: string }>,
     startTun: (proxyUrl: string) => ipcRenderer.invoke('singbox:startTun', proxyUrl) as Promise<{ success: boolean; error?: string }>,
-    startLocalProxy: (proxyUrl: string, port?: number) => ipcRenderer.invoke('singbox:startLocalProxy', proxyUrl, port) as Promise<{ success: boolean; port?: number; error?: string }>,
     stop: () => ipcRenderer.invoke('singbox:stop') as Promise<{ success: boolean }>,
     testConnectivity: () => ipcRenderer.invoke('singbox:testConnectivity') as Promise<{ success: boolean; latency?: number; error?: string }>,
     onInstallProgress: (callback: (event: { step: string; pct: number }) => void) => {
