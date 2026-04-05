@@ -210,7 +210,9 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
           text: l.text,
           activate(_event: MouseEvent, linkText: string) {
             if (l.type === 'url') {
-              window.api.browser.open(linkText)
+              window.api.browser.open(linkText).then(r => {
+                if (r?.error) window.api.notification.show('Browser', r.error)
+              })
             } else {
               onFileClick?.(linkText)
             }

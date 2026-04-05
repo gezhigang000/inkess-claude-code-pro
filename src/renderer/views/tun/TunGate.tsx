@@ -16,6 +16,8 @@ export function TunGate({ proxyUrl, onReady }: TunGateProps) {
   const [error, setError] = useState<string | null>(null)
   const [latency, setLatency] = useState<number | null>(null)
   const cancelledRef = useRef(false)
+  const proxyUrlRef = useRef(proxyUrl)
+  useEffect(() => { proxyUrlRef.current = proxyUrl }, [proxyUrl])
 
   const connect = async () => {
     cancelledRef.current = false
@@ -59,7 +61,7 @@ export function TunGate({ proxyUrl, onReady }: TunGateProps) {
 
       // Resolve subscription URL
       setPhase('resolving')
-      const resolveResult = await window.api.proxy.resolveUrl(proxyUrl)
+      const resolveResult = await window.api.proxy.resolveUrl(proxyUrlRef.current)
       if (cancelledRef.current) return
       if (resolveResult.error) {
         setPhase('failed')

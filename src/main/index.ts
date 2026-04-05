@@ -817,9 +817,10 @@ ipcMain.handle('browser:open', async (_event, url: string) => {
       if (navUrl === lastFilledUrl) return // prevent double-injection
       if (navUrl.includes('login') || navUrl.includes('clerk') || navUrl.includes('accounts.anthropic.com')) {
         lastFilledUrl = navUrl
-        if (!claudeCredentials) return
+        const creds = claudeCredentials // capture before async delay
+        if (!creds) return
         setTimeout(() => {
-          win.webContents.executeJavaScript(claudeAutoFillScript(claudeCredentials!.email, claudeCredentials!.password)).catch(() => {})
+          win.webContents.executeJavaScript(claudeAutoFillScript(creds.email, creds.password)).catch(() => {})
         }, 500)
       }
     })

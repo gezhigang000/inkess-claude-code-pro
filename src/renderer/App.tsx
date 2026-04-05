@@ -73,14 +73,20 @@ export function App() {
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // TUN disconnect detection
+  // TUN disconnect detection — require 2 consecutive failures (10s hysteresis) to avoid flap
   useEffect(() => {
     if (!tunOk || !subscriptionLoggedIn) return
+    let failCount = 0
     const interval = setInterval(async () => {
       const info = await window.api.singbox.getInfo()
       if (info.status !== 'running') {
-        setTunOk(false)
-        window.api.browser.closeAll()
+        failCount++
+        if (failCount >= 2) {
+          setTunOk(false)
+          window.api.browser.closeAll()
+        }
+      } else {
+        failCount = 0
       }
     }, 5000)
     return () => clearInterval(interval)

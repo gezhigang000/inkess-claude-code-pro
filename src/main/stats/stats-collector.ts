@@ -71,6 +71,7 @@ export class StatsCollector {
 
   private activeSessions = new Map<string, ActiveSession>()
   private pingTimer: ReturnType<typeof setInterval> | null = null
+  private cleanupTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor() {
     this.statsDir = join(app.getPath('userData'), 'stats')
@@ -81,7 +82,7 @@ export class StatsCollector {
     this.latencyPath = join(this.statsDir, 'latency.jsonl')
 
     // Defer cleanup to avoid blocking app startup
-    setTimeout(() => this.cleanup(), 5000)
+    this.cleanupTimer = setTimeout(() => { this.cleanupTimer = null; this.cleanup() }, 5000)
     this.startPingTimer()
   }
 
@@ -292,6 +293,10 @@ export class StatsCollector {
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   dispose(): void {
+    if (this.cleanupTimer !== null) {
+      clearTimeout(this.cleanupTimer)
+      this.cleanupTimer = null
+    }
     if (this.pingTimer !== null) {
       clearInterval(this.pingTimer)
       this.pingTimer = null
