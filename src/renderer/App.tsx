@@ -60,7 +60,17 @@ export function App() {
   const [tunOk, setTunOk] = useState(false)
   const tunOkRef = useRef(false)
   const handleNewTabRef = useRef<(cwd?: string) => void>(() => {})
+  const pendingClaudeLoginRef = useRef<{ email: string; password: string } | null>(null)
   useEffect(() => { tunOkRef.current = tunOk }, [tunOk])
+
+  // Auto-login Claude when TUN becomes ready
+  useEffect(() => {
+    if (tunOk && pendingClaudeLoginRef.current) {
+      const { email, password } = pendingClaudeLoginRef.current
+      pendingClaudeLoginRef.current = null
+      window.api.subscription.autoLoginClaude(email, password)
+    }
+  }, [tunOk])
 
   const [subscriptionLoggedIn, setSubscriptionLoggedIn] = useState<boolean | null>(null) // null = checking
   const [subscriptionUsername, setSubscriptionUsername] = useState<string | null>(null)
@@ -116,9 +126,9 @@ export function App() {
     store.setProxyUrl(config.proxyUrl)
     store.setProxyRegion(config.proxyRegion)
 
-    // 2. Auto-login Claude (opens browser window)
+    // 2. Save Claude credentials for auto-login when TUN is ready
     if (config.claudeEmail && config.claudePassword) {
-      window.api.subscription.autoLoginClaude(config.claudeEmail, config.claudePassword)
+      pendingClaudeLoginRef.current = { email: config.claudeEmail, password: config.claudePassword }
     }
 
     // 3. Start status polling
