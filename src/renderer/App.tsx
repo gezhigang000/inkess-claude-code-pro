@@ -80,6 +80,7 @@ export function App() {
       const info = await window.api.singbox.getInfo()
       if (info.status !== 'running') {
         setTunOk(false)
+        window.api.browser.closeAll()
       }
     }, 5000)
     return () => clearInterval(interval)

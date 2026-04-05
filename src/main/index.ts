@@ -334,6 +334,9 @@ ipcMain.handle('singbox:startLocalProxy', async (_event, proxyUrl: string, port?
 ipcMain.handle('singbox:stop', () => {
   singBoxManager.stop()
   statsCollector.logEvent('tun:stop')
+  // Close all browser windows when TUN stops
+  browserWindows.forEach(w => { try { if (!w.isDestroyed()) w.close() } catch { /* ignore */ } })
+  browserWindows = []
   return { success: true }
 })
 
@@ -709,11 +712,25 @@ function claudeAutoFillScript(email: string, password: string): string {
 // IPC: Built-in browser (uses proxy + region env)
 let browserWindows: BrowserWindow[] = []
 
+ipcMain.handle('browser:closeAll', () => {
+  browserWindows.forEach(w => { try { if (!w.isDestroyed()) w.close() } catch { /* ignore */ } })
+  browserWindows = []
+})
+
 ipcMain.handle('browser:open', async (_event, url: string) => {
   // Validate URL
   if (!/^https?:\/\//i.test(url)) {
     log.warn(`browser:open blocked non-http URL: ${url}`)
     return { error: 'Only http/https URLs are supported' }
+  }
+
+  // Block browser when TUN is not running
+  if (proxySettings.enabled) {
+    const sbInfo = singBoxManager.getInfo()
+    if (sbInfo.status !== 'running') {
+      log.warn('browser:open blocked — TUN not running')
+      return { error: 'Network not connected. Please start TUN first.' }
+    }
   }
 
   const regionEnv = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}

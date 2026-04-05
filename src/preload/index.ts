@@ -174,6 +174,7 @@ const api = {
 
   browser: {
     open: (url: string) => ipcRenderer.invoke('browser:open', url) as Promise<{ success?: boolean; error?: string }>,
+    closeAll: () => ipcRenderer.invoke('browser:closeAll'),
   },
 
   clipboard: {
