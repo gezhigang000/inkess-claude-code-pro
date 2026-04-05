@@ -66,7 +66,7 @@ export function buildTunConfig(proxyUrl: string, dnsServer = '8.8.8.8'): SingBox
         address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
         auto_route: true,
         strict_route: true,
-        stack: 'system',
+        stack: 'mixed', // 'system' is unstable on macOS; 'mixed' uses gvisor for TCP + system for UDP
         sniff: true,
       },
     ],

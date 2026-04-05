@@ -241,8 +241,10 @@ export class SingBoxManager {
     await this.ensureInstalled()
     await this.stop() // always stop first to apply new config
 
+    log.info(`[sing-box] building TUN config for proxy: ${proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')}`)
     const config = buildTunConfig(proxyUrl)
     this.writeConfig(config)
+    log.info(`[sing-box] config written: stack=${config.inbounds[0]?.stack}, dns=${config.dns.servers.map(s => s.tag + ':' + s.address).join(', ')}`)
 
     this._mode = 'tun'
     this._status = 'starting'
@@ -285,9 +287,11 @@ export class SingBoxManager {
         return
       }
       // PID file exists but process dead — clean up
+      log.warn(`[sing-box] reconcile: pid=${pid} is dead, cleaning up PID file`)
       this.removePidFile()
     }
     if (this._status === 'running') {
+      log.warn(`[sing-box] reconcile: status was running but no live process — marking stopped`)
       this._status = 'stopped'
       this._mode = 'off'
       this._internetReachable = null
@@ -326,22 +330,15 @@ export class SingBoxManager {
       const start = Date.now()
       log.info(`[testConnectivity] verifying exit IP (expected: ${exitIp || 'any'})...`)
 
-      let actualIp: string
-      if (os.platform() === 'win32') {
-        // Windows: use fetch (curl may not be available)
-        const res = await fetchWithTimeout('https://ip.oxylabs.io/location', {}, 15000)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const data = await res.json()
-        actualIp = data.ip as string
-      } else {
-        // macOS/Linux: use curl subprocess to ensure traffic goes through TUN routes.
-        // Electron's built-in fetch may use cached DNS/routes that bypass TUN.
-        const { stdout } = await execFileAsync('curl', [
-          '-s', '--connect-timeout', '10', 'https://ip.oxylabs.io/location',
-        ], { timeout: 15000 })
-        const data = JSON.parse(stdout)
-        actualIp = data.ip as string
-      }
+      // Use fetch from Electron main process — in TUN mode with auto_route+strict_route,
+      // all system traffic goes through sing-box TUN including Electron's fetch.
+      // curl subprocess had 10s+ latency issues; fetch is faster and more reliable.
+      log.info(`[testConnectivity] fetching https://ip.oxylabs.io/location ...`)
+      const res = await fetchWithTimeout('https://ip.oxylabs.io/location', {}, 15000)
+      log.info(`[testConnectivity] HTTP ${res.status} (${Date.now() - start}ms)`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      const actualIp = data.ip as string
 
       const latency = Date.now() - start
       log.info(`[testConnectivity] exit IP: ${actualIp}, latency: ${latency}ms`)

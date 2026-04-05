@@ -1040,7 +1040,9 @@ app.whenReady().then(() => {
     safeSend('appUpdate:status', status)
   })
 
-  setTimeout(() => checkForAppUpdate(), 5000)
+  // Delay update check until TUN is likely ready (60s instead of 5s)
+  // TUN startup takes ~20-30s (sudo prompt + sing-box start + connectivity test)
+  setTimeout(() => checkForAppUpdate(), 60000)
   statsCollector.logEvent('app:launch', app.getVersion())
 
   app.on('activate', () => {
