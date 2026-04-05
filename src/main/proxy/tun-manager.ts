@@ -14,7 +14,7 @@ import log from '../logger'
 import { fetchWithTimeout } from '../utils/fetch'
 
 const TUN_VERSION = '2.14.4'
-const TUN_DOWNLOAD_BASE = `https://github.com/heiher/hev-socks5-tunnel/releases/download/${TUN_VERSION}`
+const TUN_MIRROR_BASE = `https://inkess-install-file.oss-cn-beijing.aliyuncs.com/tun-mirror/${TUN_VERSION}`
 
 // TUN network constants
 const TUN_IP = '198.18.0.1'
@@ -87,13 +87,13 @@ export class TunManager {
     const arch = os.arch()
     if (platform === 'darwin') {
       const suffix = arch === 'arm64' ? 'darwin-arm64' : 'darwin-x86_64'
-      return `${TUN_DOWNLOAD_BASE}/hev-socks5-tunnel-${suffix}`
+      return `${TUN_MIRROR_BASE}/hev-socks5-tunnel-${suffix}`
     }
     if (platform === 'win32') {
-      return `${TUN_DOWNLOAD_BASE}/hev-socks5-tunnel-win64.zip`
+      return `${TUN_MIRROR_BASE}/hev-socks5-tunnel-win64.zip`
     }
     // Linux fallback
-    return `${TUN_DOWNLOAD_BASE}/hev-socks5-tunnel-linux-x86_64`
+    return `${TUN_MIRROR_BASE}/hev-socks5-tunnel-linux-x86_64`
   }
 
   isInstalled(): boolean {
