@@ -23,12 +23,14 @@ export class BrowserInterceptor {
   private server: Server | null = null
   private socketPath: string
   private binDir: string
+  private zdotdir: string
   private onUrlOpen: ((url: string) => void) | null = null
 
   constructor() {
     const userData = app.getPath('userData')
     this.socketPath = join(userData, SOCKET_NAME)
     this.binDir = join(userData, 'bin')
+    this.zdotdir = join(userData, 'zdotdir')
   }
 
   /** Start socket server and create wrapper scripts */
@@ -36,6 +38,7 @@ export class BrowserInterceptor {
     this.onUrlOpen = onUrlOpen
     this.startSocketServer()
     this.createWrapperScripts()
+    if (process.platform === 'darwin') this.createZdotdir()
     log.info(`[BrowserInterceptor] started, socket: ${this.socketPath}`)
   }
 
@@ -52,7 +55,13 @@ export class BrowserInterceptor {
   getEnv(): Record<string, string> {
     const env: Record<string, string> = {
       INKESS_BROWSER_SOCK: this.socketPath,
+      INKESS_BIN_DIR: this.binDir,
       BROWSER: join(this.binDir, 'browser-open'),
+    }
+    // macOS: ZDOTDIR wrapper ensures our bin dir stays first in PATH
+    // (path_helper in /etc/zprofile reorders PATH, moving custom dirs to end)
+    if (process.platform === 'darwin') {
+      env.ZDOTDIR = this.zdotdir
     }
     return env
   }
@@ -66,9 +75,13 @@ export class BrowserInterceptor {
     // Clean up stale socket
     try { unlinkSync(this.socketPath) } catch { /* ignore */ }
 
+    const MAX_URL_SIZE = 4096
     this.server = createServer((conn) => {
       let data = ''
-      conn.on('data', (chunk) => { data += chunk.toString() })
+      conn.on('data', (chunk) => {
+        data += chunk.toString()
+        if (data.length > MAX_URL_SIZE) { conn.destroy(); return }
+      })
       conn.on('end', () => {
         const url = data.trim()
         if (/^https?:\/\//i.test(url)) {
@@ -90,6 +103,61 @@ export class BrowserInterceptor {
       // Make socket accessible by child processes
       try { chmodSync(this.socketPath, 0o666) } catch { /* ignore */ }
     })
+  }
+
+  /**
+   * Create ZDOTDIR wrapper files for zsh on macOS.
+   *
+   * Problem: macOS /etc/zprofile calls path_helper which reorders PATH,
+   * pushing our bin dir to the end (after /usr/bin). This means our `open`
+   * wrapper is never found by child processes like Claude Code CLI.
+   *
+   * Solution: Use ZDOTDIR to wrap zsh config files. Our .zshrc sources the
+   * user's real .zshrc, then re-prepends our bin dir to PATH.
+   */
+  private createZdotdir(): void {
+    mkdirSync(this.zdotdir, { recursive: true })
+
+    // .zshenv — source user's, keep ZDOTDIR pointing here for later files
+    writeFileSync(join(this.zdotdir, '.zshenv'),
+      `[ -f "$HOME/.zshenv" ] && source "$HOME/.zshenv"\n`,
+      { mode: 0o644 })
+
+    // .zprofile — source user's (path_helper already ran via /etc/zprofile)
+    writeFileSync(join(this.zdotdir, '.zprofile'),
+      `[ -f "$HOME/.zprofile" ] && source "$HOME/.zprofile"\n`,
+      { mode: 0o644 })
+
+    // .zshrc — source user's, re-isolate env, fix PATH, reset ZDOTDIR
+    writeFileSync(join(this.zdotdir, '.zshrc'),
+      `[ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc"\n` +
+      '# --- Post-init isolation (user .zshrc may have overridden our env) ---\n' +
+      '# 1. Re-strip ANTHROPIC_*/CLAUDE_* that user\'s .zshrc may have re-set\n' +
+      'for __k in $(env 2>/dev/null | grep -oE \'^(ANTHROPIC|CLAUDE)_[^=]*\'); do\n' +
+      '  unset "$__k" 2>/dev/null\n' +
+      'done; unset __k\n' +
+      `# 2. Re-inject our isolated CLAUDE_CONFIG_DIR\n` +
+      `[ -n "$__INKESS_CLAUDE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$__INKESS_CLAUDE_CONFIG_DIR"\n` +
+      `# 3. Re-apply region env (user's .zshrc may have set TZ/LANG to local values)\n` +
+      'if [ -n "$__INKESS_REGION_ENV" ]; then\n' +
+      '  IFS=\':\' read -rA __pairs <<< "$__INKESS_REGION_ENV"\n' +
+      '  for __p in "${__pairs[@]}"; do\n' +
+      '    export "${__p%%=*}=${__p#*=}"\n' +
+      '  done; unset __pairs __p\n' +
+      'fi\n' +
+      `# 4. Re-prepend Inkess bin dir (path_helper moved it to end)\n` +
+      `[ -n "$INKESS_BIN_DIR" ] && export PATH="$INKESS_BIN_DIR:$PATH"\n` +
+      `hash -r\n` +
+      `# 5. Clean up internal vars (keep INKESS_BROWSER_SOCK for open wrapper)\n` +
+      'for __k in $(env 2>/dev/null | grep -oE \'^__INKESS_[^=]*\'); do unset "$__k" 2>/dev/null; done; unset __k\n' +
+      `unset INKESS_BIN_DIR 2>/dev/null\n` +
+      `ZDOTDIR="$HOME"\n`,
+      { mode: 0o644 })
+
+    // .zlogin — source user's
+    writeFileSync(join(this.zdotdir, '.zlogin'),
+      `[ -f "$HOME/.zlogin" ] && source "$HOME/.zlogin"\n`,
+      { mode: 0o644 })
   }
 
   private createWrapperScripts(): void {
@@ -114,15 +182,19 @@ fi
     // open wrapper: intercepts direct `open URL` calls on macOS
     // Only intercepts URL arguments; passes everything else to /usr/bin/open
     if (process.platform === 'darwin') {
+      const logDir = app.getPath('userData')
       const openWrapperScript = `#!/bin/bash
 # Inkess open wrapper — intercepts URL opens, passes everything else through
-# Check if any argument looks like a URL
+LOG="${logDir}/browser-intercept.log"
 for arg in "$@"; do
   case "$arg" in
     http://*|https://*)
+      echo "[$(date '+%H:%M:%S')] intercept: $arg sock=$INKESS_BROWSER_SOCK" >> "$LOG" 2>/dev/null
       if [ -S "$INKESS_BROWSER_SOCK" ]; then
         printf '%s' "$arg" | /usr/bin/nc -U "$INKESS_BROWSER_SOCK" 2>/dev/null
         exit 0
+      else
+        echo "[$(date '+%H:%M:%S')] WARN: socket not found, fallback to system open" >> "$LOG" 2>/dev/null
       fi
       ;;
   esac

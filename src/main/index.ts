@@ -8,7 +8,7 @@ import { join, resolve, normalize } from 'path'
 import { existsSync, mkdirSync, statSync } from 'fs'
 import { execSync } from 'child_process'
 import * as os from 'os'
-import { PtyManager, DEFAULT_ENV_OVERRIDES, DEFAULT_ENV_HIDDEN } from './pty/pty-manager'
+import { PtyManager, buildCleanEnv, DEFAULT_REGION_ENV } from './pty/pty-manager'
 import { PtyOutputMonitor, type PtyActivityEvent } from './pty/pty-output-monitor'
 import { CliManager } from './cli/cli-manager'
 import { ToolsManager } from './tools/tools-manager'
@@ -21,7 +21,7 @@ import { fetchSubscription, detectRegion } from './proxy/subscription'
 import { SingBoxManager } from './proxy/sing-box-manager'
 import { StatsCollector } from './stats/stats-collector'
 import { BrowserInterceptor } from './browser/browser-interceptor'
-import { buildFingerprintMaskScript, FINGERPRINT_PROFILES } from './browser/fingerprint-mask'
+import { openBrowserWindow, closeAllBrowserWindows } from './browser/browser-window'
 
 // Disable IPv6 in Chromium to prevent IPv6 traffic bypassing TUN proxy
 app.commandLine.appendSwitch('disable-ipv6')
@@ -264,8 +264,6 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => 
     }
   })
 
-  browserWindows.push(win)
-
   // Auto-fill login form when page loads
   const safeEmail = JSON.stringify(email)
   const safePass = JSON.stringify(password)
@@ -288,10 +286,6 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => 
   })
 
   win.loadURL('https://claude.ai/login')
-
-  win.on('closed', () => {
-    browserWindows = browserWindows.filter(w => w !== win)
-  })
 
   // Auto-close browser and notify renderer when login succeeds
   win.webContents.on('did-navigate', (_event, url) => {
@@ -342,8 +336,7 @@ ipcMain.handle('tun:stop', async () => {
   await singBoxManager.stop()
   statsCollector.logEvent('tun:stop')
   // Close all browser windows when TUN stops
-  browserWindows.forEach(w => { try { if (!w.isDestroyed()) w.close() } catch { /* ignore */ } })
-  browserWindows = []
+  closeAllBrowserWindows()
   return { success: true }
 })
 
@@ -361,18 +354,18 @@ let proxySettings: ProxySettings = { enabled: false, url: '', region: 'us' }
 // Claude credentials — in-memory only, never persisted to disk
 let claudeCredentials: { email: string; password: string } | null = null
 
-/** Region → environment variable overrides (timezone, locale) */
+/** Region → environment variable overrides (timezone, locale, LC_CTYPE) */
 const REGION_ENV: Record<string, Record<string, string>> = {
-  us:   { TZ: 'America/New_York',    LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' },
-  usw:  { TZ: 'America/Los_Angeles', LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' },
-  gb:   { TZ: 'Europe/London',       LANG: 'en_GB.UTF-8', LC_ALL: 'en_GB.UTF-8' },
-  de:   { TZ: 'Europe/Berlin',       LANG: 'de_DE.UTF-8', LC_ALL: 'de_DE.UTF-8' },
-  jp:   { TZ: 'Asia/Tokyo',          LANG: 'ja_JP.UTF-8', LC_ALL: 'ja_JP.UTF-8' },
-  kr:   { TZ: 'Asia/Seoul',          LANG: 'ko_KR.UTF-8', LC_ALL: 'ko_KR.UTF-8' },
-  sg:   { TZ: 'Asia/Singapore',      LANG: 'en_SG.UTF-8', LC_ALL: 'en_SG.UTF-8' },
-  hk:   { TZ: 'Asia/Hong_Kong',      LANG: 'en_HK.UTF-8', LC_ALL: 'en_HK.UTF-8' },
-  tw:   { TZ: 'Asia/Taipei',         LANG: 'zh_TW.UTF-8', LC_ALL: 'zh_TW.UTF-8' },
-  au:   { TZ: 'Australia/Sydney',    LANG: 'en_AU.UTF-8', LC_ALL: 'en_AU.UTF-8' },
+  us:   { TZ: 'America/New_York',    LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', LC_CTYPE: 'en_US.UTF-8' },
+  usw:  { TZ: 'America/Los_Angeles', LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', LC_CTYPE: 'en_US.UTF-8' },
+  gb:   { TZ: 'Europe/London',       LANG: 'en_GB.UTF-8', LC_ALL: 'en_GB.UTF-8', LC_CTYPE: 'en_GB.UTF-8' },
+  de:   { TZ: 'Europe/Berlin',       LANG: 'de_DE.UTF-8', LC_ALL: 'de_DE.UTF-8', LC_CTYPE: 'de_DE.UTF-8' },
+  jp:   { TZ: 'Asia/Tokyo',          LANG: 'ja_JP.UTF-8', LC_ALL: 'ja_JP.UTF-8', LC_CTYPE: 'ja_JP.UTF-8' },
+  kr:   { TZ: 'Asia/Seoul',          LANG: 'ko_KR.UTF-8', LC_ALL: 'ko_KR.UTF-8', LC_CTYPE: 'ko_KR.UTF-8' },
+  sg:   { TZ: 'Asia/Singapore',      LANG: 'en_SG.UTF-8', LC_ALL: 'en_SG.UTF-8', LC_CTYPE: 'en_SG.UTF-8' },
+  hk:   { TZ: 'Asia/Hong_Kong',      LANG: 'en_HK.UTF-8', LC_ALL: 'en_HK.UTF-8', LC_CTYPE: 'en_HK.UTF-8' },
+  tw:   { TZ: 'Asia/Taipei',         LANG: 'zh_TW.UTF-8', LC_ALL: 'zh_TW.UTF-8', LC_CTYPE: 'zh_TW.UTF-8' },
+  au:   { TZ: 'Australia/Sydney',    LANG: 'en_AU.UTF-8', LC_ALL: 'en_AU.UTF-8', LC_CTYPE: 'en_AU.UTF-8' },
   auto: {}, // no override — use real system locale
 }
 
@@ -501,37 +494,41 @@ ipcMain.handle('pty:create', (_event, options: {
       command = cliManager.getBinaryPath()
     }
 
-    // Merge tools PATH into env so PTY can find bundled python/git
-    // Isolate Claude Code config to avoid reading/writing user's ~/.claude/settings.json
+    // --- Build clean PTY environment from scratch (whitelist approach) ---
     const toolsEnv = toolsManager.getEnvPatch()
     const claudeConfigDir = join(app.getPath('userData'), 'claude-config')
     mkdirSync(claudeConfigDir, { recursive: true })
 
-    // Inject proxy env vars if proxy is enabled
-    const proxyEnv = proxySettings.enabled ? buildProxyEnv(proxySettings.url) : {}
-
-    // Build env config with region-based overrides
-    // DEFAULT_ENV_OVERRIDES, DEFAULT_ENV_HIDDEN imported at top level
+    // Region overrides (TZ, LANG, LC_*) based on exit IP
     const regionOverrides = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}
-    const envConfig = {
-      overrides: { ...DEFAULT_ENV_OVERRIDES, ...regionOverrides },
-      hidden: DEFAULT_ENV_HIDDEN,
-    }
 
-    // Inject browser interceptor env (BROWSER, INKESS_BROWSER_SOCK) + prepend bin dir to PATH
+    // Proxy env only in non-TUN mode (TUN captures all traffic at network level)
+    const tunInfo = singBoxManager.getInfo()
+    const proxyEnv = (proxySettings.enabled && !tunInfo.tunRunning) ? buildProxyEnv(proxySettings.url) : {}
+
+    // Browser interceptor env (BROWSER, INKESS_BROWSER_SOCK, ZDOTDIR)
     const interceptorEnv = browserInterceptor.getEnv()
     const binDir = browserInterceptor.getBinDir()
     const existingPath = toolsEnv.PATH || process.env.PATH || ''
-    const mergedEnv = {
+
+    // Encode region vars for zdotdir .zshrc to re-apply after user's .zshrc
+    const regionEnvStr = Object.entries({ ...DEFAULT_REGION_ENV, ...regionOverrides })
+      .filter(([k]) => ['TZ', 'LANG', 'LC_ALL', 'LC_CTYPE'].includes(k))
+      .map(([k, v]) => `${k}=${v}`).join(':')
+
+    // Build from scratch: clean base + region + tools + interceptor + caller
+    const ptyEnv = buildCleanEnv(regionOverrides, {
       ...toolsEnv,
       ...proxyEnv,
       ...interceptorEnv,
       ...options.env,
       CLAUDE_CONFIG_DIR: claudeConfigDir,
+      __INKESS_CLAUDE_CONFIG_DIR: claudeConfigDir,
+      __INKESS_REGION_ENV: regionEnvStr,
       PATH: `${binDir}:${existingPath}`,
-    }
+    })
 
-    const id = ptyManager.create(options.cwd, mergedEnv, command, args, envConfig)
+    const id = ptyManager.create(options.cwd, ptyEnv, command, args)
     ptyMonitor.watch(id)
     const title = options.cwd.replace(/\\/g, '/').split('/').pop() || 'terminal'
     sessionRecorder.startSession(id, options.cwd, title)
@@ -746,157 +743,28 @@ function claudeAutoFillScript(email: string, password: string): string {
   })()`
 }
 
-// IPC: Built-in browser (uses proxy + region env)
-let browserWindows: BrowserWindow[] = []
+// IPC: Built-in browser (uses proxy + region env + address bar)
 
-/** Open a URL in the built-in browser with proxy + region masking applied.
- *  Shared by IPC handler and BrowserInterceptor (PTY URL interception). */
-async function openBuiltinBrowser(url: string): Promise<{ success?: boolean; error?: string }> {
-  // Validate URL
-  if (!/^https?:\/\//i.test(url)) {
-    log.warn(`browser:open blocked non-http URL: ${url}`)
-    return { error: 'Only http/https URLs are supported' }
-  }
-
-  // Block browser when TUN is not running
-  if (proxySettings.enabled) {
-    const sbInfo = singBoxManager.getInfo()
-    if (!sbInfo.tunRunning) {
-      log.warn('browser:open blocked — TUN not running')
-      return { error: 'Network not connected. Please start TUN first.' }
-    }
-  }
-
+function getBrowserConfig() {
   const regionEnv = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}
-  const lang = regionEnv.LANG?.split('.')[0]?.replace('_', '-') || 'en-US'
-
-  // Claude URLs share persistent session (login state); other URLs get isolated sessions
-  const { session: electronSession } = require('electron') as typeof import('electron')
-  const isClaude = /claude\.ai/i.test(url)
-  const browserSession = isClaude
-    ? electronSession.fromPartition('persist:claude')
-    : electronSession.fromPartition(`browser-${Date.now()}-${Math.random().toString(36).slice(2)}`, { cache: false })
-
-  // In TUN mode, don't set session proxy — traffic naturally goes through TUN.
-  // Setting session.setProxy() would cause double-proxying (browser→SOCKS5→TUN→SOCKS5 again)
-  // and Electron's proxy DNS resolution may bypass sing-box's DNS hijack.
-  const sbInfo2 = singBoxManager.getInfo()
-  if (!sbInfo2.tunRunning && proxySettings.enabled && proxySettings.url) {
-    // Fallback: set proxy directly only when TUN is not running
-    await browserSession.setProxy({
-      proxyRules: proxySettings.url,
-    })
-    const redacted = proxySettings.url.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')
-    log.info(`browser:open proxy set to: ${redacted}`)
-  } else {
-    log.info(`browser:open using TUN (no session proxy)`)
+  const sbInfo = singBoxManager.getInfo()
+  return {
+    region: proxySettings.region,
+    regionEnv,
+    proxyUrl: proxySettings.url,
+    proxyEnabled: proxySettings.enabled,
+    tunRunning: sbInfo.tunRunning,
+    claudeCredentials,
+    claudeAutoFillScript,
   }
+}
 
-  const win = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 600,
-    minHeight: 400,
-    title: 'Browser',
-    icon: join(__dirname, '../../resources/icon-256.png'),
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      session: browserSession,
-    }
-  })
-
-  // Block WebRTC IP leak: force proxy-only or disable non-proxied UDP
-  win.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
-
-  // Strip Client Hints headers (Sec-CH-UA-*) that leak browser/OS info
-  win.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
-    const headers = { ...details.requestHeaders }
-    for (const key of Object.keys(headers)) {
-      if (key.toLowerCase().startsWith('sec-ch-')) delete headers[key]
-    }
-    callback({ requestHeaders: headers })
-  })
-
-  // Inject fingerprint masking at document start (before page scripts)
-  const fpProfile = FINGERPRINT_PROFILES[proxySettings.region] || FINGERPRINT_PROFILES.default
-  const fpScript = buildFingerprintMaskScript(fpProfile)
-  win.webContents.on('dom-ready', () => {
-    win.webContents.executeJavaScript(fpScript).catch(() => {})
-  })
-
-  // Set language header to match region
-  win.webContents.session.setUserAgent(
-    win.webContents.getUserAgent(),
-    lang
-  )
-
-  // Override navigator.language via JavaScript injection
-  win.webContents.on('did-finish-load', () => {
-    if (regionEnv.LANG) {
-      const safeLang = JSON.stringify(lang)
-      win.webContents.executeJavaScript(`
-        Object.defineProperty(navigator, 'language', { get: () => ${safeLang} });
-        Object.defineProperty(navigator, 'languages', { get: () => [${safeLang}, 'en'] });
-      `).catch(() => {})
-    }
-    // Set timezone via Intl override
-    if (regionEnv.TZ) {
-      const safeTz = JSON.stringify(regionEnv.TZ)
-      win.webContents.executeJavaScript(`
-        (function() {
-          var __tz = ${safeTz};
-          var __origDTF = Intl.DateTimeFormat;
-          var __newDTF = function(locale, opts) {
-            return new __origDTF(locale, Object.assign({}, opts, { timeZone: (opts && opts.timeZone) || __tz }));
-          };
-          __newDTF.prototype = __origDTF.prototype;
-          __newDTF.supportedLocalesOf = __origDTF.supportedLocalesOf.bind(__origDTF);
-          Object.defineProperty(__newDTF, Symbol.hasInstance, { value: function(i) { return i instanceof __origDTF; } });
-          Intl.DateTimeFormat = __newDTF;
-        })();
-      `).catch(() => {})
-    }
-    // Auto-fill Claude login if credentials are available
-    if (isClaude && claudeCredentials) {
-      const pageUrl = win.webContents.getURL()
-      if (pageUrl.includes('login') || pageUrl.includes('clerk') || pageUrl.includes('accounts.anthropic.com')) {
-        win.webContents.executeJavaScript(claudeAutoFillScript(claudeCredentials.email, claudeCredentials.password)).catch(() => {})
-      }
-    }
-  })
-
-  win.loadURL(url)
-
-  // For Claude windows, handle navigation to login pages (e.g. redirect from main page to login)
-  if (isClaude && claudeCredentials) {
-    let lastFilledUrl = ''
-    win.webContents.on('did-navigate', (_navEvent, navUrl) => {
-      if (navUrl === lastFilledUrl) return // prevent double-injection
-      if (navUrl.includes('login') || navUrl.includes('clerk') || navUrl.includes('accounts.anthropic.com')) {
-        lastFilledUrl = navUrl
-        const creds = claudeCredentials // capture before async delay
-        if (!creds) return
-        setTimeout(() => {
-          win.webContents.executeJavaScript(claudeAutoFillScript(creds.email, creds.password)).catch(() => {})
-        }, 500)
-      }
-    })
-  }
-
-  browserWindows.push(win)
-
-  win.on('closed', () => {
-    browserWindows = browserWindows.filter(w => w !== win)
-  })
-
-  return { success: true }
+async function openBuiltinBrowser(url: string): Promise<{ success?: boolean; error?: string }> {
+  return openBrowserWindow(url, getBrowserConfig())
 }
 
 ipcMain.handle('browser:closeAll', () => {
-  browserWindows.forEach(w => { try { if (!w.isDestroyed()) w.close() } catch { /* ignore */ } })
-  browserWindows = []
+  closeAllBrowserWindows()
 })
 
 ipcMain.handle('browser:open', async (_event, url: string) => {
@@ -1087,8 +955,7 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
 
 app.on('window-all-closed', async () => {
   // Close all browser windows
-  browserWindows.forEach(w => { try { w.close() } catch { /* ignore */ } })
-  browserWindows = []
+  closeAllBrowserWindows()
   browserInterceptor.stop()
   statsCollector.logEvent('app:quit')
   statsCollector.dispose()

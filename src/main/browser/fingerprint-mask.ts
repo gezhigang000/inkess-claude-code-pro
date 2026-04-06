@@ -196,15 +196,15 @@ export const FINGERPRINT_PROFILES: Record<string, {
 }> = {
   // Default: generic Windows profile (most common globally)
   default: { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  // macOS regions
-  US:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  USW: { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  GB:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  DE:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  JP:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  KR:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  SG:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  HK:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  TW:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  AU:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
+  // Keys MUST be lowercase to match REGION_ENV keys (us, jp, gb, etc.)
+  us:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
+  usw: { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
+  gb:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
+  de:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
+  jp:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
+  kr:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
+  sg:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
+  hk:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
+  tw:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
+  au:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
 }
