@@ -76,8 +76,17 @@ export function buildCleanEnv(
 
   // 1. Shell essentials (always needed)
   env.HOME = process.env.HOME || os.homedir()
-  env.SHELL = process.env.SHELL || '/bin/zsh'
-  if (process.env.TMPDIR) env.TMPDIR = process.env.TMPDIR
+  if (process.platform !== 'win32') {
+    env.SHELL = process.env.SHELL || '/bin/zsh'
+  }
+  if (process.platform === 'win32') {
+    if (process.env.TEMP) env.TEMP = process.env.TEMP
+    if (process.env.TMP) env.TMP = process.env.TMP
+    if (process.env.USERPROFILE) env.USERPROFILE = process.env.USERPROFILE
+    if (process.env.USERNAME) env.USERNAME = process.env.USERNAME
+  } else {
+    if (process.env.TMPDIR) env.TMPDIR = process.env.TMPDIR
+  }
   env.TERM = 'xterm-256color'
   env.COLORTERM = 'truecolor'
 

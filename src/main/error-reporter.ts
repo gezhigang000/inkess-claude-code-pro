@@ -50,14 +50,24 @@ export class ErrorReporter {
     }
   }
 
+  /** Redact sensitive data (credentials, tokens) from text before upload */
+  private redactSensitiveData(text: string): string {
+    return text
+      // Redact URLs with credentials (user:pass@host)
+      .replace(/:\/\/([^:@\s]+):([^@\s]+)@/g, '://$1:***@')
+      // Redact common token/key patterns
+      .replace(/(token|password|secret|key|authorization)['":\s]*[=:]\s*['"]?[^\s'"}{,]+/gi, '$1=***')
+  }
+
   /** Upload complete log file */
   async uploadLogFile(): Promise<{ success: boolean; error?: string }> {
     try {
       const logPath = log.transports.file.getFile()?.path
       if (!logPath) return { success: false, error: 'Log file not found' }
 
-      const content = readFileSync(logPath, 'utf-8')
-      if (!content) return { success: false, error: 'Log file is empty' }
+      const rawContent = readFileSync(logPath, 'utf-8')
+      if (!rawContent) return { success: false, error: 'Log file is empty' }
+      const content = this.redactSensitiveData(rawContent)
 
       const token = this.tokenGetter?.()
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }

@@ -157,7 +157,10 @@ export function FilePreview({ filePath, cwd, onClose }: FilePreviewProps) {
         background: 'var(--bg-secondary)',
       }}>
         <button
-          onClick={() => window.api.shell.openExternal(`${ideScheme}file/${absolutePath}`)}
+          onClick={() => {
+            const encodedPath = absolutePath.split(/[/\\]/).map(encodeURIComponent).join('/')
+            window.api.shell.openExternal(`${ideScheme}file/${encodedPath}`)
+          }}
           onMouseEnter={() => setHovered('ide')}
           onMouseLeave={() => setHovered(null)}
           style={{

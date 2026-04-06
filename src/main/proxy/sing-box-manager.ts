@@ -41,6 +41,7 @@ export class SingBoxManager {
   private _internetReachable: boolean | null = null
   private _latencyMs: number | null = null
   private _stopPromise: Promise<void> | null = null
+  private _startPromise: Promise<{ success?: boolean; error?: string }> | null = null
 
   constructor() {
     this.singboxDir = join(app.getPath('userData'), 'sing-box')
@@ -229,7 +230,11 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     const proc = this.process
     this.process = null
     if (proc) {
-      try { proc.kill('SIGTERM') } catch { /* ignore */ }
+      if (process.platform === 'win32') {
+        try { require('child_process').execSync(`taskkill /F /PID ${proc.pid}`, { stdio: 'pipe' }) } catch { /* ignore */ }
+      } else {
+        try { proc.kill('SIGTERM') } catch { /* ignore */ }
+      }
     }
 
     // Kill the actual sing-box root process via PID file
@@ -263,33 +268,51 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
    * Blocks until sing-box is confirmed running or fails.
    */
   async startTun(proxyUrl: string): Promise<void> {
-    // Guard: if already starting, skip (concurrent call)
-    this.reconcileStatus()
-    if (this._status === 'starting') {
-      log.info(`[sing-box] startTun skipped — already starting`)
+    // Mutex: if already starting, await the existing promise
+    if (this._startPromise) {
+      log.info(`[sing-box] startTun — already starting, awaiting existing promise`)
+      const result = await this._startPromise
+      if (result.error) throw new Error(result.error)
       return
     }
 
-    await this.ensureInstalled()
-    await this.stop() // always stop first to apply new config
-
-    log.info(`[sing-box] building TUN config for proxy: ${proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')}`)
-    const config = buildTunConfig(proxyUrl)
-    this.writeConfig(config)
-    log.info(`[sing-box] config written: stack=${config.inbounds[0]?.stack}, dns=${config.dns.servers.map(s => s.tag + ':' + s.address).join(', ')}`)
-
-    this._mode = 'tun'
-    this._status = 'starting'
-
-    if (os.platform() === 'darwin') {
-      await this.startWithSudo()
-    } else if (os.platform() === 'win32') {
-      await this.startWithAdmin()
-    } else {
-      this.startProcess()
+    this._startPromise = this._startTunImpl(proxyUrl)
+    try {
+      const result = await this._startPromise
+      if (result.error) throw new Error(result.error)
+    } finally {
+      this._startPromise = null
     }
+  }
 
-    // DNS override is handled inside startWithSudo's shell command (runs as root)
+  private async _startTunImpl(proxyUrl: string): Promise<{ success?: boolean; error?: string }> {
+    try {
+      this.reconcileStatus()
+
+      await this.ensureInstalled()
+      await this.stop() // always stop first to apply new config
+
+      log.info(`[sing-box] building TUN config for proxy: ${proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')}`)
+      const config = buildTunConfig(proxyUrl)
+      this.writeConfig(config)
+      log.info(`[sing-box] config written: stack=${config.inbounds[0]?.stack}, dns=${config.dns.servers.map(s => s.tag + ':' + s.address).join(', ')}`)
+
+      this._mode = 'tun'
+      this._status = 'starting'
+
+      if (os.platform() === 'darwin') {
+        await this.startWithSudo()
+      } else if (os.platform() === 'win32') {
+        await this.startWithAdmin()
+      } else {
+        this.startProcess()
+      }
+
+      // DNS override is handled inside startWithSudo's shell command (runs as root)
+      return { success: true }
+    } catch (err) {
+      return { error: (err as Error).message }
+    }
   }
 
   /**
@@ -437,8 +460,11 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
         copyFileSync(extracted, this.binaryPath)
       }
     } else {
-      execSync(`tar -xzf "${tmpPath}" -C "${this.singboxDir}"`, { timeout: 60000 })
-      unlinkSync(tmpPath)
+      try {
+        execSync(`tar -xzf "${tmpPath}" -C "${this.singboxDir}"`, { timeout: 60000 })
+      } finally {
+        try { unlinkSync(tmpPath) } catch { /* ignore */ }
+      }
       const extracted = join(this.singboxDir, filename, 'sing-box')
       if (existsSync(extracted)) {
         const { copyFileSync } = require('fs') as typeof import('fs')

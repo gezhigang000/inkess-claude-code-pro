@@ -26,6 +26,8 @@ export function TunGate({ proxyUrl, exitIp, onReady, isReconnect, onRefreshConfi
   const connect = async () => {
     if (connectingRef.current) return
     connectingRef.current = true
+    setPhase('idle')
+    setError(null)
     try { await _connect() } finally { connectingRef.current = false }
   }
 

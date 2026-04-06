@@ -141,6 +141,14 @@ export function App() {
         if (session.session.proxyRegion) store.setProxyRegion(session.session.proxyRegion)
       }
       setSubscriptionExitIp(session.session?.exitIp || '')
+      // Check if subscription already expired before proceeding
+      if (session.session?.expiresAt) {
+        const minutesLeft = calcMinutesRemaining(session.session.expiresAt)
+        if (minutesLeft <= 0) {
+          forceExpiredLogout()
+          return
+        }
+      }
       startStatusPolling(session.session?.plan || 'monthly')
       // Check if TUN is already running and connected
       const tunInfo = await window.api.tun.getInfo()

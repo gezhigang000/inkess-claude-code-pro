@@ -49,7 +49,7 @@ export class SessionRecorder {
 
   private saveIndex(): void {
     try {
-      writeFileSync(this.indexPath, JSON.stringify(this.index, null, 2))
+      writeFileSync(this.indexPath, JSON.stringify(this.index, null, 2), { mode: 0o600 })
     } catch (err) {
       log.warn('SessionRecorder: failed to save index:', err)
     }
@@ -86,27 +86,15 @@ export class SessionRecorder {
 
     const line = JSON.stringify({ t: Date.now(), d: data, s: 'pty' }) + '\n'
     try {
-      appendFileSync(this.getSessionPath(sessionId), line)
+      appendFileSync(this.getSessionPath(sessionId), line, { mode: 0o600 })
       session.size += Buffer.byteLength(line)
     } catch {
       // Silently ignore write errors
     }
   }
 
-  /** Record user input */
-  recordInput(sessionId: string, data: string): void {
-    const session = this.activeSessions.get(sessionId)
-    if (!session) return
-    if (session.size >= MAX_SESSION_SIZE) return
-
-    const line = JSON.stringify({ t: Date.now(), d: data, s: 'input' }) + '\n'
-    try {
-      appendFileSync(this.getSessionPath(sessionId), line)
-      session.size += Buffer.byteLength(line)
-    } catch {
-      // Silently ignore
-    }
-  }
+  /** Record user input — disabled: do not record keystrokes for security */
+  recordInput(_sessionId: string, _data: string): void { /* no-op */ }
 
   /** Close a session */
   closeSession(sessionId: string): void {
@@ -145,12 +133,13 @@ export class SessionRecorder {
   }
 
   /** Read session content as array of JSONL entries */
-  readSession(sessionId: string): string | null {
+  async readSession(sessionId: string): Promise<string | null> {
     if (!SessionRecorder.isValidId(sessionId)) return null
     const path = this.getSessionPath(sessionId)
     if (!existsSync(path)) return null
     try {
-      return readFileSync(path, 'utf-8')
+      const { readFile } = require('fs/promises') as typeof import('fs/promises')
+      return await readFile(path, 'utf-8')
     } catch {
       return null
     }
@@ -169,13 +158,29 @@ export class SessionRecorder {
   async searchSessions(query: string): Promise<{ id: string; matches: string[] }[]> {
     const results: { id: string; matches: string[] }[] = []
     const lowerQuery = query.toLowerCase()
+    const MAX_SEARCH_SESSIONS = 50
+    const TIMEOUT_MS = 3000
+    const YIELD_INTERVAL = 5
+
+    const startTime = Date.now()
+    const { readFile } = require('fs/promises') as typeof import('fs/promises')
+    let searched = 0
 
     for (const meta of this.index) {
+      if (searched >= MAX_SEARCH_SESSIONS) break
+      if (Date.now() - startTime > TIMEOUT_MS) break
+
       const path = this.getSessionPath(meta.id)
       if (!existsSync(path)) continue
 
+      searched++
+
+      // Yield to event loop every YIELD_INTERVAL files
+      if (searched % YIELD_INTERVAL === 0) {
+        await new Promise<void>(r => setImmediate(r))
+      }
+
       try {
-        const { readFile } = require('fs/promises') as typeof import('fs/promises')
         const content = await readFile(path, 'utf-8')
         const matches: string[] = []
         const lines = content.split('\n')

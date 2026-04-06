@@ -279,6 +279,7 @@ export class CliManager {
   async update(
     onProgress?: (step: string, progress: number) => void
   ): Promise<void> {
+    if (this._installing) throw new Error('Installation already in progress')
     const backupPath = this.binaryPath + '.bak'
     if (existsSync(this.binaryPath)) {
       copyFileSync(this.binaryPath, backupPath)

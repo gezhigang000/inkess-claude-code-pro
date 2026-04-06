@@ -24,6 +24,7 @@ interface BrowserConfig {
 }
 
 let allBrowserWindows: BaseWindow[] = []
+const sessionsWithHeaderStripping = new Set<string>()
 
 export function getAllBrowserWindows(): BaseWindow[] {
   return allBrowserWindows
@@ -57,13 +58,12 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
     icon: join(__dirname, '../../resources/icon-256.png'),
   })
 
-  // --- Toolbar view ---
+  // --- Toolbar view (pure HTML, all logic in main process via executeJavaScript) ---
   const toolbarView = new WebContentsView({
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      preload: join(__dirname, '../preload/browser-toolbar.js'),
     }
   })
   win.contentView.addChildView(toolbarView)
@@ -96,14 +96,18 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
   // WebRTC leak prevention
   contentView.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
 
-  // Strip Client Hints headers
-  contentView.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
-    const headers = { ...details.requestHeaders }
-    for (const key of Object.keys(headers)) {
-      if (key.toLowerCase().startsWith('sec-ch-')) delete headers[key]
-    }
-    callback({ requestHeaders: headers })
-  })
+  // Strip Client Hints headers (once per session to avoid listener accumulation)
+  const sessionKey = isClaude ? 'persist:claude' : contentView.webContents.session.storagePath || 'ephemeral'
+  if (!sessionsWithHeaderStripping.has(sessionKey)) {
+    sessionsWithHeaderStripping.add(sessionKey)
+    contentView.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
+      const headers = { ...details.requestHeaders }
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase().startsWith('sec-ch-')) delete headers[key]
+      }
+      callback({ requestHeaders: headers })
+    })
+  }
 
   // Fingerprint masking
   const fpProfile = FINGERPRINT_PROFILES[config.region] || FINGERPRINT_PROFILES.default
@@ -160,23 +164,21 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
   layoutViews()
   win.on('resize', layoutViews)
 
-  // --- Toolbar ↔ Content communication ---
-  const winId = win.id
+  // --- Toolbar ↔ Content communication (all logic in main process) ---
 
-  // Update toolbar when content navigates
+  // Update toolbar DOM directly from main process via executeJavaScript
   const updateToolbar = () => {
     if (toolbarView.webContents.isDestroyed()) return
-    const currentUrl = contentView.webContents.getURL()
+    const safeUrl = JSON.stringify(contentView.webContents.getURL())
     const canGoBack = contentView.webContents.navigationHistory.canGoBack()
     const canGoForward = contentView.webContents.navigationHistory.canGoForward()
-    const title = contentView.webContents.getTitle()
-    toolbarView.webContents.send('browser-toolbar:update', {
-      url: currentUrl,
-      canGoBack,
-      canGoForward,
-      title,
-      loading: contentView.webContents.isLoading(),
-    })
+    const loading = contentView.webContents.isLoading()
+    toolbarView.webContents.executeJavaScript(`
+      document.getElementById('urlBar').value = ${safeUrl};
+      document.getElementById('backBtn').disabled = ${!canGoBack};
+      document.getElementById('forwardBtn').disabled = ${!canGoForward};
+      document.getElementById('toolbar').classList.toggle('loading', ${loading});
+    `).catch(() => {})
   }
 
   contentView.webContents.on('did-navigate', updateToolbar)
@@ -195,53 +197,59 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
     return { action: 'deny' }
   })
 
-  // Handle toolbar navigation commands (via IPC tagged with windowId)
-  const handleNavigate = (_event: Electron.IpcMainEvent, data: unknown) => {
-    if (!isMyWindow(data) || contentView.webContents.isDestroyed()) return
-    const url = (data as Record<string, unknown>).url
-    if (typeof url !== 'string') return
-    const target = url.trim()
-    if (!target) return
-    // Add protocol if missing, then strictly validate http(s) only
-    const finalUrl = /^https?:\/\//i.test(target) ? target : `https://${target}`
-    if (!/^https?:\/\//i.test(finalUrl)) return // block javascript:, data:, file:, etc.
-    contentView.webContents.loadURL(finalUrl)
-  }
-  const isMyWindow = (data: unknown): boolean =>
-    !!data && typeof data === 'object' && (data as Record<string, unknown>).windowId === winId
-  const handleBack = (_event: Electron.IpcMainEvent, data: unknown) => {
-    if (!isMyWindow(data) || contentView.webContents.isDestroyed()) return
-    contentView.webContents.navigationHistory.goBack()
-  }
-  const handleForward = (_event: Electron.IpcMainEvent, data: unknown) => {
-    if (!isMyWindow(data) || contentView.webContents.isDestroyed()) return
-    contentView.webContents.navigationHistory.goForward()
-  }
-  const handleReload = (_event: Electron.IpcMainEvent, data: unknown) => {
-    if (!isMyWindow(data) || contentView.webContents.isDestroyed()) return
-    contentView.webContents.reload()
-  }
-  const handleStop = (_event: Electron.IpcMainEvent, data: unknown) => {
-    if (!isMyWindow(data) || contentView.webContents.isDestroyed()) return
-    contentView.webContents.stop()
-  }
-  const handleNewTab = (_event: Electron.IpcMainEvent, data: unknown) => {
-    if (!isMyWindow(data)) return
-    openBrowserWindow('https://www.google.com', config).catch(() => {})
-  }
+  // Main-process driven toolbar interactions (no IPC from renderer needed)
+  // Enter key in toolbar → navigate, handled via before-input-event
+  toolbarView.webContents.on('before-input-event', (_event, input) => {
+    if (contentView.webContents.isDestroyed()) return
+    if (input.key === 'Enter' && input.type === 'keyDown') {
+      toolbarView.webContents.executeJavaScript(`document.getElementById('urlBar').value`)
+        .then((val: string) => {
+          const target = (val || '').trim()
+          if (!target) return
+          const finalUrl = /^https?:\/\//i.test(target) ? target : `https://${target}`
+          if (!/^https?:\/\//i.test(finalUrl)) return
+          contentView.webContents.loadURL(finalUrl)
+          // Blur urlBar
+          toolbarView.webContents.executeJavaScript(`document.getElementById('urlBar').blur()`).catch(() => {})
+        })
+        .catch(() => {})
+    }
+  })
 
-  ipcMain.on('browser-toolbar:navigate', handleNavigate)
-  ipcMain.on('browser-toolbar:back', handleBack)
-  ipcMain.on('browser-toolbar:forward', handleForward)
-  ipcMain.on('browser-toolbar:reload', handleReload)
-  ipcMain.on('browser-toolbar:stop', handleStop)
-  ipcMain.on('browser-toolbar:newTab', handleNewTab)
+  // Button clicks — inject handlers via executeJavaScript after DOM ready
+  // (inline <script> doesn't execute reliably in sandboxed WebContentsView loading from userData)
+  toolbarView.webContents.on('did-finish-load', () => {
+    toolbarView.webContents.executeJavaScript(`
+      document.getElementById('backBtn').onclick = function() { document.title = 'CMD:back'; };
+      document.getElementById('forwardBtn').onclick = function() { document.title = 'CMD:forward'; };
+      document.getElementById('reloadBtn').onclick = function() { document.title = 'CMD:reload'; };
+      document.getElementById('newTabBtn').onclick = function() { document.title = 'CMD:newTab'; };
+      document.getElementById('urlBar').onfocus = function() { this.select(); };
+      true;
+    `).catch(e => log.error('browser: toolbar inject failed', e))
+  })
 
-  // Load toolbar HTML from local file (data: URLs block preload/contextBridge)
+  // Detect button clicks via title changes (reliable, no IPC/preload needed)
+  toolbarView.webContents.on('page-title-updated', (_event, title) => {
+    if (!title.startsWith('CMD:')) return
+    if (contentView.webContents.isDestroyed()) return
+    log.info('browser: toolbar command:', title)
+    if (title === 'CMD:back') contentView.webContents.navigationHistory.goBack()
+    else if (title === 'CMD:forward') contentView.webContents.navigationHistory.goForward()
+    else if (title === 'CMD:reload') contentView.webContents.reload()
+    else if (title === 'CMD:stop') contentView.webContents.stop()
+    else if (title === 'CMD:newTab') {
+      openBrowserWindow('https://www.google.com', config)
+        .then(r => { if (r.error) log.warn('browser: newTab blocked:', r.error) })
+        .catch(e => log.error('browser: newTab error', e))
+    }
+  })
+
+  // Load toolbar HTML
   const toolbarDir = join(app.getPath('userData'), 'browser')
   mkdirSync(toolbarDir, { recursive: true })
-  const toolbarPath = join(toolbarDir, `toolbar-${winId}.html`)
-  writeFileSync(toolbarPath, buildToolbarHtml(winId))
+  const toolbarPath = join(toolbarDir, `toolbar-${win.id}.html`)
+  writeFileSync(toolbarPath, buildToolbarHtml())
   toolbarView.webContents.loadFile(toolbarPath)
 
   // Load content
@@ -256,12 +264,6 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
     cleaned = true
     allBrowserWindows = allBrowserWindows.filter(w => w !== win)
     try { require('fs').unlinkSync(toolbarPath) } catch { /* ignore */ }
-    ipcMain.removeListener('browser-toolbar:navigate', handleNavigate)
-    ipcMain.removeListener('browser-toolbar:back', handleBack)
-    ipcMain.removeListener('browser-toolbar:forward', handleForward)
-    ipcMain.removeListener('browser-toolbar:reload', handleReload)
-    ipcMain.removeListener('browser-toolbar:stop', handleStop)
-    ipcMain.removeListener('browser-toolbar:newTab', handleNewTab)
   }
   win.once('closed', cleanup)
   contentView.webContents.once('destroyed', cleanup)
@@ -296,12 +298,12 @@ function injectRegionMasking(view: WebContentsView, regionEnv: Record<string, st
   }
 }
 
-function buildToolbarHtml(windowId: number): string {
+function buildToolbarHtml(): string {
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -311,7 +313,6 @@ function buildToolbarHtml(windowId: number): string {
     background: #f0f0f0;
     color: #333;
     user-select: none;
-    -webkit-app-region: drag;
     overflow: hidden;
   }
   .toolbar {
@@ -323,7 +324,6 @@ function buildToolbarHtml(windowId: number): string {
     border-bottom: 1px solid #d0d0d0;
   }
   .nav-btn {
-    -webkit-app-region: no-drag;
     width: 28px;
     height: 28px;
     border: none;
@@ -343,7 +343,6 @@ function buildToolbarHtml(windowId: number): string {
   .nav-btn:disabled { opacity: 0.3; cursor: default; }
   .nav-btn:disabled:hover { background: transparent; }
   .url-bar {
-    -webkit-app-region: no-drag;
     flex: 1;
     height: 28px;
     border: 1px solid #c8c8c8;
@@ -374,55 +373,6 @@ function buildToolbarHtml(windowId: number): string {
   <input class="url-bar" id="urlBar" type="text" placeholder="Enter URL..." spellcheck="false" autocomplete="off">
   <button class="nav-btn new-tab-btn" id="newTabBtn" title="New Window">+</button>
 </div>
-<script>
-  const WINDOW_ID = ${windowId};
-  const urlBar = document.getElementById('urlBar');
-  const backBtn = document.getElementById('backBtn');
-  const forwardBtn = document.getElementById('forwardBtn');
-  const reloadBtn = document.getElementById('reloadBtn');
-  const newTabBtn = document.getElementById('newTabBtn');
-  const toolbar = document.getElementById('toolbar');
-  let isLoading = false;
-
-  // Send IPC messages via contextBridge (preload) or postMessage fallback
-  function send(channel, data) {
-    if (window.browserToolbar) {
-      window.browserToolbar.send(channel, { windowId: WINDOW_ID, ...data });
-    }
-  }
-
-  urlBar.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const url = urlBar.value.trim();
-      if (url) send('browser-toolbar:navigate', { url });
-      urlBar.blur();
-    }
-    if (e.key === 'Escape') {
-      urlBar.blur();
-    }
-  });
-  urlBar.addEventListener('focus', () => urlBar.select());
-
-  backBtn.addEventListener('click', () => send('browser-toolbar:back', {}));
-  forwardBtn.addEventListener('click', () => send('browser-toolbar:forward', {}));
-  reloadBtn.addEventListener('click', () => {
-    if (isLoading) send('browser-toolbar:stop', {});
-    else send('browser-toolbar:reload', {});
-  });
-  newTabBtn.addEventListener('click', () => send('browser-toolbar:newTab', {}));
-
-  // Listen for updates from main process
-  if (window.browserToolbar) {
-    window.browserToolbar.onUpdate((state) => {
-      urlBar.value = state.url || '';
-      backBtn.disabled = !state.canGoBack;
-      forwardBtn.disabled = !state.canGoForward;
-      isLoading = state.loading;
-      toolbar.classList.toggle('loading', isLoading);
-    });
-  }
-</script>
 </body>
 </html>`
 }

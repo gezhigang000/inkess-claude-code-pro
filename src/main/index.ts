@@ -4,7 +4,7 @@ dns.setDefaultResultOrder('ipv4first')
 
 import log from './logger'
 import { app, BrowserWindow, ipcMain, shell, dialog, Menu, session, nativeImage, clipboard, Notification, powerSaveBlocker } from 'electron'
-import { join, resolve, normalize } from 'path'
+import { join, resolve, normalize, delimiter, sep } from 'path'
 import { existsSync, mkdirSync, statSync } from 'fs'
 import { execSync } from 'child_process'
 import * as os from 'os'
@@ -519,16 +519,30 @@ ipcMain.handle('pty:create', (_event, options: {
       .filter(([k]) => ['TZ', 'LANG', 'LC_ALL', 'LC_CTYPE'].includes(k))
       .map(([k, v]) => `${k}=${v}`).join('|')
 
+    // Filter dangerous env vars from renderer-supplied options.env
+    const BLOCKED_ENV_KEYS = new Set([
+      'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',
+      'GIT_PROXY_COMMAND', 'GIT_SSH_COMMAND', 'NODE_OPTIONS',
+      'ELECTRON_RUN_AS_NODE', 'ZDOTDIR', 'SHELL', 'HOME',
+      'PATH', 'CLAUDE_CONFIG_DIR',
+    ])
+    const safeEnv: Record<string, string> = {}
+    if (options.env) {
+      for (const [k, v] of Object.entries(options.env)) {
+        if (!BLOCKED_ENV_KEYS.has(k) && typeof v === 'string') safeEnv[k] = v
+      }
+    }
+
     // Build from scratch: clean base + region + tools + interceptor + caller
     const ptyEnv = buildCleanEnv(regionOverrides, {
       ...toolsEnv,
       ...proxyEnv,
       ...interceptorEnv,
-      ...options.env,
+      ...safeEnv,
       CLAUDE_CONFIG_DIR: claudeConfigDir,
       __INKESS_CLAUDE_CONFIG_DIR: claudeConfigDir,
       __INKESS_REGION_ENV: regionEnvStr,
-      PATH: `${binDir}:${existingPath}`,
+      PATH: `${binDir}${delimiter}${existingPath}`,
     })
 
     const id = ptyManager.create(options.cwd, ptyEnv, command, args)
@@ -558,7 +572,7 @@ ipcMain.handle('pty:create', (_event, options: {
 ipcMain.on('pty:write', (_event, payload) => {
   if (!payload || typeof payload.id !== 'string' || typeof payload.data !== 'string') return
   ptyManager.write(payload.id, payload.data)
-  sessionRecorder.recordInput(payload.id, payload.data)
+  // sessionRecorder.recordInput removed: do not record keystrokes for security
 })
 
 ipcMain.on('pty:resize', (_event, payload) => {
@@ -589,7 +603,8 @@ ipcMain.handle('shell:openExternal', (_event, url: string) => {
 ipcMain.handle('shell:openPath', (_event, path: string) => {
   const normalized = normalize(resolve(path))
   const home = os.homedir()
-  if (!normalized.startsWith(home + '/') && !normalized.startsWith(home + require('path').sep)) {
+  const homePrefixed = home + sep
+  if (!normalized.startsWith(homePrefixed) && normalized !== home) {
     log.warn(`Blocked openPath outside home: ${normalized}`)
     return
   }
@@ -649,7 +664,8 @@ ipcMain.handle('fs:readFile', (_event, filePath: string, maxSize?: number) => {
     const { realpathSync } = require('fs') as typeof import('fs')
     const real = realpathSync(resolved)
     const home = os.homedir()
-    if (!real.startsWith(home + require('path').sep) && !real.startsWith(home + '/')) {
+    const homePrefix = home + sep
+    if (!real.startsWith(homePrefix) && real !== home) {
       log.warn(`fs:readFile blocked path outside home: ${real}`)
       return null
     }
@@ -703,7 +719,7 @@ ipcMain.handle('clipboard:getImageSize', async (_event, filepath: string) => {
   try {
     const expectedDir = join(app.getPath('userData'), 'tmp')
     const resolved = resolve(normalize(filepath))
-    if (!resolved.startsWith(expectedDir + '/') && !resolved.startsWith(expectedDir + require('path').sep)) {
+    if (!resolved.startsWith(expectedDir + sep)) {
       return { size: 0 }
     }
     const { statSync: fsStat } = require('fs') as typeof import('fs')
@@ -939,7 +955,7 @@ app.whenReady().then(() => {
 // Ensure tunnel is stopped before app quits (async cleanup)
 let _quitting = false
 app.on('before-quit', (event) => {
-  if (_quitting || singBoxManager.mode === 'off') return
+  if (_quitting) return
   event.preventDefault()
   _quitting = true
   singBoxManager.stop()

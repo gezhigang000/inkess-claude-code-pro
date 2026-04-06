@@ -206,7 +206,7 @@ const api = {
       status: string; plan?: string; expiresAt: string; daysRemaining: number; minutesRemaining?: number; proxyUrl?: string; proxyRegion?: string; exitIp?: string
     } | null>,
     getSession: () => ipcRenderer.invoke('subscription:getSession') as Promise<{
-      isLoggedIn: boolean; username: string | null; session: { token: string; plan?: string; expiresAt: string; proxyUrl: string; proxyRegion: string; exitIp?: string } | null
+      isLoggedIn: boolean; username: string | null; session: { plan?: string; expiresAt: string; proxyUrl: string; proxyRegion: string; exitIp?: string } | null
     }>,
     logout: () => ipcRenderer.invoke('subscription:logout'),
     autoLoginClaude: (email: string, password: string) =>
