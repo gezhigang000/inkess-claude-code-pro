@@ -45,8 +45,9 @@ export function buildTunConfig(proxyUrl: string, dnsServer = '8.8.8.8'): SingBox
     log: { level: 'info', timestamp: true },
     dns: {
       servers: [
-        // Remote DNS: plain UDP through proxy — prevents DNS leak
-        { address: dnsServer, tag: 'remote-dns', detour: 'proxy', strategy: 'ipv4_only' },
+        // Remote DNS: DoH (HTTPS) through proxy — HTTP proxy can't forward UDP,
+        // so we must use DNS-over-HTTPS instead of plain UDP DNS
+        { address: 'https://dns.google/dns-query', tag: 'remote-dns', detour: 'proxy', strategy: 'ipv4_only' },
         // Local DNS: resolves proxy server hostname only (must be direct to avoid circular dep)
         { address: '114.114.114.114', tag: 'local-dns', detour: 'direct', strategy: 'ipv4_only' },
       ],
