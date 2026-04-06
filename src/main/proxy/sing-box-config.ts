@@ -38,21 +38,22 @@ interface ProxyNode {
 /**
  * Build a sing-box config for TUN mode
  */
-export function buildTunConfig(proxyUrl: string, dnsServer = '8.8.8.8'): SingBoxConfig {
+export function buildTunConfig(proxyUrl: string): SingBoxConfig {
   const outbound = parseProxyUrl(proxyUrl)
 
   return {
     log: { level: 'info', timestamp: true },
     dns: {
       servers: [
-        // Remote DNS: DoH (HTTPS) through proxy — HTTP proxy can't forward UDP,
-        // so we must use DNS-over-HTTPS instead of plain UDP DNS
-        { address: 'https://dns.google/dns-query', tag: 'remote-dns', detour: 'proxy', strategy: 'ipv4_only' },
-        // Local DNS: resolves proxy server hostname only (must be direct to avoid circular dep)
+        // Remote DNS: DoH through proxy — works with ALL proxy types (HTTP/SOCKS5/VLESS/Trojan)
+        // HTTP proxy can't forward UDP, so DoH (HTTPS/TCP) is the only universal option.
+        // address_resolver: local-dns resolves dns.google hostname (avoids circular dep)
+        { address: 'https://dns.google/dns-query', tag: 'remote-dns', detour: 'proxy', address_resolver: 'local-dns', strategy: 'ipv4_only' },
+        // Local DNS: resolves proxy server hostname + DoH hostname (must be direct, no proxy)
         { address: '114.114.114.114', tag: 'local-dns', detour: 'direct', strategy: 'ipv4_only' },
       ],
       rules: [
-        // Proxy server hostname resolution goes direct (avoids circular dependency)
+        // Proxy/DoH server hostname resolution goes direct (avoids circular dependency)
         { outbound: 'any', server: 'local-dns' },
       ],
       final: 'remote-dns',
@@ -62,28 +63,24 @@ export function buildTunConfig(proxyUrl: string, dnsServer = '8.8.8.8'): SingBox
       {
         type: 'tun',
         tag: 'tun-in',
-        // macOS requires utunN naming; omit interface_name to let sing-box auto-assign
-        // Include IPv6 address so TUN captures IPv6 traffic too (prevents IPv6 leak)
         address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
         auto_route: true,
         strict_route: true,
-        stack: 'mixed', // 'system' is unstable on macOS; 'mixed' uses gvisor for TCP + system for UDP
-        sniff: true,
+        stack: 'mixed', // gvisor TCP + system UDP, most stable on macOS
+        // sniff: true — moved to route rule (deprecated in 1.11)
       },
     ],
     outbounds: [
       { ...outbound, tag: 'proxy' },
       { type: 'direct', tag: 'direct' },
-      // Block outbound: drops IPv6 and LAN traffic that shouldn't leak
-      { type: 'block', tag: 'block' },
+      // 'block' outbound removed — use action:'reject' in route rules (1.11 migration)
     ],
     route: {
       rules: [
+        { action: 'sniff' },                    // replaces inbound sniff:true (1.11)
         { protocol: 'dns', action: 'hijack-dns' },
-        // Block IPv6 direct connections to prevent IP leak
-        { ip_version: 6, outbound: 'block' },
-        // Block LAN traffic to prevent local network fingerprinting
-        { ip_is_private: true, outbound: 'direct' },
+        { ip_version: 6, action: 'reject' },    // block IPv6 to prevent leak
+        { ip_is_private: true, action: 'route', outbound: 'direct' },
       ],
       auto_detect_interface: true,
       final: 'proxy',
