@@ -28,6 +28,7 @@ export interface SubscriptionStatus {
   minutesRemaining?: number
   proxyUrl?: string
   proxyRegion?: string
+  exitIp?: string
 }
 
 interface StoredSession {
@@ -181,12 +182,23 @@ export class SubscriptionManager {
 
       const status = await res.json() as SubscriptionStatus
 
-      // Update local session with any proxy changes
+      // Update local session with any proxy/exitIp changes from admin panel
+      let changed = false
       if (status.proxyUrl && status.proxyUrl !== this.session.proxyUrl) {
+        log.info(`[SubscriptionManager] proxyUrl changed: ${this.session.proxyUrl} → ${status.proxyUrl}`)
         this.session.proxyUrl = status.proxyUrl
-        if (status.proxyRegion) this.session.proxyRegion = status.proxyRegion
-        this.saveSession(this.session)
+        changed = true
       }
+      if (status.proxyRegion && status.proxyRegion !== this.session.proxyRegion) {
+        this.session.proxyRegion = status.proxyRegion
+        changed = true
+      }
+      if (status.exitIp && status.exitIp !== this.session.exitIp) {
+        log.info(`[SubscriptionManager] exitIp changed: ${this.session.exitIp} → ${status.exitIp}`)
+        this.session.exitIp = status.exitIp
+        changed = true
+      }
+      if (changed) this.saveSession(this.session)
 
       return status
     } catch {

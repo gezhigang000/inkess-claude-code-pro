@@ -203,7 +203,7 @@ const api = {
         error?: string; errorCode?: string
       }>,
     checkStatus: () => ipcRenderer.invoke('subscription:checkStatus') as Promise<{
-      status: string; plan?: string; expiresAt: string; daysRemaining: number; minutesRemaining?: number; proxyUrl?: string; proxyRegion?: string
+      status: string; plan?: string; expiresAt: string; daysRemaining: number; minutesRemaining?: number; proxyUrl?: string; proxyRegion?: string; exitIp?: string
     } | null>,
     getSession: () => ipcRenderer.invoke('subscription:getSession') as Promise<{
       isLoggedIn: boolean; username: string | null; session: { token: string; plan?: string; expiresAt: string; proxyUrl: string; proxyRegion: string; exitIp?: string } | null

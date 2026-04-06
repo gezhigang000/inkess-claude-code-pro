@@ -212,6 +212,35 @@ export function App() {
     setExpiryMinutesRemaining(null)
   }, [])
 
+  /** Refresh proxy config from server — re-fetches latest proxyUrl/exitIp without re-login */
+  const handleRefreshConfig = useCallback(async () => {
+    const status = await window.api.subscription.checkStatus()
+    if (!status) return
+    if (status.proxyUrl) {
+      const store = useSettingsStore.getState()
+      store.setProxyUrl(status.proxyUrl)
+      if (status.proxyRegion) store.setProxyRegion(status.proxyRegion)
+    }
+    if (status.exitIp) setSubscriptionExitIp(status.exitIp)
+    // TunGate will auto-retry with updated proxyUrl/exitIp from props
+  }, [])
+
+  /** Switch account — logout current, show login page */
+  const handleSwitchAccount = useCallback(async () => {
+    await window.api.tun.stop()
+    await window.api.pty.killAll()
+    window.api.claude.clearCredentials()
+    window.api.subscription.logout()
+    if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null }
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null }
+    setTunOk(false)
+    setSubscriptionLoggedIn(false)
+    setSubscriptionExpiry(null)
+    setSubscriptionExitIp('')
+    expiryAtRef.current = null
+    setExpiryMinutesRemaining(null)
+  }, [])
+
   /** Compute minutes remaining from expiresAt string */
   const calcMinutesRemaining = (expiresAt: string): number => {
     return Math.max(0, (new Date(expiresAt).getTime() - Date.now()) / 60000)
@@ -248,11 +277,22 @@ export function App() {
       // Update remaining from server (authoritative, replaces local estimate)
       setExpiryMinutesRemaining(calcMinutesRemaining(status.expiresAt))
 
-      // Update proxy if server pushed new address
+      // Update proxy/exitIp if server pushed new values (admin changed account config)
       if (status.proxyUrl) {
         const store = useSettingsStore.getState()
+        const oldUrl = store.proxyUrl
         store.setProxyUrl(status.proxyUrl)
         if (status.proxyRegion) store.setProxyRegion(status.proxyRegion)
+        // If proxy URL changed while TUN is running, force reconnect
+        if (oldUrl && oldUrl !== status.proxyUrl) {
+          console.log(`[StatusPoll] proxyUrl changed, triggering TUN reconnect`)
+          setTunOk(false) // Shows TunGate overlay which will reconnect
+          await window.api.tun.stop()
+          await window.api.pty.killAll()
+        }
+      }
+      if (status.exitIp) {
+        setSubscriptionExitIp(status.exitIp)
       }
     }
 
@@ -742,6 +782,8 @@ export function App() {
             }
             // Reconnect: just restore tunOk, don't re-check CLI or open browser
           }}
+          onRefreshConfig={handleRefreshConfig}
+          onSwitchAccount={handleSwitchAccount}
         />
       )}
 

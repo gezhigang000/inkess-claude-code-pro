@@ -8,11 +8,13 @@ interface TunGateProps {
   exitIp: string
   onReady: () => void
   isReconnect: boolean
+  onRefreshConfig?: () => void
+  onSwitchAccount?: () => void
 }
 
 const WORKING_PHASES: Phase[] = ['idle', 'installing', 'resolving', 'starting', 'testing']
 
-export function TunGate({ proxyUrl, exitIp, onReady, isReconnect }: TunGateProps) {
+export function TunGate({ proxyUrl, exitIp, onReady, isReconnect, onRefreshConfig, onSwitchAccount }: TunGateProps) {
   const { t } = useI18n()
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -240,6 +242,36 @@ export function TunGate({ proxyUrl, exitIp, onReady, isReconnect }: TunGateProps
             >
               {t('tun.retry')}
             </button>
+          )}
+
+          {/* Refresh / Switch account — shown when failed or idle */}
+          {isFailed && (
+            <div style={{ display: 'flex', gap: 12, marginTop: 4 }}>
+              {onRefreshConfig && (
+                <button
+                  onClick={onRefreshConfig}
+                  style={{
+                    padding: '7px 16px', fontSize: 13, fontWeight: 500,
+                    background: 'transparent', color: 'var(--accent)',
+                    border: '1px solid var(--accent)', borderRadius: 8, cursor: 'pointer',
+                  }}
+                >
+                  {t('tun.refreshConfig') || 'Refresh Config'}
+                </button>
+              )}
+              {onSwitchAccount && (
+                <button
+                  onClick={onSwitchAccount}
+                  style={{
+                    padding: '7px 16px', fontSize: 13, fontWeight: 500,
+                    background: 'transparent', color: 'var(--text-muted)',
+                    border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer',
+                  }}
+                >
+                  {t('tun.switchAccount') || 'Switch Account'}
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
