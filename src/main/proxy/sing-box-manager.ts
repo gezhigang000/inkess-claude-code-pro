@@ -195,37 +195,24 @@ export class SingBoxManager {
     }
   }
 
-  /**
-   * Override macOS system DNS to force DNS queries through TUN.
-   * Without this, macOS mDNSResponder uses ISP DNS directly, bypassing sing-box hijack-dns.
-   */
-  private setSystemDns(): void {
-    if (os.platform() !== 'darwin') return
-    try {
-      execSync(`scutil <<EOF
-d.init
-d.add ServerAddresses * ${SYSTEM_DNS_OVERRIDE}
-d.add SupplementalMatchDomains * ""
-set State:/Network/Service/sing-box-tun/DNS
-EOF`, { timeout: 5000, stdio: 'pipe' })
-      // Flush DNS cache to force mDNSResponder to use new config
-      execSync('dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null', { timeout: 5000, stdio: 'pipe' })
-      log.info(`[sing-box] system DNS set to ${SYSTEM_DNS_OVERRIDE} + cache flushed`)
-    } catch (err) {
-      log.warn(`[sing-box] failed to set system DNS: ${(err as Error).message}`)
-    }
-  }
+  // setSystemDns is handled inside the sudo shell command (startWithSudo)
+  // to ensure it runs as root. See shellCmd in startWithSudo().
 
-  /** Restore macOS system DNS to default. */
+  /** Restore macOS system DNS to default (requires sudo via osascript). */
   private restoreSystemDns(): void {
     if (os.platform() !== 'darwin') return
     try {
-      execSync(`scutil <<EOF
+      const cmd = `scutil <<EOF
 remove State:/Network/Service/sing-box-tun/DNS
-EOF`, { timeout: 5000, stdio: 'pipe' })
-      execSync('dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null', { timeout: 5000, stdio: 'pipe' })
-      log.info('[sing-box] system DNS restored')
+EOF
+dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
+      execSync(
+        `osascript -e 'do shell script "${cmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" with administrator privileges'`,
+        { timeout: 15000, stdio: 'pipe' }
+      )
+      log.info('[sing-box] system DNS restored (sudo)')
     } catch (err) {
+      // May fail if watchdog already cleaned up, or user canceled — that's OK
       log.warn(`[sing-box] failed to restore system DNS: ${(err as Error).message}`)
     }
   }
@@ -300,11 +287,7 @@ EOF`, { timeout: 5000, stdio: 'pipe' })
       this.startProcess()
     }
 
-    // Override system DNS to force queries through TUN (sing-box hijack-dns)
-    // Without this, macOS mDNSResponder uses ISP DNS directly → DNS leak
-    if (this._status as string === 'running') {
-      this.setSystemDns()
-    }
+    // DNS override is handled inside startWithSudo's shell command (runs as root)
   }
 
   /**
@@ -535,12 +518,24 @@ EOF`, { timeout: 5000, stdio: 'pipe' })
       // When parent dies (app crash/force-quit), the watchdog loop detects it and kills sing-box.
       // This prevents process leak when before-quit cleanup fails.
       const parentPid = process.pid
-      // Watchdog: start sing-box, monitor parent PID, cleanup on exit (kill + restore DNS)
+      // DNS setup (runs as root inside osascript):
+      // Set system DNS to 198.18.0.2 so macOS mDNSResponder sends DNS through TUN
+      // where sing-box hijack-dns intercepts and resolves via proxy
+      const dnsSetup = `scutil <<DNSEOF
+d.init
+d.add ServerAddresses * ${SYSTEM_DNS_OVERRIDE}
+d.add SupplementalMatchDomains * ""
+set State:/Network/Service/sing-box-tun/DNS
+DNSEOF
+dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
+
       const dnsCleanup = `scutil <<DNSEOF
 remove State:/Network/Service/sing-box-tun/DNS
 DNSEOF
 dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
-      const shellCmd = `'${safeBin}' run -c '${safeCfg}' > '${logFile}' 2>&1 & SB_PID=$!; echo $SB_PID > '${safePid}'; while kill -0 ${parentPid} 2>/dev/null && kill -0 $SB_PID 2>/dev/null; do sleep 2; done; ${dnsCleanup}; kill -TERM $SB_PID 2>/dev/null; kill -9 $SB_PID 2>/dev/null`
+
+      // Shell: start sing-box → write PID → set DNS → watchdog → cleanup DNS + kill
+      const shellCmd = `'${safeBin}' run -c '${safeCfg}' > '${logFile}' 2>&1 & SB_PID=$!; echo $SB_PID > '${safePid}'; sleep 1; ${dnsSetup}; while kill -0 ${parentPid} 2>/dev/null && kill -0 $SB_PID 2>/dev/null; do sleep 2; done; ${dnsCleanup}; kill -TERM $SB_PID 2>/dev/null; kill -9 $SB_PID 2>/dev/null`
 
       let settled = false
       let pidPollInterval: ReturnType<typeof setInterval> | null = null
