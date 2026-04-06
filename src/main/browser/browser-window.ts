@@ -5,8 +5,9 @@
  * - Toolbar view: address bar, back/forward/reload, new tab
  * - Content view: the actual web page with proxy + fingerprint masking
  */
-import { BaseWindow, WebContentsView, session as electronSession, ipcMain } from 'electron'
+import { BaseWindow, WebContentsView, session as electronSession, ipcMain, app } from 'electron'
 import { join } from 'path'
+import { writeFileSync, mkdirSync } from 'fs'
 import { buildFingerprintMaskScript, FINGERPRINT_PROFILES } from './fingerprint-mask'
 import log from '../logger'
 
@@ -236,9 +237,12 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
   ipcMain.on('browser-toolbar:stop', handleStop)
   ipcMain.on('browser-toolbar:newTab', handleNewTab)
 
-  // Load toolbar HTML
-  const toolbarHtml = buildToolbarHtml(winId)
-  toolbarView.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(toolbarHtml)}`)
+  // Load toolbar HTML from local file (data: URLs block preload/contextBridge)
+  const toolbarDir = join(app.getPath('userData'), 'browser')
+  mkdirSync(toolbarDir, { recursive: true })
+  const toolbarPath = join(toolbarDir, `toolbar-${winId}.html`)
+  writeFileSync(toolbarPath, buildToolbarHtml(winId))
+  toolbarView.webContents.loadFile(toolbarPath)
 
   // Load content
   contentView.webContents.loadURL(url)
@@ -251,6 +255,7 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
     if (cleaned) return
     cleaned = true
     allBrowserWindows = allBrowserWindows.filter(w => w !== win)
+    try { require('fs').unlinkSync(toolbarPath) } catch { /* ignore */ }
     ipcMain.removeListener('browser-toolbar:navigate', handleNavigate)
     ipcMain.removeListener('browser-toolbar:back', handleBack)
     ipcMain.removeListener('browser-toolbar:forward', handleForward)
