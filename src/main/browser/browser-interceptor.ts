@@ -33,9 +33,13 @@ export class BrowserInterceptor {
     this.zdotdir = join(userData, 'zdotdir')
   }
 
-  /** Start socket server and create wrapper scripts */
+  /** Start socket server and create wrapper scripts (Unix only — Windows not supported) */
   start(onUrlOpen: (url: string) => void): void {
     this.onUrlOpen = onUrlOpen
+    if (process.platform === 'win32') {
+      log.info('[BrowserInterceptor] skipped on Windows (Unix socket not supported)')
+      return
+    }
     this.startSocketServer()
     this.createWrapperScripts()
     if (process.platform === 'darwin') this.createZdotdir()
@@ -140,7 +144,7 @@ export class BrowserInterceptor {
       `[ -n "$__INKESS_CLAUDE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$__INKESS_CLAUDE_CONFIG_DIR"\n` +
       `# 3. Re-apply region env (user's .zshrc may have set TZ/LANG to local values)\n` +
       'if [ -n "$__INKESS_REGION_ENV" ]; then\n' +
-      '  IFS=\':\' read -rA __pairs <<< "$__INKESS_REGION_ENV"\n' +
+      '  IFS=\'|\' read -rA __pairs <<< "$__INKESS_REGION_ENV"\n' +
       '  for __p in "${__pairs[@]}"; do\n' +
       '    export "${__p%%=*}=${__p#*=}"\n' +
       '  done; unset __pairs __p\n' +

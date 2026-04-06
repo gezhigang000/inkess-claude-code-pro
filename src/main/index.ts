@@ -229,6 +229,7 @@ ipcMain.handle('subscription:logout', async () => {
   const { session: electronSession } = require('electron') as typeof import('electron')
   try {
     await electronSession.fromPartition('persist:claude').clearStorageData()
+    await electronSession.fromPartition('persist:claude-login').clearStorageData().catch(() => {})
   } catch { /* ignore */ }
 })
 
@@ -243,7 +244,9 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => 
   const regionEnv = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}
   const lang = regionEnv.LANG?.split('.')[0]?.replace('_', '-') || 'en-US'
 
-  const loginSession = electronSession.fromPartition('persist:claude')
+  // Use separate partition for auto-login — shared persist:claude would mutate
+  // UA and proxy settings, interfering with any open built-in browser windows
+  const loginSession = electronSession.fromPartition('persist:claude-login')
 
   // In TUN mode, don't set session proxy (traffic goes through TUN)
   const tunInfo = singBoxManager.getInfo()
@@ -514,7 +517,7 @@ ipcMain.handle('pty:create', (_event, options: {
     // Encode region vars for zdotdir .zshrc to re-apply after user's .zshrc
     const regionEnvStr = Object.entries({ ...DEFAULT_REGION_ENV, ...regionOverrides })
       .filter(([k]) => ['TZ', 'LANG', 'LC_ALL', 'LC_CTYPE'].includes(k))
-      .map(([k, v]) => `${k}=${v}`).join(':')
+      .map(([k, v]) => `${k}=${v}`).join('|')
 
     // Build from scratch: clean base + region + tools + interceptor + caller
     const ptyEnv = buildCleanEnv(regionOverrides, {
@@ -570,7 +573,7 @@ ipcMain.on('pty:kill', (_event, { id }: { id: string }) => {
   analytics.track('tab_close')
 })
 
-ipcMain.on('pty:killAll', () => {
+ipcMain.handle('pty:killAll', () => {
   ptyManager.killAll()
 })
 

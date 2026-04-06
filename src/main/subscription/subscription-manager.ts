@@ -183,22 +183,24 @@ export class SubscriptionManager {
       const status = await res.json() as SubscriptionStatus
 
       // Update local session with any proxy/exitIp changes from admin panel
+      // Clone before mutating to ensure saveSession writes consistent state
       let changed = false
-      if (status.proxyUrl && status.proxyUrl !== this.session.proxyUrl) {
-        log.info(`[SubscriptionManager] proxyUrl changed: ${this.session.proxyUrl} → ${status.proxyUrl}`)
-        this.session.proxyUrl = status.proxyUrl
+      const updated = { ...this.session }
+      if (status.proxyUrl && status.proxyUrl !== updated.proxyUrl) {
+        log.info(`[SubscriptionManager] proxyUrl changed: ${updated.proxyUrl} → ${status.proxyUrl}`)
+        updated.proxyUrl = status.proxyUrl
         changed = true
       }
-      if (status.proxyRegion && status.proxyRegion !== this.session.proxyRegion) {
-        this.session.proxyRegion = status.proxyRegion
+      if (status.proxyRegion && status.proxyRegion !== updated.proxyRegion) {
+        updated.proxyRegion = status.proxyRegion
         changed = true
       }
-      if (status.exitIp && status.exitIp !== this.session.exitIp) {
-        log.info(`[SubscriptionManager] exitIp changed: ${this.session.exitIp} → ${status.exitIp}`)
-        this.session.exitIp = status.exitIp
+      if (status.exitIp && status.exitIp !== updated.exitIp) {
+        log.info(`[SubscriptionManager] exitIp changed: ${updated.exitIp} → ${status.exitIp}`)
+        updated.exitIp = status.exitIp
         changed = true
       }
-      if (changed) this.saveSession(this.session)
+      if (changed) this.saveSession(updated)
 
       return status
     } catch {

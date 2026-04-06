@@ -82,7 +82,7 @@ const api = {
     kill: (id: string) =>
       ipcRenderer.send('pty:kill', { id }),
     killAll: () =>
-      ipcRenderer.send('pty:killAll'),
+      ipcRenderer.invoke('pty:killAll'),
     onData: (callback: (event: { id: string; data: string }) => void) => {
       const listener = (_: unknown, event: { id: string; data: string }) => callback(event)
       ipcRenderer.on('pty:data', listener)
