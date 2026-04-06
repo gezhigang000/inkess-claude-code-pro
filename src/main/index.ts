@@ -1,3 +1,7 @@
+import * as dns from 'dns'
+// Force IPv4-first to prevent IPv6 bypassing TUN proxy
+dns.setDefaultResultOrder('ipv4first')
+
 import log from './logger'
 import { app, BrowserWindow, ipcMain, shell, dialog, Menu, session, nativeImage, clipboard, Notification, powerSaveBlocker } from 'electron'
 import { join, resolve, normalize } from 'path'
@@ -18,6 +22,9 @@ import { SingBoxManager } from './proxy/sing-box-manager'
 import { StatsCollector } from './stats/stats-collector'
 import { BrowserInterceptor } from './browser/browser-interceptor'
 import { buildFingerprintMaskScript, FINGERPRINT_PROFILES } from './browser/fingerprint-mask'
+
+// Disable IPv6 in Chromium to prevent IPv6 traffic bypassing TUN proxy
+app.commandLine.appendSwitch('disable-ipv6')
 
 process.on('uncaughtException', (err) => log.error('Uncaught:', err))
 process.on('unhandledRejection', (reason) => log.error('Unhandled:', reason))

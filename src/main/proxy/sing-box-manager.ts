@@ -10,10 +10,12 @@ import { fetchWithTimeout } from '../utils/fetch'
 
 const execFileAsync = promisify(execFile)
 
-// DNS server to set via scutil — 198.18.0.2 is a safe non-routable IP.
-// sing-box hijack-dns intercepts DNS packets to ANY IP on port 53,
-// so the actual IP doesn't matter. We just need macOS to send DNS through TUN.
-const SYSTEM_DNS_OVERRIDE = '198.18.0.2'
+// DNS server to set via scutil — use 8.8.8.8 (Google DNS).
+// When TUN is up, DNS queries to 8.8.8.8 route through TUN,
+// where sing-box hijack-dns intercepts them and resolves via proxy.
+// Using 8.8.8.8 instead of a fake IP so DNS still works even if hijack-dns
+// has a brief gap during TUN startup.
+const SYSTEM_DNS_OVERRIDE = '8.8.8.8'
 
 const SINGBOX_VERSION = '1.11.0'
 const SINGBOX_DOWNLOAD_BASE = 'https://inkess-install-file.oss-cn-beijing.aliyuncs.com/singbox-mirror'
