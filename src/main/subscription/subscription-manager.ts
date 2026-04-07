@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from '
 import { platform, release, arch } from 'os'
 import log from '../logger'
 import { getDeviceId } from './device-id'
+import { encrypt, decrypt } from '../utils/crypto'
 
 const API_BASE = 'https://llm.starapp.net'
 
@@ -58,7 +59,21 @@ export class SubscriptionManager {
   private loadSession(): void {
     try {
       if (existsSync(this.sessionPath)) {
-        this.session = JSON.parse(readFileSync(this.sessionPath, 'utf-8'))
+        const raw = readFileSync(this.sessionPath, 'utf-8').trim()
+        // Try encrypted format first, fall back to legacy plaintext JSON
+        if (raw.startsWith('{')) {
+          // Legacy plaintext — migrate to encrypted on next save
+          this.session = JSON.parse(raw)
+          log.info('[SubscriptionManager] loaded legacy plaintext session, will encrypt on next save')
+        } else {
+          const decrypted = decrypt(raw)
+          if (decrypted) {
+            this.session = JSON.parse(decrypted)
+          } else {
+            log.warn('[SubscriptionManager] failed to decrypt session, clearing')
+            this.session = null
+          }
+        }
       }
     } catch {
       this.session = null
@@ -68,7 +83,8 @@ export class SubscriptionManager {
   private saveSession(session: StoredSession): void {
     this.session = session
     try {
-      writeFileSync(this.sessionPath, JSON.stringify(session), { mode: 0o600 })
+      const encrypted = encrypt(JSON.stringify(session))
+      writeFileSync(this.sessionPath, encrypted, { mode: 0o600 })
     } catch (err) {
       log.error('Failed to save subscription session:', err)
     }

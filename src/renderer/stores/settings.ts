@@ -55,6 +55,9 @@ function loadSettings(): Partial<SettingsState> {
 
 function persistSettings(state: SettingsState) {
   try {
+    // NOTE: proxyUrl, proxySubUrl, proxySubNodeUrl are NOT persisted here.
+    // They contain credentials (user:pass@host) and must not be stored in plaintext localStorage.
+    // These values are loaded from encrypted session.json on startup via IPC.
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       fontSize: state.fontSize,
       ideChoice: state.ideChoice,
@@ -67,9 +70,6 @@ function persistSettings(state: SettingsState) {
       pinnedProjects: state.pinnedProjects,
       proxyEnabled: state.proxyEnabled,
       proxyMode: state.proxyMode,
-      proxyUrl: state.proxyUrl,
-      proxySubUrl: state.proxySubUrl,
-      proxySubNodeUrl: state.proxySubNodeUrl,
       proxySelectedNode: state.proxySelectedNode,
       proxyRegion: state.proxyRegion,
     }))
@@ -117,11 +117,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   proxyEnabled: typeof (saved as any).proxyEnabled === 'boolean' ? (saved as any).proxyEnabled : true,
   proxyMode: 'tun' as const,  // TUN mode only — not user-configurable
-  proxyUrl: typeof (saved as any).proxyUrl === 'string' ? (saved as any).proxyUrl
-    : typeof (saved as any).proxyCustomUrl === 'string' ? (saved as any).proxyCustomUrl
-    : '',
-  proxySubUrl: typeof (saved as any).proxySubUrl === 'string' ? (saved as any).proxySubUrl : '',
-  proxySubNodeUrl: typeof (saved as any).proxySubNodeUrl === 'string' ? (saved as any).proxySubNodeUrl : '',
+  proxyUrl: '',               // loaded from encrypted session.json on startup, not localStorage
+  proxySubUrl: '',             // loaded from encrypted session.json on startup, not localStorage
+  proxySubNodeUrl: '',         // loaded from encrypted session.json on startup, not localStorage
   proxySelectedNode: typeof (saved as any).proxySelectedNode === 'string' ? (saved as any).proxySelectedNode : '',
   proxyRegion: typeof (saved as any).proxyRegion === 'string' ? (saved as any).proxyRegion : 'us',
 
