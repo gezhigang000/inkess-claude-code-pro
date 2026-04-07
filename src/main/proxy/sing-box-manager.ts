@@ -108,11 +108,10 @@ export class SingBoxManager {
       if (os.platform() === 'win32') {
         if (sudo) {
           // Elevated kill via PowerShell — required for elevated sing-box process
-          // TERM: graceful (no /F) so sing-box can clean up WFP rules and TUN interface
-          // KILL: force (/F) as last resort — may leave orphaned WFP rules
-          const forceFlag = signal === 'KILL' ? "'/F'," : ''
+          // Always use /F: taskkill without /F only sends WM_CLOSE which doesn't work
+          // for headless processes (-WindowStyle Hidden). sing-box has no console window.
           execSync(
-            `powershell -NoProfile -Command "Start-Process -FilePath 'taskkill' -ArgumentList ${forceFlag}'/PID','${pid}' -Verb RunAs -WindowStyle Hidden -Wait"`,
+            `powershell -NoProfile -Command "Start-Process -FilePath 'taskkill' -ArgumentList '/F','/PID','${pid}' -Verb RunAs -WindowStyle Hidden -Wait"`,
             { timeout: 15000, stdio: 'pipe' }
           )
         } else {
@@ -482,7 +481,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       const extractedDir = join(this.singboxDir, filename)
       const extractedExe = join(extractedDir, 'sing-box.exe')
       if (existsSync(extractedExe)) {
-        const { copyFileSync, readdirSync } = require('fs') as typeof import('fs')
+        const { copyFileSync, rmSync } = require('fs') as typeof import('fs')
         copyFileSync(extractedExe, this.binaryPath)
         // Copy wintun.dll — required for Windows TUN mode
         const wintunSrc = join(extractedDir, 'wintun.dll')
@@ -492,6 +491,8 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
         } else {
           log.warn('SingBox: wintun.dll not found in archive — TUN may not work on Windows')
         }
+        // Clean up extracted subdirectory
+        try { rmSync(extractedDir, { recursive: true }) } catch { /* ignore */ }
       }
     } else {
       try {
@@ -499,11 +500,14 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       } finally {
         try { unlinkSync(tmpPath) } catch { /* ignore */ }
       }
-      const extracted = join(this.singboxDir, filename, 'sing-box')
+      const extractedDir = join(this.singboxDir, filename)
+      const extracted = join(extractedDir, 'sing-box')
       if (existsSync(extracted)) {
-        const { copyFileSync } = require('fs') as typeof import('fs')
+        const { copyFileSync, rmSync } = require('fs') as typeof import('fs')
         copyFileSync(extracted, this.binaryPath)
         chmodSync(this.binaryPath, 0o755)
+        // Clean up extracted subdirectory
+        try { rmSync(extractedDir, { recursive: true }) } catch { /* ignore */ }
       }
     }
 
