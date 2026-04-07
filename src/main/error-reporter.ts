@@ -1,4 +1,5 @@
 import { app } from 'electron'
+import { platform, release, arch } from 'os'
 import log from './logger'
 import { readFileSync } from 'fs'
 
@@ -14,14 +15,25 @@ interface ErrorEntry {
   ts: number
 }
 
+export type BizErrorCategory = 'login' | 'tun_start' | 'tun_connectivity' | 'tun_install'
+
+interface BizErrorEntry {
+  category: BizErrorCategory
+  error: string
+  context: Record<string, string | number | boolean | undefined>
+  ts: number
+}
+
 export class ErrorReporter {
   private queue: ErrorEntry[] = []
+  private bizQueue: BizErrorEntry[] = []
   private timer: NodeJS.Timeout | null = null
   private tokenGetter: (() => string | null) | null = null
   private flushing = false
+  private bizFlushing = false
 
   constructor() {
-    this.timer = setInterval(() => this.flush(), FLUSH_INTERVAL)
+    this.timer = setInterval(() => { this.flush(); this.flushBiz() }, FLUSH_INTERVAL)
 
     // Hook electron-log: intercept error-level logs from main process
     log.hooks.push((message, transport) => {
@@ -47,6 +59,24 @@ export class ErrorReporter {
     this.queue.push({ message: message.slice(0, 2000), stack: stack?.slice(0, 4000), source, ts: Date.now() })
     if (this.queue.length >= QUEUE_LIMIT && !this.flushing) {
       this.flush()
+    }
+  }
+
+  /** Queue a structured business error for batch upload */
+  reportBizError(category: BizErrorCategory, error: string, context: Record<string, string | number | boolean | undefined> = {}): void {
+    if (this.bizQueue.length >= MAX_QUEUE_SIZE) this.bizQueue.shift()
+    this.bizQueue.push({
+      category,
+      error: this.redactSensitiveData(error.slice(0, 2000)),
+      context: {
+        ...context,
+        appVersion: app.getVersion(),
+        platform: `${platform()} ${release()} ${arch()}`,
+      },
+      ts: Date.now(),
+    })
+    if (this.bizQueue.length >= QUEUE_LIMIT && !this.bizFlushing) {
+      this.flushBiz()
     }
   }
 
@@ -132,9 +162,44 @@ export class ErrorReporter {
     }
   }
 
+  private async flushBiz(): Promise<void> {
+    if (this.bizQueue.length === 0 || this.bizFlushing) return
+    this.bizFlushing = true
+    const batch = this.bizQueue.splice(0)
+    const token = this.tokenGetter?.()
+
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (token) headers['Authorization'] = `Bearer ${token}`
+
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 10_000)
+
+      await fetch(`${API_BASE}/api/llm/desktop/client-logs`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          type: 'biz-errors',
+          errors: batch,
+          version: app.getVersion(),
+          platform: process.platform,
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timer))
+    } catch {
+      for (const entry of batch) {
+        if (this.bizQueue.length >= MAX_QUEUE_SIZE) break
+        this.bizQueue.push(entry)
+      }
+    } finally {
+      this.bizFlushing = false
+    }
+  }
+
   flushSync(): void {
     // Best-effort: fire async flush, app exit will happen shortly after
     this.flush()
+    this.flushBiz()
     if (this.timer) {
       clearInterval(this.timer)
       this.timer = null

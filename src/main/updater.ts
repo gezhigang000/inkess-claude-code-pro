@@ -4,6 +4,7 @@ import log from './logger'
 autoUpdater.logger = log
 autoUpdater.autoDownload = false
 autoUpdater.autoInstallOnAppQuit = true
+autoUpdater.disableWebInstaller = true
 
 export type UpdateStatus =
   | { type: 'checking' }

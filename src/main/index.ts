@@ -17,6 +17,7 @@ import { Analytics } from './analytics'
 import { ErrorReporter } from './error-reporter'
 import { SessionRecorder } from './session/session-recorder'
 import { SubscriptionManager } from './subscription/subscription-manager'
+import { getDeviceId } from './subscription/device-id'
 import { fetchSubscription, detectRegion } from './proxy/subscription'
 import { SingBoxManager } from './proxy/sing-box-manager'
 import { StatsCollector } from './stats/stats-collector'
@@ -38,6 +39,7 @@ const analytics = new Analytics()
 const errorReporter = new ErrorReporter()
 const sessionRecorder = new SessionRecorder()
 const subscriptionManager = new SubscriptionManager()
+errorReporter.setTokenGetter(() => subscriptionManager.getSession()?.token ?? null)
 const singBoxManager = new SingBoxManager()
 // Clean up any stale tunnel processes from previous crashes
 singBoxManager.cleanupStaleProcesses().catch(err => {
@@ -200,7 +202,15 @@ ipcMain.handle('subscription:login', async (_event, args: unknown) => {
   if (username.length === 0 || username.length > 50 || password.length === 0 || password.length > 200) {
     return { success: false, error: 'Invalid input length' }
   }
-  return subscriptionManager.login(username, password)
+  const result = await subscriptionManager.login(username, password)
+  if (!result.success) {
+    errorReporter.reportBizError('login', result.error || 'Unknown login error', {
+      username,
+      deviceId: getDeviceId(),
+      errorCode: result.errorCode,
+    })
+  }
+  return result
 })
 
 ipcMain.handle('subscription:checkStatus', async () => {
@@ -314,7 +324,12 @@ ipcMain.handle('tun:install', async () => {
     })
     return { success: true }
   } catch (err) {
-    return { success: false, error: (err as Error).message }
+    const error = (err as Error).message
+    errorReporter.reportBizError('tun_install', error, {
+      username: subscriptionManager.getUsername() || undefined,
+      deviceId: getDeviceId(),
+    })
+    return { success: false, error }
   }
 })
 
@@ -331,7 +346,14 @@ ipcMain.handle('tun:startTun', async (_event, proxyUrl: string) => {
     return { success: true }
   } catch (err) {
     log.error(`[startTun] error:`, err)
-    return { success: false, error: (err as Error).message }
+    const error = (err as Error).message
+    errorReporter.reportBizError('tun_start', error, {
+      username: subscriptionManager.getUsername() || undefined,
+      deviceId: getDeviceId(),
+      proxyUrl: proxyUrl?.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@'),
+      singboxLog: singBoxManager.readRecentLog(),
+    })
+    return { success: false, error }
   }
 })
 
@@ -343,7 +365,19 @@ ipcMain.handle('tun:stop', async () => {
   return { success: true }
 })
 
-ipcMain.handle('tun:testConnectivity', (_event, exitIp?: string) => singBoxManager.testConnectivity(exitIp))
+ipcMain.handle('tun:testConnectivity', async (_event, exitIp?: string) => {
+  const result = await singBoxManager.testConnectivity(exitIp)
+  if (!result.success) {
+    errorReporter.reportBizError('tun_connectivity', result.error || 'Connectivity test failed', {
+      username: subscriptionManager.getUsername() || undefined,
+      deviceId: getDeviceId(),
+      expectedIp: exitIp,
+      actualIp: result.actualIp,
+      singboxLog: singBoxManager.readRecentLog(),
+    })
+  }
+  return result
+})
 
 // IPC: Proxy settings (stored in main process, applied to PTY env on create)
 interface ProxySettings {

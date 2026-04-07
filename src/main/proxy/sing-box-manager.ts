@@ -106,8 +106,18 @@ export class SingBoxManager {
     const sig = signal === 'KILL' ? '-9' : '-TERM'
     try {
       if (os.platform() === 'win32') {
-        // Windows: taskkill always force-kills; /F required for elevated processes
-        execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, stdio: 'pipe' })
+        if (sudo) {
+          // Elevated kill via PowerShell — required for elevated sing-box process
+          // TERM: graceful (no /F) so sing-box can clean up WFP rules and TUN interface
+          // KILL: force (/F) as last resort — may leave orphaned WFP rules
+          const forceFlag = signal === 'KILL' ? "'/F'," : ''
+          execSync(
+            `powershell -NoProfile -Command "Start-Process -FilePath 'taskkill' -ArgumentList ${forceFlag}'/PID','${pid}' -Verb RunAs -WindowStyle Hidden -Wait"`,
+            { timeout: 15000, stdio: 'pipe' }
+          )
+        } else {
+          execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, stdio: 'pipe' })
+        }
       } else if (sudo) {
         execSync(
           `osascript -e 'do shell script "kill ${sig} ${pid}" with administrator privileges'`,
@@ -137,6 +147,28 @@ export class SingBoxManager {
   /** Remove PID file. */
   private removePidFile(): void {
     try { unlinkSync(this.pidFilePath) } catch { /* ignore */ }
+  }
+
+  /** Read last N lines of sing-box log (for error reporting). */
+  readRecentLog(maxLines = 30): string {
+    try {
+      const logPath = join(this.singboxDir, 'sing-box.log')
+      const errPath = logPath + '.err'
+      let content = ''
+      if (existsSync(errPath)) {
+        content += readFileSync(errPath, 'utf-8').trim()
+      }
+      if (existsSync(logPath)) {
+        const logContent = readFileSync(logPath, 'utf-8').trim()
+        if (content) content += '\n---\n'
+        content += logContent
+      }
+      if (!content) return ''
+      const lines = content.split('\n')
+      return lines.slice(-maxLines).join('\n')
+    } catch {
+      return ''
+    }
   }
 
   // --- Public API ---
@@ -454,10 +486,19 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       } finally {
         try { unlinkSync(zipPath) } catch { /* ignore */ }
       }
-      const extracted = join(this.singboxDir, filename, 'sing-box.exe')
-      if (existsSync(extracted)) {
-        const { copyFileSync } = require('fs') as typeof import('fs')
-        copyFileSync(extracted, this.binaryPath)
+      const extractedDir = join(this.singboxDir, filename)
+      const extractedExe = join(extractedDir, 'sing-box.exe')
+      if (existsSync(extractedExe)) {
+        const { copyFileSync, readdirSync } = require('fs') as typeof import('fs')
+        copyFileSync(extractedExe, this.binaryPath)
+        // Copy wintun.dll — required for Windows TUN mode
+        const wintunSrc = join(extractedDir, 'wintun.dll')
+        if (existsSync(wintunSrc)) {
+          copyFileSync(wintunSrc, join(this.singboxDir, 'wintun.dll'))
+          log.info('SingBox: wintun.dll copied')
+        } else {
+          log.warn('SingBox: wintun.dll not found in archive — TUN may not work on Windows')
+        }
       }
     } else {
       try {
@@ -649,10 +690,12 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       const safeBin = this.binaryPath.replace(/'/g, "''")
       const safeCfg = this.configPath.replace(/'/g, "''")
       const pidFile = this.pidFilePath.replace(/'/g, "''")
+      const logFile = join(this.singboxDir, 'sing-box.log').replace(/'/g, "''")
       // Start sing-box elevated, write PID, then monitor parent (Electron) process.
       // When parent dies, the watchdog kills sing-box to prevent process leak.
+      // RedirectStandardOutput/Error captures sing-box logs for remote debugging.
       const parentPid = process.pid
-      const wrapper = `$p = Start-Process -FilePath '${safeBin}' -ArgumentList 'run','-c','${safeCfg}' -Verb RunAs -WindowStyle Hidden -PassThru; $p.Id | Out-File -Encoding ascii '${pidFile}'; while ((Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) -and (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) { Start-Sleep -Seconds 2 }; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue`
+      const wrapper = `$p = Start-Process -FilePath '${safeBin}' -ArgumentList 'run','-c','${safeCfg}' -Verb RunAs -WindowStyle Hidden -PassThru -RedirectStandardOutput '${logFile}' -RedirectStandardError '${logFile}.err'; $p.Id | Out-File -Encoding ascii '${pidFile}'; while ((Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) -and (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) { Start-Sleep -Seconds 2 }; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue`
 
       let settled = false
       let pidPollInterval: ReturnType<typeof setInterval> | null = null
