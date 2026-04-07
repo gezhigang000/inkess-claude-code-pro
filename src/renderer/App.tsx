@@ -128,22 +128,36 @@ export function App() {
   const checkSubscriptionAndProceed = useCallback(async () => {
     const session = await window.api.subscription.getSession()
     if (session.isLoggedIn) {
+      // Verify session is still valid on server before proceeding
+      const status = await window.api.subscription.checkStatus()
+      if (!status || status.status === 'expired' || status.status === 'suspended') {
+        console.log('[App] session expired/invalid on server, redirecting to login')
+        await window.api.subscription.logout()
+        setSubscriptionLoggedIn(false)
+        return
+      }
+
       setSubscriptionLoggedIn(true)
       setSubscriptionUsername(session.username)
-      setSubscriptionExpiry(session.session?.expiresAt || null)
-      expiryAtRef.current = session.session?.expiresAt || null
+      setSubscriptionExpiry(status.expiresAt || session.session?.expiresAt || null)
+      expiryAtRef.current = status.expiresAt || session.session?.expiresAt || null
       setSubscriptionPlan(session.session?.plan || 'monthly')
-      if (session.session?.proxyUrl) {
+      // Use server-returned proxyUrl/region (may have been updated by admin)
+      const proxyUrlToUse = status.proxyUrl || session.session?.proxyUrl
+      if (proxyUrlToUse) {
         const store = useSettingsStore.getState()
         store.setProxyEnabled(true)
         store.setProxyMode('tun')
-        store.setProxyUrl(session.session.proxyUrl)
-        if (session.session.proxyRegion) store.setProxyRegion(session.session.proxyRegion)
+        store.setProxyUrl(proxyUrlToUse)
+        if (status.proxyRegion || session.session?.proxyRegion) {
+          store.setProxyRegion(status.proxyRegion || session.session?.proxyRegion || 'us')
+        }
       }
-      setSubscriptionExitIp(session.session?.exitIp || '')
+      setSubscriptionExitIp(status.exitIp || session.session?.exitIp || '')
       // Check if subscription already expired before proceeding
-      if (session.session?.expiresAt) {
-        const minutesLeft = calcMinutesRemaining(session.session.expiresAt)
+      const expiresAt = status.expiresAt || session.session?.expiresAt
+      if (expiresAt) {
+        const minutesLeft = calcMinutesRemaining(expiresAt)
         if (minutesLeft <= 0) {
           forceExpiredLogout()
           return
@@ -153,7 +167,8 @@ export function App() {
       // Check if TUN is already running and connected
       const tunInfo = await window.api.tun.getInfo()
       if (tunInfo.tunRunning) {
-        const test = await window.api.tun.testConnectivity(session.session?.exitIp || undefined)
+        const exitIp = status.exitIp || session.session?.exitIp || undefined
+        const test = await window.api.tun.testConnectivity(exitIp)
         if (test.success) {
           setTunOk(true)
           checkCliAndProceed()
