@@ -128,16 +128,27 @@ export function App() {
   const checkSubscriptionAndProceed = useCallback(async () => {
     const session = await window.api.subscription.getSession()
     if (session.isLoggedIn) {
-      // Verify session is still valid on server before proceeding
-      // Note: checkStatus() returns null on network error (TUN not started yet) — that's OK,
-      // we proceed with local session and let TunGate establish the connection first.
-      // Only redirect to login on explicit server rejection (expired/suspended/401).
+      // Verify session is still valid on server before proceeding.
+      // checkStatus() returns null on BOTH network error and 401.
+      // On 401, main process already called logout() internally (session.json deleted).
+      // On network error, session.json is intact. We distinguish by re-checking session.
       const status = await window.api.subscription.checkStatus()
       if (status && (status.status === 'expired' || status.status === 'suspended')) {
         console.log('[App] session expired/suspended on server, redirecting to login')
         await window.api.subscription.logout()
         setSubscriptionLoggedIn(false)
         return
+      }
+      if (!status) {
+        // checkStatus returned null — could be network error or 401.
+        // Re-check if session was cleared by 401 handler in main process.
+        const recheck = await window.api.subscription.getSession()
+        if (!recheck.isLoggedIn) {
+          console.log('[App] session cleared (likely 401), redirecting to login')
+          setSubscriptionLoggedIn(false)
+          return
+        }
+        // Network error but session intact — proceed with local session, TunGate will connect
       }
 
       setSubscriptionLoggedIn(true)
