@@ -203,7 +203,7 @@ export class SubscriptionManager {
       let changed = false
       const updated = { ...this.session }
       if (status.proxyUrl && status.proxyUrl !== updated.proxyUrl) {
-        log.info(`[SubscriptionManager] proxyUrl changed: ${updated.proxyUrl} → ${status.proxyUrl}`)
+        log.info(`[SubscriptionManager] proxyUrl changed`)
         updated.proxyUrl = status.proxyUrl
         changed = true
       }

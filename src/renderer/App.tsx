@@ -129,9 +129,12 @@ export function App() {
     const session = await window.api.subscription.getSession()
     if (session.isLoggedIn) {
       // Verify session is still valid on server before proceeding
+      // Note: checkStatus() returns null on network error (TUN not started yet) — that's OK,
+      // we proceed with local session and let TunGate establish the connection first.
+      // Only redirect to login on explicit server rejection (expired/suspended/401).
       const status = await window.api.subscription.checkStatus()
-      if (!status || status.status === 'expired' || status.status === 'suspended') {
-        console.log('[App] session expired/invalid on server, redirecting to login')
+      if (status && (status.status === 'expired' || status.status === 'suspended')) {
+        console.log('[App] session expired/suspended on server, redirecting to login')
         await window.api.subscription.logout()
         setSubscriptionLoggedIn(false)
         return
@@ -139,23 +142,23 @@ export function App() {
 
       setSubscriptionLoggedIn(true)
       setSubscriptionUsername(session.username)
-      setSubscriptionExpiry(status.expiresAt || session.session?.expiresAt || null)
-      expiryAtRef.current = status.expiresAt || session.session?.expiresAt || null
+      setSubscriptionExpiry(status?.expiresAt || session.session?.expiresAt || null)
+      expiryAtRef.current = status?.expiresAt || session.session?.expiresAt || null
       setSubscriptionPlan(session.session?.plan || 'monthly')
-      // Use server-returned proxyUrl/region (may have been updated by admin)
-      const proxyUrlToUse = status.proxyUrl || session.session?.proxyUrl
+      // Use server-returned proxyUrl/region if available (may have been updated by admin),
+      // otherwise fall back to local session values
+      const proxyUrlToUse = status?.proxyUrl || session.session?.proxyUrl
       if (proxyUrlToUse) {
         const store = useSettingsStore.getState()
         store.setProxyEnabled(true)
         store.setProxyMode('tun')
         store.setProxyUrl(proxyUrlToUse)
-        if (status.proxyRegion || session.session?.proxyRegion) {
-          store.setProxyRegion(status.proxyRegion || session.session?.proxyRegion || 'us')
-        }
+        const region = status?.proxyRegion || session.session?.proxyRegion
+        if (region) store.setProxyRegion(region)
       }
-      setSubscriptionExitIp(status.exitIp || session.session?.exitIp || '')
+      setSubscriptionExitIp(status?.exitIp || session.session?.exitIp || '')
       // Check if subscription already expired before proceeding
-      const expiresAt = status.expiresAt || session.session?.expiresAt
+      const expiresAt = status?.expiresAt || session.session?.expiresAt
       if (expiresAt) {
         const minutesLeft = calcMinutesRemaining(expiresAt)
         if (minutesLeft <= 0) {
@@ -167,7 +170,7 @@ export function App() {
       // Check if TUN is already running and connected
       const tunInfo = await window.api.tun.getInfo()
       if (tunInfo.tunRunning) {
-        const exitIp = status.exitIp || session.session?.exitIp || undefined
+        const exitIp = status?.exitIp || session.session?.exitIp || undefined
         const test = await window.api.tun.testConnectivity(exitIp)
         if (test.success) {
           setTunOk(true)

@@ -4,9 +4,14 @@ import { getDeviceId } from '../subscription/device-id'
 const ALGO = 'aes-256-gcm'
 const SALT = 'inkess-ccp-v1' // static salt — key uniqueness comes from deviceId
 
-/** Derive a stable AES-256 key from device fingerprint */
+/** Cached derived key — PBKDF2 is expensive (~100ms), only compute once */
+let _cachedKey: Buffer | null = null
+
 function deriveKey(): Buffer {
-  return pbkdf2Sync(getDeviceId(), SALT, 100_000, 32, 'sha256')
+  if (!_cachedKey) {
+    _cachedKey = pbkdf2Sync(getDeviceId(), SALT, 100_000, 32, 'sha256')
+  }
+  return _cachedKey
 }
 
 /** Encrypt plaintext → base64 string (iv + tag + ciphertext) */
