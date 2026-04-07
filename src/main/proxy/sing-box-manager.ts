@@ -153,16 +153,8 @@ export class SingBoxManager {
   readRecentLog(maxLines = 30): string {
     try {
       const logPath = join(this.singboxDir, 'sing-box.log')
-      const errPath = logPath + '.err'
-      let content = ''
-      if (existsSync(errPath)) {
-        content += readFileSync(errPath, 'utf-8').trim()
-      }
-      if (existsSync(logPath)) {
-        const logContent = readFileSync(logPath, 'utf-8').trim()
-        if (content) content += '\n---\n'
-        content += logContent
-      }
+      if (!existsSync(logPath)) return ''
+      const content = readFileSync(logPath, 'utf-8').trim()
       if (!content) return ''
       const lines = content.split('\n')
       return lines.slice(-maxLines).join('\n')
@@ -325,7 +317,8 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       await this.stop() // always stop first to apply new config
 
       log.info(`[sing-box] building TUN config for proxy: ${proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')}`)
-      const config = buildTunConfig(proxyUrl)
+      const logOutput = join(this.singboxDir, 'sing-box.log')
+      const config = buildTunConfig(proxyUrl, logOutput)
       this.writeConfig(config)
       log.info(`[sing-box] config written: stack=${config.inbounds[0]?.stack}, dns=${config.dns.servers.map(s => s.tag + ':' + s.address).join(', ')}`)
 
@@ -690,12 +683,12 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       const safeBin = this.binaryPath.replace(/'/g, "''")
       const safeCfg = this.configPath.replace(/'/g, "''")
       const pidFile = this.pidFilePath.replace(/'/g, "''")
-      const logFile = join(this.singboxDir, 'sing-box.log').replace(/'/g, "''")
       // Start sing-box elevated, write PID, then monitor parent (Electron) process.
       // When parent dies, the watchdog kills sing-box to prevent process leak.
-      // RedirectStandardOutput/Error captures sing-box logs for remote debugging.
+      // Note: -Verb RunAs (UAC) conflicts with -RedirectStandardOutput in PowerShell,
+      // so sing-box logging is configured via log.output in the JSON config instead.
       const parentPid = process.pid
-      const wrapper = `$p = Start-Process -FilePath '${safeBin}' -ArgumentList 'run','-c','${safeCfg}' -Verb RunAs -WindowStyle Hidden -PassThru -RedirectStandardOutput '${logFile}' -RedirectStandardError '${logFile}.err'; $p.Id | Out-File -Encoding ascii '${pidFile}'; while ((Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) -and (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) { Start-Sleep -Seconds 2 }; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue`
+      const wrapper = `$p = Start-Process -FilePath '${safeBin}' -ArgumentList 'run','-c','${safeCfg}' -Verb RunAs -WindowStyle Hidden -PassThru; $p.Id | Out-File -Encoding ascii '${pidFile}'; while ((Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) -and (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) { Start-Sleep -Seconds 2 }; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue`
 
       let settled = false
       let pidPollInterval: ReturnType<typeof setInterval> | null = null

@@ -12,7 +12,7 @@ export interface SingBoxOutbound {
 }
 
 export interface SingBoxConfig {
-  log: { level: string; timestamp: boolean }
+  log: { level: string; timestamp: boolean; output?: string }
   dns: {
     servers: { address: string; tag: string; address_resolver?: string; detour?: string; strategy?: string }[]
     rules?: { outbound?: string; server?: string }[]
@@ -38,11 +38,11 @@ interface ProxyNode {
 /**
  * Build a sing-box config for TUN mode
  */
-export function buildTunConfig(proxyUrl: string): SingBoxConfig {
+export function buildTunConfig(proxyUrl: string, logOutput?: string): SingBoxConfig {
   const outbound = parseProxyUrl(proxyUrl)
 
   return {
-    log: { level: 'info', timestamp: true },
+    log: { level: 'info', timestamp: true, ...(logOutput ? { output: logOutput } : {}) },
     dns: {
       servers: [
         // Remote DNS: DoH through proxy — works with ALL proxy types (HTTP/SOCKS5/VLESS/Trojan)
