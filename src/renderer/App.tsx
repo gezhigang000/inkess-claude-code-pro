@@ -81,10 +81,12 @@ export function App() {
 
   // TUN health monitoring:
   // 1. Process check: 5s poll, 2 consecutive failures → kill PTYs + disconnect
-  // 2. Exit IP check: 5min poll, verify exit IP matches expected (DNS not polluted)
+  // 2. Exit IP check: 60s poll (was 5min), verify exit IP matches expected
+  // 3. Interface alert: detect new TUN devices (e.g. Clash Verge), trigger immediate IP check
   useEffect(() => {
     if (!tunOk || !subscriptionLoggedIn) return
     let failCount = 0
+
     // Process liveness check (lightweight, every 5s)
     const processInterval = setInterval(async () => {
       const info = await window.api.tun.getInfo()
@@ -99,7 +101,8 @@ export function App() {
         failCount = 0
       }
     }, 5000)
-    // Exit IP verification (every 5 minutes)
+
+    // Exit IP verification (every 60s — fast enough to catch route hijacking)
     const exitIp = subscriptionExitIp
     const ipCheckInterval = exitIp ? setInterval(async () => {
       try {
@@ -111,10 +114,27 @@ export function App() {
           window.api.browser.closeAll()
         }
       } catch { /* ignore network errors during check */ }
-    }, 5 * 60 * 1000) : null
+    }, 60 * 1000) : null
+
+    // Interface alert: external VPN detected, immediately verify IP
+    const unsubscribeAlert = window.api.tun.onInterfaceAlert?.(async (event) => {
+      console.warn(`[App] external TUN detected: ${event.interfaces.join(', ')}`)
+      if (!exitIp) return
+      try {
+        const result = await window.api.tun.testConnectivity(exitIp)
+        if (!result.success) {
+          console.warn(`[App] IP changed after external TUN: ${result.error}`)
+          window.api.pty.killAll()
+          setTunOk(false)
+          window.api.browser.closeAll()
+        }
+      } catch { /* ignore */ }
+    })
+
     return () => {
       clearInterval(processInterval)
       if (ipCheckInterval) clearInterval(ipCheckInterval)
+      unsubscribeAlert?.()
     }
   }, [tunOk, subscriptionLoggedIn, subscriptionExitIp])
 

@@ -172,6 +172,11 @@ const api = {
       ipcRenderer.on('tun:installProgress', listener)
       return () => ipcRenderer.removeListener('tun:installProgress', listener)
     },
+    onInterfaceAlert: (callback: (event: { interfaces: string[] }) => void) => {
+      const listener = (_: unknown, event: { interfaces: string[] }) => callback(event)
+      ipcRenderer.on('tun:interfaceAlert', listener)
+      return () => ipcRenderer.removeListener('tun:interfaceAlert', listener)
+    },
   },
 
   browser: {
