@@ -210,13 +210,18 @@ export class SingBoxManager {
    * Stop sing-box. Async — waits for process to be confirmed dead.
    * Safe to call multiple times (mutex prevents concurrent stop).
    */
-  async stop(): Promise<void> {
+  /**
+   * @param restoreDns - Restore system DNS on stop. Default true.
+   *   false: used by startTun restart (keep DNS pointing to sing-box, avoid leak window)
+   *   true: used by app quit, tun:stop IPC, logout (restore DNS to system default)
+   */
+  async stop(restoreDns = true): Promise<void> {
     // Mutex: if already stopping, wait for that to finish
     if (this._stopPromise) {
       await this._stopPromise
       return
     }
-    this._stopPromise = this._stopImpl()
+    this._stopPromise = this._stopImpl(restoreDns)
     try {
       await this._stopPromise
     } finally {
@@ -246,12 +251,12 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     }
   }
 
-  private async _stopImpl(): Promise<void> {
-    log.info(`[sing-box] stop() called, mode=${this._mode} status=${this._status}`)
+  private async _stopImpl(restoreDns: boolean): Promise<void> {
+    log.info(`[sing-box] stop() called, mode=${this._mode} status=${this._status} restoreDns=${restoreDns}`)
     this.stopInterfaceMonitor()
 
-    // Restore system DNS before killing sing-box
-    this.restoreSystemDns()
+    // Restore system DNS before killing sing-box (skip on restart to avoid DNS leak window)
+    if (restoreDns) this.restoreSystemDns()
 
     // Kill the osascript/powershell wrapper process (if any)
     const proc = this.process
@@ -317,7 +322,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       this.reconcileStatus()
 
       await this.ensureInstalled()
-      await this.stop() // always stop first to apply new config
+      await this.stop(false) // stop without restoring DNS (avoid leak window on restart)
 
       log.info(`[sing-box] building TUN config for proxy: ${proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')}`)
       const logOutput = join(this.singboxDir, 'sing-box.log')
