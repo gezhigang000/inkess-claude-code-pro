@@ -25,6 +25,7 @@ interface BrowserConfig {
   proxyUrl: string
   proxyEnabled: boolean
   tunRunning: boolean
+  localProxyUrl: string
   claudeCredentials: { email: string; password: string } | null
   claudeAutoFillScript: (email: string, password: string) => string
 }
@@ -303,13 +304,16 @@ async function createTab(url: string, config: BrowserConfig): Promise<TabInfo> {
     ? electronSession.fromPartition('persist:claude')
     : electronSession.fromPartition(sessionKey, { cache: false })
 
-  // TUN mode: no session proxy (traffic goes through TUN)
-  if (!config.tunRunning && config.proxyEnabled && config.proxyUrl) {
-    await browserSession.setProxy({ proxyRules: config.proxyUrl })
-    const redacted = config.proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')
-    log.info(`browser: tab ${tabId} proxy set to: ${redacted}`)
-  } else {
-    log.info(`browser: tab ${tabId} using TUN (no session proxy)`)
+  // Always set session proxy when proxy is enabled:
+  // - TUN mode: use localhost proxy (immune to route hijacking by other VPNs)
+  // - Non-TUN mode: use upstream proxy URL directly
+  if (config.proxyEnabled) {
+    const proxyRules = config.tunRunning ? config.localProxyUrl : config.proxyUrl
+    if (proxyRules) {
+      await browserSession.setProxy({ proxyRules })
+      const redacted = proxyRules.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')
+      log.info(`browser: tab ${tabId} proxy=${redacted} (${config.tunRunning ? 'TUN+local' : 'direct'})`)
+    }
   }
 
   const lang = config.regionEnv.LANG?.split('.')[0]?.replace('_', '-') || 'en-US'
