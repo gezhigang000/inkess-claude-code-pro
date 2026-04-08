@@ -334,6 +334,7 @@ ipcMain.handle('tun:install', async () => {
 })
 
 ipcMain.handle('tun:startTun', async (_event, proxyUrl: string) => {
+  proxyUrl = typeof proxyUrl === 'string' ? proxyUrl.trim() : proxyUrl
   log.info(`[startTun] url: ${proxyUrl?.replace(/:\/\/.*@/, '://***@').replace(/:\/\/([^/]+)/, '://***.***:***')}`)
   if (typeof proxyUrl !== 'string' || proxyUrl.length > 500 || proxyUrl.length < 5) {
     log.error(`[startTun] invalid proxy URL (len=${proxyUrl?.length})`)

@@ -121,6 +121,7 @@ export function buildLocalProxyConfig(proxyUrl: string, localPort = 7891): SingB
 }
 
 function parseProxyUrl(url: string): SingBoxOutbound {
+  url = url.trim()
   const lower = url.toLowerCase()
 
   if (lower.startsWith('socks5://') || lower.startsWith('socks://')) {
