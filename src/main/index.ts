@@ -345,6 +345,13 @@ ipcMain.handle('tun:startTun', async (_event, proxyUrl: string) => {
     await singBoxManager.startTun(proxyUrl)
     log.info(`[startTun] success`)
     statsCollector.logEvent('tun:start')
+
+    // Start interface monitor — alert renderer if external VPN detected
+    singBoxManager.startInterfaceMonitor((newInterfaces) => {
+      log.warn(`[startTun] external TUN detected: ${newInterfaces.join(', ')}`)
+      safeSend('tun:interfaceAlert', { interfaces: newInterfaces })
+    })
+
     return { success: true }
   } catch (err) {
     log.error(`[startTun] error:`, err)
