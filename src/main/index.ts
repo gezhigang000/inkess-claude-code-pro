@@ -19,6 +19,7 @@ import { SessionRecorder } from './session/session-recorder'
 import { SubscriptionManager } from './subscription/subscription-manager'
 import { getDeviceId } from './subscription/device-id'
 import { fetchSubscription, detectRegion } from './proxy/subscription'
+import { parseProxyUrl } from './proxy/sing-box-config'
 import { SingBoxManager } from './proxy/sing-box-manager'
 import { StatsCollector } from './stats/stats-collector'
 import { BrowserInterceptor } from './browser/browser-interceptor'
@@ -226,6 +227,7 @@ ipcMain.handle('subscription:getSession', () => {
       plan: s.plan,
       expiresAt: s.expiresAt,
       proxyUrl: s.proxyUrl,
+      tunnelUrl: s.tunnelUrl || '',
       proxyRegion: s.proxyRegion,
       exitIp: s.exitIp || '',
     } : null,
@@ -333,14 +335,41 @@ ipcMain.handle('tun:install', async () => {
   }
 })
 
-ipcMain.handle('tun:startTun', async (_event, proxyUrl: string) => {
+ipcMain.handle('tun:startTun', async (_event, proxyUrl: string, tunnelUrl?: string) => {
   proxyUrl = typeof proxyUrl === 'string' ? proxyUrl.trim() : proxyUrl
   log.info(`[startTun] url: ${proxyUrl?.replace(/:\/\/.*@/, '://***@').replace(/:\/\/([^/]+)/, '://***.***:***')}`)
+  if (tunnelUrl) log.info(`[startTun] tunnelUrl: ${tunnelUrl.slice(0, 50)}...`)
   if (typeof proxyUrl !== 'string' || proxyUrl.length > 500 || proxyUrl.length < 5) {
     log.error(`[startTun] invalid proxy URL (len=${proxyUrl?.length})`)
     return { success: false, error: 'Invalid proxy URL' }
   }
   try {
+    // Resolve tunnel subscription → pick best node → set outbound
+    if (tunnelUrl && typeof tunnelUrl === 'string' && tunnelUrl.length > 5) {
+      try {
+        log.info(`[startTun] fetching tunnel subscription...`)
+        const nodes = await fetchSubscription(tunnelUrl)
+        // Pick best tunnel node: prefer hysteria2 (QUIC, best anti-packet-loss), then vless (UDP), then trojan, then ss
+        const tunnelNode = nodes.find(n => n.type === 'hysteria2')
+          || nodes.find(n => n.type === 'vless')
+          || nodes.find(n => n.type === 'trojan')
+          || nodes.find(n => n.type === 'ss')
+        if (tunnelNode) {
+          const tunnelOutbound = parseProxyUrl(tunnelNode.raw || tunnelNode.url)
+          singBoxManager.setTunnelOutbound(tunnelOutbound)
+          log.info(`[startTun] tunnel node: ${tunnelNode.name} (${tunnelNode.type}, ${tunnelNode.server})`)
+        } else {
+          log.warn(`[startTun] no usable tunnel node found in ${nodes.length} nodes, falling back to single proxy`)
+          singBoxManager.setTunnelOutbound(undefined)
+        }
+      } catch (tunnelErr) {
+        log.error(`[startTun] tunnel subscription failed, falling back to single proxy:`, (tunnelErr as Error).message)
+        singBoxManager.setTunnelOutbound(undefined)
+      }
+    } else {
+      singBoxManager.setTunnelOutbound(undefined)
+    }
+
     await singBoxManager.startTun(proxyUrl)
     log.info(`[startTun] success`)
     statsCollector.logEvent('tun:start')
@@ -385,6 +414,10 @@ ipcMain.handle('tun:testConnectivity', async (_event, exitIp?: string) => {
     })
   }
   return result
+})
+
+ipcMain.handle('tun:diagnostics', async () => {
+  return singBoxManager.runDiagnostics()
 })
 
 // IPC: Proxy settings (stored in main process, applied to PTY env on create)

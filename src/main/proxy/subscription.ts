@@ -2,7 +2,7 @@ import log from '../logger'
 
 export interface ProxyNode {
   name: string
-  type: 'socks5' | 'http' | 'https' | 'ss' | 'ssr' | 'vmess' | 'vless' | 'trojan' | 'unknown'
+  type: 'socks5' | 'http' | 'https' | 'ss' | 'ssr' | 'vmess' | 'vless' | 'trojan' | 'hysteria2' | 'unknown'
   server: string
   port: number
   url: string         // full proxy URL for direct use (socks5/http only)
@@ -93,6 +93,9 @@ function parseProxyLine(line: string): ProxyNode | null {
     }
     if (line.startsWith('trojan://')) {
       return parseTrojan(line)
+    }
+    if (line.startsWith('hysteria2://') || line.startsWith('hy2://')) {
+      return parseHysteria2(line)
     }
   } catch (err) {
     log.warn(`[Subscription] Failed to parse line: ${line.slice(0, 80)}`, err)
@@ -199,6 +202,20 @@ function parseTrojan(line: string): ProxyNode {
     }
   } catch {
     return { name: 'Trojan Node', type: 'trojan', server: '', port: 0, url: '', region: 'auto', regionFlag: '🌐', usable: false, raw: line }
+  }
+}
+
+function parseHysteria2(line: string): ProxyNode {
+  try {
+    const url = new URL(line.replace(/^hy2:\/\//, 'hysteria2://'))
+    const name = url.hash ? decodeURIComponent(url.hash.slice(1)) : `Hysteria2 ${url.hostname}`
+    const { region, flag } = detectRegion(name)
+    return {
+      name, type: 'hysteria2', server: url.hostname, port: Number(url.port) || 443,
+      url: '', region, regionFlag: flag, usable: false, raw: line,
+    }
+  } catch {
+    return { name: 'Hysteria2 Node', type: 'hysteria2', server: '', port: 0, url: '', region: 'auto', regionFlag: '🌐', usable: false, raw: line }
   }
 }
 
