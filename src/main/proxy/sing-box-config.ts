@@ -66,7 +66,7 @@ export function buildTunConfig(proxyUrl: string, logOutput?: string): SingBoxCon
         address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
         auto_route: true,
         strict_route: true,
-        stack: 'mixed', // gvisor TCP + system UDP; 'system' on Windows breaks DNS hijack (Smart Multi-Homed Name Resolution bypasses TUN)
+        stack: 'mixed', // system TCP + gvisor UDP; gvisor intercepts DNS (UDP 53) at L3 before Windows DNS Client sees it. 'system' stack breaks DNS hijack on Windows (Smart Multi-Homed Name Resolution bypasses TUN)
         // sniff: true — moved to route rule (deprecated in 1.11)
       },
     ],
