@@ -147,13 +147,15 @@ function ensureBrowserWindow(config: BrowserConfig): void {
 
   // Layout
   const layoutViews = () => {
-    if (!browserWindow || browserWindow.isDestroyed()) return
+    if (!browserWindow || browserWindow.isDestroyed() || !toolbarView) return
     const bounds = win.getContentBounds()
     const w = bounds.width
     const h = bounds.height
-    toolbarView!.setBounds({ x: 0, y: 0, width: w, height: TOOLBAR_HEIGHT })
-    for (const tab of tabs) {
-      tab.view.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width: w, height: h - TOOLBAR_HEIGHT })
+    toolbarView.setBounds({ x: 0, y: 0, width: w, height: TOOLBAR_HEIGHT })
+    // Only layout active tab (others are hidden, will be laid out on switch)
+    const activeTab = tabs.find(t => t.id === activeTabId)
+    if (activeTab) {
+      activeTab.view.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width: w, height: h - TOOLBAR_HEIGHT })
     }
   }
   layoutViews()
@@ -347,7 +349,8 @@ async function createTab(url: string, config: BrowserConfig): Promise<TabInfo> {
   const cleanUA = view.webContents.getUserAgent()
     .replace(/\s*Electron\/\S+/g, '')
     .replace(/\s*inkess-claude-code-pro\/\S+/g, '')
-  view.webContents.session.setUserAgent(cleanUA, lang)
+  // Set on webContents (not session) to avoid mutating shared persist:claude session
+  view.webContents.setUserAgent(cleanUA)
 
   // Region masking: language + timezone injection
   view.webContents.on('did-finish-load', () => {
@@ -431,6 +434,13 @@ async function addTab(url: string, activate: boolean, config: BrowserConfig): Pr
   if (!browserWindow || browserWindow.isDestroyed()) return null
 
   const tab = await createTab(url, config)
+
+  // Re-check window after async createTab — user may have closed it
+  if (!browserWindow || browserWindow.isDestroyed()) {
+    try { if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close() } catch { /* ignore */ }
+    return null
+  }
+
   tabs.push(tab)
 
   // Add view to window and set bounds
@@ -458,7 +468,7 @@ function switchTab(tabId: number): void {
   activeTabId = tabId
 
   for (const tab of tabs) {
-    tab.view.setVisible(tab.id === tabId)
+    try { tab.view.setVisible(tab.id === tabId) } catch { /* view may be destroyed */ }
   }
 
   updateToolbar()
@@ -482,6 +492,11 @@ function closeTab(tabId: number): void {
 
   // Critical: close webContents to prevent memory leak
   try { if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close() } catch { /* ignore */ }
+
+  // Clean up session tracking for non-persist sessions (prevent Set leak)
+  if (!tab.sessionKey.startsWith('persist:')) {
+    sessionsWithHeaderStripping.delete(tab.sessionKey)
+  }
 
   tabs.splice(idx, 1)
 
