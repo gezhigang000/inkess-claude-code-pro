@@ -320,6 +320,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       const config = buildTunConfig(proxyUrl, logOutput)
       this.writeConfig(config)
       log.info(`[sing-box] config written: stack=${config.inbounds[0]?.stack}, dns=${config.dns.servers.map(s => s.tag + ':' + s.address).join(', ')}`)
+      log.info(`[sing-box] outbound: type=${config.outbounds[0]?.type}, server=${config.outbounds[0]?.server}:${config.outbounds[0]?.server_port}, username=${config.outbounds[0]?.username ? 'set' : 'none'}`)
 
       this._mode = 'tun'
       this._status = 'starting'
