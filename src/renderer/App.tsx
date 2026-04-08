@@ -102,16 +102,24 @@ export function App() {
       }
     }, 5000)
 
-    // Exit IP verification (every 60s — fast enough to catch route hijacking)
+    // Exit IP verification (every 60s) — informational only.
+    // Only triggers reconnect if exit IP CHANGED (route hijacking by another VPN).
+    // Fetch failures (network hiccup, slow proxy) do NOT trigger reconnect.
     const exitIp = subscriptionExitIp
     const ipCheckInterval = exitIp ? setInterval(async () => {
       try {
         const result = await window.api.tun.testConnectivity(exitIp)
-        if (!result.success) {
-          console.warn(`[App] exit IP check failed: ${result.error}`)
+        if (result.success) {
+          // IP matches — all good
+        } else if (result.actualIp && result.actualIp !== exitIp) {
+          // Exit IP CHANGED — route may have been hijacked by another VPN
+          console.warn(`[App] exit IP changed: expected ${exitIp}, got ${result.actualIp} — reconnecting`)
           window.api.pty.killAll()
           setTunOk(false)
           window.api.browser.closeAll()
+        } else {
+          // Fetch failed or no actualIp — network hiccup, ignore
+          console.warn(`[App] exit IP check failed (ignored): ${result.error}`)
         }
       } catch { /* ignore network errors during check */ }
     }, 60 * 1000) : null
@@ -122,8 +130,9 @@ export function App() {
       if (!exitIp) return
       try {
         const result = await window.api.tun.testConnectivity(exitIp)
-        if (!result.success) {
-          console.warn(`[App] IP changed after external TUN: ${result.error}`)
+        if (result.actualIp && result.actualIp !== exitIp) {
+          // IP changed after external VPN appeared — route hijacked
+          console.warn(`[App] IP changed after external TUN: expected ${exitIp}, got ${result.actualIp}`)
           window.api.pty.killAll()
           setTunOk(false)
           window.api.browser.closeAll()
@@ -258,6 +267,9 @@ export function App() {
     // Clear polling
     if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null }
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null }
+    // Stop TUN and close browser windows
+    window.api.tun.stop()
+    window.api.browser.closeAll()
     // Clear Claude credentials and logout
     window.api.claude.clearCredentials()
     window.api.subscription.logout()
