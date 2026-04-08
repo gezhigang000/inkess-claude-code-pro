@@ -298,10 +298,9 @@ function ensureBrowserWindow(config: BrowserConfig): void {
 async function createTab(url: string, config: BrowserConfig): Promise<TabInfo> {
   const tabId = nextTabId++
   const isClaude = /claude\.ai/i.test(url)
-  const sessionKey = isClaude ? 'persist:claude' : `browser-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  const browserSession = isClaude
-    ? electronSession.fromPartition('persist:claude')
-    : electronSession.fromPartition(sessionKey, { cache: false })
+  // Claude tabs share persist:claude, all other tabs share persist:browser (cookies/login shared)
+  const sessionKey = isClaude ? 'persist:claude' : 'persist:browser'
+  const browserSession = electronSession.fromPartition(sessionKey)
 
   // TUN mode: no session proxy needed (TUN captures all traffic at network level)
   // Non-TUN mode: set session proxy for browser traffic
