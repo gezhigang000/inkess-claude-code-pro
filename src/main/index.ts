@@ -23,7 +23,7 @@ import { fetchSubscription, detectRegion } from './proxy/subscription'
 import { SingBoxManager } from './proxy/sing-box-manager'
 import { StatsCollector } from './stats/stats-collector'
 import { BrowserInterceptor } from './browser/browser-interceptor'
-import { openBrowserWindow, closeAllBrowserWindows } from './browser/browser-window'
+import { openBrowserWindow, openBrowserEmpty, closeAllBrowserWindows } from './browser/browser-window'
 
 // Disable IPv6 in Chromium to prevent IPv6 traffic bypassing TUN proxy
 app.commandLine.appendSwitch('disable-ipv6')
@@ -840,7 +840,6 @@ ipcMain.handle('browser:open', async (_event, url: string) => {
 })
 
 ipcMain.handle('browser:openEmpty', async () => {
-  const { openBrowserEmpty } = require('./browser/browser-window')
   return openBrowserEmpty(getBrowserConfig())
 })
 
