@@ -548,13 +548,12 @@ ipcMain.handle('pty:create', (_event, options: {
     // Region overrides (TZ, LANG, LC_*) based on exit IP
     const regionOverrides = proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}
 
-    // Proxy env only in non-TUN mode (TUN captures all traffic at network level)
     const tunInfo = singBoxManager.getInfo()
     // TUN mode: route PTY traffic through localhost proxy (immune to route hijacking)
     // Non-TUN mode: route through upstream proxy URL directly
     const proxyEnv = proxySettings.enabled
       ? (tunInfo.tunRunning
-        ? buildProxyEnv(`http://127.0.0.1:${TUN_LOCAL_PORT}`)
+        ? buildProxyEnv(`socks5://127.0.0.1:${TUN_LOCAL_PORT}`)
         : buildProxyEnv(proxySettings.url))
       : {}
 
