@@ -35,8 +35,6 @@ interface ProxyNode {
   [key: string]: unknown
 }
 
-export const TUN_LOCAL_PORT = 41891
-
 /**
  * Build a sing-box config for TUN mode
  */
@@ -70,12 +68,6 @@ export function buildTunConfig(proxyUrl: string, logOutput?: string): SingBoxCon
         strict_route: true,
         stack: 'mixed', // system TCP + gvisor UDP; gvisor intercepts DNS (UDP 53) at L3 before Windows DNS Client sees it. 'system' stack breaks DNS hijack on Windows (Smart Multi-Homed Name Resolution bypasses TUN)
         // sniff: true — moved to route rule (deprecated in 1.11)
-      },
-      {
-        type: 'mixed',
-        tag: 'local-in',
-        listen: '127.0.0.1',
-        listen_port: TUN_LOCAL_PORT,
       },
     ],
     outbounds: [
