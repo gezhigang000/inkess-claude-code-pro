@@ -457,7 +457,7 @@ ipcMain.handle('proxy:fetchSubscription', async (_event, url: string) => {
 // Resolve proxy URL: if it's a subscription URL (https://), fetch and return first usable node
 const ALLOWED_PROXY_PROTOCOLS = ['socks5:', 'socks:', 'http:', 'https:']
 ipcMain.handle('proxy:resolveUrl', async (_event, url: string) => {
-  log.info(`[resolveUrl] input: ${url?.substring(0, 80)}...`)
+  log.info(`[resolveUrl] input: ${url?.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@').substring(0, 80)}...`)
   if (typeof url !== 'string' || !url) return { resolved: url, isSubscription: false }
 
   // Distinguish proxy URL from subscription URL:
