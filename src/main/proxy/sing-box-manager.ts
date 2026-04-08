@@ -42,6 +42,9 @@ export class SingBoxManager {
   private _latencyMs: number | null = null
   private _stopPromise: Promise<void> | null = null
   private _startPromise: Promise<{ success?: boolean; error?: string }> | null = null
+  private _interfaceMonitor: ReturnType<typeof setInterval> | null = null
+  private _baselineInterfaces: Set<string> = new Set()
+  private _onInterfaceAlert: ((newInterfaces: string[]) => void) | null = null
 
   constructor() {
     this.singboxDir = join(app.getPath('userData'), 'sing-box')
@@ -245,6 +248,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
 
   private async _stopImpl(): Promise<void> {
     log.info(`[sing-box] stop() called, mode=${this._mode} status=${this._status}`)
+    this.stopInterfaceMonitor()
 
     // Restore system DNS before killing sing-box
     this.restoreSystemDns()
@@ -392,6 +396,46 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       internetReachable: this._internetReachable,
       latencyMs: this._latencyMs,
     }
+  }
+
+  /**
+   * Start monitoring for new TUN/utun interfaces.
+   * Captures baseline interfaces at start, polls every 10s.
+   * Calls onAlert when new TUN-like interfaces appear.
+   */
+  startInterfaceMonitor(onAlert: (newInterfaces: string[]) => void): void {
+    this.stopInterfaceMonitor()
+    this._onInterfaceAlert = onAlert
+
+    // Capture baseline: all current network interfaces
+    this._baselineInterfaces = new Set(Object.keys(os.networkInterfaces()))
+    log.info(`[sing-box] interface monitor started, baseline: ${[...this._baselineInterfaces].filter(i => /^(utun|tun)/.test(i)).join(', ') || 'none'}`)
+
+    this._interfaceMonitor = setInterval(() => {
+      if (this._status !== 'running') return
+      const current = Object.keys(os.networkInterfaces())
+      const newTunInterfaces = current.filter(name =>
+        !this._baselineInterfaces.has(name) && /^(utun|tun|wintun)/i.test(name)
+      )
+      if (newTunInterfaces.length > 0) {
+        log.warn(`[sing-box] new TUN interface(s) detected: ${newTunInterfaces.join(', ')}`)
+        this._onInterfaceAlert?.(newTunInterfaces)
+        // Update baseline so we don't alert repeatedly for the same interface
+        for (const name of newTunInterfaces) {
+          this._baselineInterfaces.add(name)
+        }
+      }
+    }, 10000)
+  }
+
+  /** Stop interface monitor. */
+  stopInterfaceMonitor(): void {
+    if (this._interfaceMonitor) {
+      clearInterval(this._interfaceMonitor)
+      this._interfaceMonitor = null
+    }
+    this._onInterfaceAlert = null
+    this._baselineInterfaces.clear()
   }
 
   /**
