@@ -1,17 +1,23 @@
 /**
- * Built-in browser window with address bar and navigation controls.
+ * Built-in browser window with multi-tab support.
  *
  * Uses BaseWindow + WebContentsView (Electron 41):
- * - Toolbar view: address bar, back/forward/reload, new tab
- * - Content view: the actual web page with proxy + fingerprint masking
+ * - Single BaseWindow reused for all browser opens
+ * - Toolbar view: tab strip (30px) + address bar (42px) = 72px
+ * - Multiple content views: one per tab, switched via setVisible()
+ *
+ * Tab commands from toolbar via page-title-updated:
+ *   CMD:switchTab:<id>, CMD:closeTab:<id>, CMD:newTab
+ *   CMD:back, CMD:forward, CMD:reload, CMD:stop
  */
-import { BaseWindow, WebContentsView, session as electronSession, ipcMain, app } from 'electron'
+import { BaseWindow, WebContentsView, session as electronSession, app } from 'electron'
 import { join } from 'path'
 import { writeFileSync, mkdirSync } from 'fs'
 import { buildFingerprintMaskScript, FINGERPRINT_PROFILES } from './fingerprint-mask'
 import log from '../logger'
 
-const TOOLBAR_HEIGHT = 42
+const TOOLBAR_HEIGHT = 72
+const MAX_TABS = 20
 
 interface BrowserConfig {
   region: string
@@ -23,6 +29,20 @@ interface BrowserConfig {
   claudeAutoFillScript: (email: string, password: string) => string
 }
 
+interface TabInfo {
+  id: number
+  view: WebContentsView
+  title: string
+  url: string
+  sessionKey: string
+}
+
+let browserWindow: BaseWindow | null = null
+let toolbarView: WebContentsView | null = null
+let tabs: TabInfo[] = []
+let activeTabId: number = -1
+let nextTabId = 1
+let browserConfig: BrowserConfig | null = null
 let allBrowserWindows: BaseWindow[] = []
 const sessionsWithHeaderStripping = new Set<string>()
 
@@ -31,6 +51,16 @@ export function getAllBrowserWindows(): BaseWindow[] {
 }
 
 export function closeAllBrowserWindows(): void {
+  // Close all tab webContents
+  for (const tab of tabs) {
+    try { if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close() } catch { /* ignore */ }
+  }
+  tabs = []
+  activeTabId = -1
+  toolbarView = null
+  browserWindow = null
+  browserConfig = null
+
   allBrowserWindows.forEach(w => { try { if (!w.isDestroyed()) w.close() } catch { /* ignore */ } })
   allBrowserWindows = []
 }
@@ -46,30 +76,53 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
     return { error: 'Network not connected. Please start TUN first.' }
   }
 
-  // Reuse existing browser window if available — navigate instead of opening new window
-  const existing = allBrowserWindows.find(w => !w.isDestroyed())
-  if (existing) {
-    try {
-      const contentView = existing.contentView?.children?.[1] as WebContentsView | undefined
-      if (contentView && !contentView.webContents.isDestroyed()) {
-        contentView.webContents.loadURL(url)
-        // Update address bar
-        const safeUrl = JSON.stringify(url)
-        const toolbarView = existing.contentView?.children?.[0] as WebContentsView | undefined
-        if (toolbarView && !toolbarView.webContents.isDestroyed()) {
-          toolbarView.webContents.executeJavaScript(`document.getElementById('url').value = ${safeUrl}`).catch(() => {})
-        }
-        existing.focus()
-        return { success: true }
-      }
-    } catch {
-      // Fall through to create new window
-    }
+  browserConfig = config
+  ensureBrowserWindow(config)
+
+  const tab = await addTab(url, true, config)
+  if (!tab) {
+    return { error: `Maximum ${MAX_TABS} tabs reached` }
   }
 
-  const lang = config.regionEnv.LANG?.split('.')[0]?.replace('_', '-') || 'en-US'
+  browserWindow!.focus()
+  return { success: true }
+}
 
-  // Create main window
+export async function openBrowserEmpty(config: BrowserConfig): Promise<{ success?: boolean; error?: string }> {
+  if (config.proxyEnabled && !config.tunRunning) {
+    log.warn('browser:open blocked — TUN not running')
+    return { error: 'Network not connected. Please start TUN first.' }
+  }
+
+  browserConfig = config
+
+  if (browserWindow && !browserWindow.isDestroyed()) {
+    browserWindow.focus()
+    return { success: true }
+  }
+
+  ensureBrowserWindow(config)
+  const tab = await addTab('https://www.google.com', true, config)
+  if (!tab) {
+    return { error: 'Failed to create tab' }
+  }
+
+  browserWindow!.focus()
+  return { success: true }
+}
+
+// ---------------------------------------------------------------------------
+// Window management
+// ---------------------------------------------------------------------------
+
+function ensureBrowserWindow(config: BrowserConfig): void {
+  if (browserWindow && !browserWindow.isDestroyed()) return
+
+  // Reset state
+  tabs = []
+  activeTabId = -1
+  toolbarView = null
+
   const win = new BaseWindow({
     width: 1200,
     height: 800,
@@ -79,8 +132,11 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
     icon: join(__dirname, '../../resources/icon-256.png'),
   })
 
-  // --- Toolbar view (pure HTML, all logic in main process via executeJavaScript) ---
-  const toolbarView = new WebContentsView({
+  browserWindow = win
+  allBrowserWindows.push(win)
+
+  // --- Toolbar view ---
+  toolbarView = new WebContentsView({
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -89,22 +145,174 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
   })
   win.contentView.addChildView(toolbarView)
 
-  // --- Content view ---
+  // Layout
+  const layoutViews = () => {
+    if (!browserWindow || browserWindow.isDestroyed()) return
+    const bounds = win.getContentBounds()
+    const w = bounds.width
+    const h = bounds.height
+    toolbarView!.setBounds({ x: 0, y: 0, width: w, height: TOOLBAR_HEIGHT })
+    for (const tab of tabs) {
+      tab.view.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width: w, height: h - TOOLBAR_HEIGHT })
+    }
+  }
+  layoutViews()
+  win.on('resize', layoutViews)
+
+  // --- Toolbar interactions ---
+
+  // Enter key in toolbar → navigate active tab
+  toolbarView.webContents.on('before-input-event', (_event, input) => {
+    if (input.key === 'Enter' && input.type === 'keyDown') {
+      const active = tabs.find(t => t.id === activeTabId)
+      if (!active || active.view.webContents.isDestroyed()) return
+      toolbarView!.webContents.executeJavaScript(`document.getElementById('urlBar').value`)
+        .then((val: string) => {
+          const target = (val || '').trim()
+          if (!target) return
+          const finalUrl = /^https?:\/\//i.test(target) ? target : `https://${target}`
+          if (!/^https?:\/\//i.test(finalUrl)) return
+          active.view.webContents.loadURL(finalUrl)
+          toolbarView!.webContents.executeJavaScript(`document.getElementById('urlBar').blur()`).catch(() => {})
+        })
+        .catch(() => {})
+    }
+  })
+
+  // Button click handlers injected after toolbar loads
+  toolbarView.webContents.on('did-finish-load', () => {
+    if (!toolbarView || toolbarView.webContents.isDestroyed()) return
+    toolbarView.webContents.executeJavaScript(`
+      document.getElementById('backBtn').onclick = function() { document.title = 'CMD:back'; };
+      document.getElementById('forwardBtn').onclick = function() { document.title = 'CMD:forward'; };
+      document.getElementById('reloadBtn').onclick = function() { document.title = 'CMD:reload'; };
+      document.getElementById('urlBar').onfocus = function() { this.select(); };
+      true;
+    `).catch(e => log.error('browser: toolbar inject failed', e))
+
+    // Inject tab update function
+    toolbarView.webContents.executeJavaScript(`
+      window.__updateTabs = function(tabs) {
+        var strip = document.getElementById('tabStrip');
+        strip.innerHTML = tabs.map(function(t) {
+          return '<div class="tab' + (t.active ? ' active' : '') + '" data-id="' + t.id + '">' +
+            '<span class="tab-title">' + t.title.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>' +
+            (tabs.length > 1 ? '<span class="tab-close" data-id="' + t.id + '">&times;</span>' : '') +
+            '</div>';
+        }).join('') + '<div class="tab-new" id="newTabBtn2">+</div>';
+        strip.querySelectorAll('.tab').forEach(function(el) {
+          el.onclick = function(e) {
+            if (e.target.classList.contains('tab-close')) {
+              document.title = 'CMD:closeTab:' + e.target.dataset.id;
+            } else {
+              document.title = 'CMD:switchTab:' + el.dataset.id;
+            }
+          };
+        });
+        var nb = document.getElementById('newTabBtn2');
+        if (nb) nb.onclick = function() { document.title = 'CMD:newTab'; };
+      };
+      true;
+    `).catch(e => log.error('browser: tab update inject failed', e))
+
+    // Initial tab strip render
+    updateTabStrip()
+    updateToolbar()
+  })
+
+  // Command detection via title changes
+  toolbarView.webContents.on('page-title-updated', (_event, title) => {
+    if (!title.startsWith('CMD:')) return
+    log.info('browser: toolbar command:', title)
+
+    if (title === 'CMD:back') {
+      const active = tabs.find(t => t.id === activeTabId)
+      if (active && !active.view.webContents.isDestroyed()) {
+        active.view.webContents.navigationHistory.goBack()
+      }
+    } else if (title === 'CMD:forward') {
+      const active = tabs.find(t => t.id === activeTabId)
+      if (active && !active.view.webContents.isDestroyed()) {
+        active.view.webContents.navigationHistory.goForward()
+      }
+    } else if (title === 'CMD:reload') {
+      const active = tabs.find(t => t.id === activeTabId)
+      if (active && !active.view.webContents.isDestroyed()) {
+        active.view.webContents.reload()
+      }
+    } else if (title === 'CMD:stop') {
+      const active = tabs.find(t => t.id === activeTabId)
+      if (active && !active.view.webContents.isDestroyed()) {
+        active.view.webContents.stop()
+      }
+    } else if (title === 'CMD:newTab') {
+      if (browserConfig) {
+        addTab('https://www.google.com', true, browserConfig)
+          .then(t => { if (!t) log.warn('browser: newTab failed — max tabs') })
+          .catch(e => log.error('browser: newTab error', e))
+      }
+    } else if (title.startsWith('CMD:switchTab:')) {
+      const tabId = parseInt(title.slice('CMD:switchTab:'.length), 10)
+      if (!isNaN(tabId)) switchTab(tabId)
+    } else if (title.startsWith('CMD:closeTab:')) {
+      const tabId = parseInt(title.slice('CMD:closeTab:'.length), 10)
+      if (!isNaN(tabId)) closeTab(tabId)
+    }
+  })
+
+  // Load toolbar HTML
+  const toolbarDir = join(app.getPath('userData'), 'browser')
+  mkdirSync(toolbarDir, { recursive: true })
+  const toolbarPath = join(toolbarDir, `toolbar-${win.id}.html`)
+  writeFileSync(toolbarPath, buildToolbarHtml())
+  toolbarView.webContents.loadFile(toolbarPath)
+
+  // Cleanup on window close
+  let cleaned = false
+  const cleanup = () => {
+    if (cleaned) return
+    cleaned = true
+
+    // Close all tab webContents to prevent memory leaks
+    for (const tab of tabs) {
+      try { if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close() } catch { /* ignore */ }
+    }
+    tabs = []
+    activeTabId = -1
+    toolbarView = null
+    browserWindow = null
+    browserConfig = null
+
+    allBrowserWindows = allBrowserWindows.filter(w => w !== win)
+    try { require('fs').unlinkSync(toolbarPath) } catch { /* ignore */ }
+  }
+  win.once('closed', cleanup)
+}
+
+// ---------------------------------------------------------------------------
+// Tab management
+// ---------------------------------------------------------------------------
+
+async function createTab(url: string, config: BrowserConfig): Promise<TabInfo> {
+  const tabId = nextTabId++
   const isClaude = /claude\.ai/i.test(url)
+  const sessionKey = isClaude ? 'persist:claude' : `browser-${Date.now()}-${Math.random().toString(36).slice(2)}`
   const browserSession = isClaude
     ? electronSession.fromPartition('persist:claude')
-    : electronSession.fromPartition(`browser-${Date.now()}-${Math.random().toString(36).slice(2)}`, { cache: false })
+    : electronSession.fromPartition(sessionKey, { cache: false })
 
   // TUN mode: no session proxy (traffic goes through TUN)
   if (!config.tunRunning && config.proxyEnabled && config.proxyUrl) {
     await browserSession.setProxy({ proxyRules: config.proxyUrl })
     const redacted = config.proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')
-    log.info(`browser:open proxy set to: ${redacted}`)
+    log.info(`browser: tab ${tabId} proxy set to: ${redacted}`)
   } else {
-    log.info('browser:open using TUN (no session proxy)')
+    log.info(`browser: tab ${tabId} using TUN (no session proxy)`)
   }
 
-  const contentView = new WebContentsView({
+  const lang = config.regionEnv.LANG?.split('.')[0]?.replace('_', '-') || 'en-US'
+
+  const view = new WebContentsView({
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -112,16 +320,14 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
       session: browserSession,
     }
   })
-  win.contentView.addChildView(contentView)
 
   // WebRTC leak prevention
-  contentView.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
+  view.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
 
   // Strip Client Hints headers (once per session to avoid listener accumulation)
-  const sessionKey = isClaude ? 'persist:claude' : contentView.webContents.session.storagePath || 'ephemeral'
   if (!sessionsWithHeaderStripping.has(sessionKey)) {
     sessionsWithHeaderStripping.add(sessionKey)
-    contentView.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
+    view.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
       const headers = { ...details.requestHeaders }
       for (const key of Object.keys(headers)) {
         if (key.toLowerCase().startsWith('sec-ch-')) delete headers[key]
@@ -133,24 +339,24 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
   // Fingerprint masking
   const fpProfile = FINGERPRINT_PROFILES[config.region] || FINGERPRINT_PROFILES.default
   const fpScript = buildFingerprintMaskScript(fpProfile)
-  contentView.webContents.on('dom-ready', () => {
-    contentView.webContents.executeJavaScript(fpScript).catch(() => {})
+  view.webContents.on('dom-ready', () => {
+    view.webContents.executeJavaScript(fpScript).catch(() => {})
   })
 
   // Set language header + mask Electron/app from User-Agent
-  const cleanUA = contentView.webContents.getUserAgent()
+  const cleanUA = view.webContents.getUserAgent()
     .replace(/\s*Electron\/\S+/g, '')
     .replace(/\s*inkess-claude-code-pro\/\S+/g, '')
-  contentView.webContents.session.setUserAgent(cleanUA, lang)
+  view.webContents.session.setUserAgent(cleanUA, lang)
 
   // Region masking: language + timezone injection
-  contentView.webContents.on('did-finish-load', () => {
-    injectRegionMasking(contentView, config.regionEnv, lang)
+  view.webContents.on('did-finish-load', () => {
+    injectRegionMasking(view, config.regionEnv, lang)
     // Claude auto-fill
     if (isClaude && config.claudeCredentials) {
-      const pageUrl = contentView.webContents.getURL()
+      const pageUrl = view.webContents.getURL()
       if (pageUrl.includes('login') || pageUrl.includes('clerk') || pageUrl.includes('accounts.anthropic.com')) {
-        contentView.webContents.executeJavaScript(
+        view.webContents.executeJavaScript(
           config.claudeAutoFillScript(config.claudeCredentials.email, config.claudeCredentials.password)
         ).catch(() => {})
       }
@@ -160,13 +366,13 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
   // Claude auto-fill on navigation
   if (isClaude && config.claudeCredentials) {
     let lastFilledUrl = ''
-    contentView.webContents.on('did-navigate', (_navEvent, navUrl) => {
+    view.webContents.on('did-navigate', (_navEvent, navUrl) => {
       if (navUrl === lastFilledUrl) return
       if (navUrl.includes('login') || navUrl.includes('clerk') || navUrl.includes('accounts.anthropic.com')) {
         lastFilledUrl = navUrl
         const creds = config.claudeCredentials!
         setTimeout(() => {
-          contentView.webContents.executeJavaScript(
+          view.webContents.executeJavaScript(
             config.claudeAutoFillScript(creds.email, creds.password)
           ).catch(() => {})
         }, 500)
@@ -174,124 +380,175 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
     })
   }
 
-  // --- Layout ---
-  const layoutViews = () => {
-    const bounds = win.getContentBounds()
-    const w = bounds.width
-    const h = bounds.height
-    toolbarView.setBounds({ x: 0, y: 0, width: w, height: TOOLBAR_HEIGHT })
-    contentView.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width: w, height: h - TOOLBAR_HEIGHT })
-  }
-  layoutViews()
-  win.on('resize', layoutViews)
-
-  // --- Toolbar ↔ Content communication (all logic in main process) ---
-
-  // Update toolbar DOM directly from main process via executeJavaScript
-  const updateToolbar = () => {
-    if (toolbarView.webContents.isDestroyed()) return
-    const safeUrl = JSON.stringify(contentView.webContents.getURL())
-    const canGoBack = contentView.webContents.navigationHistory.canGoBack()
-    const canGoForward = contentView.webContents.navigationHistory.canGoForward()
-    const loading = contentView.webContents.isLoading()
-    toolbarView.webContents.executeJavaScript(`
-      document.getElementById('urlBar').value = ${safeUrl};
-      document.getElementById('backBtn').disabled = ${!canGoBack};
-      document.getElementById('forwardBtn').disabled = ${!canGoForward};
-      document.getElementById('toolbar').classList.toggle('loading', ${loading});
-    `).catch(() => {})
+  const tabInfo: TabInfo = {
+    id: tabId,
+    view,
+    title: 'New Tab',
+    url,
+    sessionKey,
   }
 
-  contentView.webContents.on('did-navigate', updateToolbar)
-  contentView.webContents.on('did-navigate-in-page', updateToolbar)
-  contentView.webContents.on('did-start-loading', updateToolbar)
-  contentView.webContents.on('did-stop-loading', updateToolbar)
-  contentView.webContents.on('page-title-updated', (_e, title) => {
-    win.setTitle(title || 'Browser')
+  // Navigation events — update toolbar only when this tab is active
+  view.webContents.on('did-navigate', (_e, navUrl) => {
+    tabInfo.url = navUrl
+    if (tabInfo.id === activeTabId) updateToolbar()
+  })
+  view.webContents.on('did-navigate-in-page', (_e, navUrl) => {
+    tabInfo.url = navUrl
+    if (tabInfo.id === activeTabId) updateToolbar()
+  })
+  view.webContents.on('did-start-loading', () => {
+    if (tabInfo.id === activeTabId) updateToolbar()
+  })
+  view.webContents.on('did-stop-loading', () => {
+    if (tabInfo.id === activeTabId) updateToolbar()
+  })
+  view.webContents.on('page-title-updated', (_e, title) => {
+    tabInfo.title = title || 'Untitled'
+    updateTabStrip()
+    if (tabInfo.id === activeTabId && browserWindow && !browserWindow.isDestroyed()) {
+      browserWindow.setTitle(title || 'Browser')
+    }
   })
 
-  // Handle new window requests (target="_blank" links)
-  contentView.webContents.setWindowOpenHandler(({ url: newUrl }) => {
-    if (/^https?:\/\//i.test(newUrl)) {
-      openBrowserWindow(newUrl, config).catch(() => {})
+  // Handle target="_blank" links — open as new tab
+  view.webContents.setWindowOpenHandler(({ url: newUrl }) => {
+    if (/^https?:\/\//i.test(newUrl) && browserConfig) {
+      addTab(newUrl, true, browserConfig).catch(() => {})
     }
     return { action: 'deny' }
   })
 
-  // Main-process driven toolbar interactions (no IPC from renderer needed)
-  // Enter key in toolbar → navigate, handled via before-input-event
-  toolbarView.webContents.on('before-input-event', (_event, input) => {
-    if (contentView.webContents.isDestroyed()) return
-    if (input.key === 'Enter' && input.type === 'keyDown') {
-      toolbarView.webContents.executeJavaScript(`document.getElementById('urlBar').value`)
-        .then((val: string) => {
-          const target = (val || '').trim()
-          if (!target) return
-          const finalUrl = /^https?:\/\//i.test(target) ? target : `https://${target}`
-          if (!/^https?:\/\//i.test(finalUrl)) return
-          contentView.webContents.loadURL(finalUrl)
-          // Blur urlBar
-          toolbarView.webContents.executeJavaScript(`document.getElementById('urlBar').blur()`).catch(() => {})
-        })
-        .catch(() => {})
-    }
-  })
-
-  // Button clicks — inject handlers via executeJavaScript after DOM ready
-  // (inline <script> doesn't execute reliably in sandboxed WebContentsView loading from userData)
-  toolbarView.webContents.on('did-finish-load', () => {
-    toolbarView.webContents.executeJavaScript(`
-      document.getElementById('backBtn').onclick = function() { document.title = 'CMD:back'; };
-      document.getElementById('forwardBtn').onclick = function() { document.title = 'CMD:forward'; };
-      document.getElementById('reloadBtn').onclick = function() { document.title = 'CMD:reload'; };
-      document.getElementById('newTabBtn').onclick = function() { document.title = 'CMD:newTab'; };
-      document.getElementById('urlBar').onfocus = function() { this.select(); };
-      true;
-    `).catch(e => log.error('browser: toolbar inject failed', e))
-  })
-
-  // Detect button clicks via title changes (reliable, no IPC/preload needed)
-  toolbarView.webContents.on('page-title-updated', (_event, title) => {
-    if (!title.startsWith('CMD:')) return
-    if (contentView.webContents.isDestroyed()) return
-    log.info('browser: toolbar command:', title)
-    if (title === 'CMD:back') contentView.webContents.navigationHistory.goBack()
-    else if (title === 'CMD:forward') contentView.webContents.navigationHistory.goForward()
-    else if (title === 'CMD:reload') contentView.webContents.reload()
-    else if (title === 'CMD:stop') contentView.webContents.stop()
-    else if (title === 'CMD:newTab') {
-      openBrowserWindow('https://www.google.com', config)
-        .then(r => { if (r.error) log.warn('browser: newTab blocked:', r.error) })
-        .catch(e => log.error('browser: newTab error', e))
-    }
-  })
-
-  // Load toolbar HTML
-  const toolbarDir = join(app.getPath('userData'), 'browser')
-  mkdirSync(toolbarDir, { recursive: true })
-  const toolbarPath = join(toolbarDir, `toolbar-${win.id}.html`)
-  writeFileSync(toolbarPath, buildToolbarHtml())
-  toolbarView.webContents.loadFile(toolbarPath)
-
-  // Load content
-  contentView.webContents.loadURL(url)
-
-  allBrowserWindows.push(win)
-
-  // Unified cleanup — covers both normal close and crash/destroy
-  let cleaned = false
-  const cleanup = () => {
-    if (cleaned) return
-    cleaned = true
-    allBrowserWindows = allBrowserWindows.filter(w => w !== win)
-    try { require('fs').unlinkSync(toolbarPath) } catch { /* ignore */ }
-  }
-  win.once('closed', cleanup)
-  contentView.webContents.once('destroyed', cleanup)
-  toolbarView.webContents.once('destroyed', cleanup)
-
-  return { success: true }
+  return tabInfo
 }
+
+async function addTab(url: string, activate: boolean, config: BrowserConfig): Promise<TabInfo | null> {
+  if (tabs.length >= MAX_TABS) {
+    log.warn(`browser: max tabs (${MAX_TABS}) reached`)
+    return null
+  }
+
+  if (!browserWindow || browserWindow.isDestroyed()) return null
+
+  const tab = await createTab(url, config)
+  tabs.push(tab)
+
+  // Add view to window and set bounds
+  browserWindow.contentView.addChildView(tab.view)
+  layoutContentView(tab.view)
+
+  // Start hidden unless activating
+  tab.view.setVisible(false)
+
+  if (activate) {
+    switchTab(tab.id)
+  }
+
+  // Load URL
+  tab.view.webContents.loadURL(url)
+
+  updateTabStrip()
+  return tab
+}
+
+function switchTab(tabId: number): void {
+  const target = tabs.find(t => t.id === tabId)
+  if (!target) return
+
+  activeTabId = tabId
+
+  for (const tab of tabs) {
+    tab.view.setVisible(tab.id === tabId)
+  }
+
+  updateToolbar()
+  updateTabStrip()
+
+  if (browserWindow && !browserWindow.isDestroyed()) {
+    browserWindow.setTitle(target.title || 'Browser')
+  }
+}
+
+function closeTab(tabId: number): void {
+  const idx = tabs.findIndex(t => t.id === tabId)
+  if (idx === -1) return
+
+  const tab = tabs[idx]
+
+  // Remove view from window
+  if (browserWindow && !browserWindow.isDestroyed()) {
+    browserWindow.contentView.removeChildView(tab.view)
+  }
+
+  // Critical: close webContents to prevent memory leak
+  try { if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close() } catch { /* ignore */ }
+
+  tabs.splice(idx, 1)
+
+  // If last tab closed, close window
+  if (tabs.length === 0) {
+    if (browserWindow && !browserWindow.isDestroyed()) {
+      browserWindow.close()
+    }
+    return
+  }
+
+  // Switch to adjacent tab if active tab was closed
+  if (activeTabId === tabId) {
+    const newIdx = Math.min(idx, tabs.length - 1)
+    switchTab(tabs[newIdx].id)
+  } else {
+    updateTabStrip()
+  }
+}
+
+function layoutContentView(view: WebContentsView): void {
+  if (!browserWindow || browserWindow.isDestroyed()) return
+  const bounds = browserWindow.getContentBounds()
+  view.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width: bounds.width, height: bounds.height - TOOLBAR_HEIGHT })
+}
+
+// ---------------------------------------------------------------------------
+// Toolbar updates
+// ---------------------------------------------------------------------------
+
+function updateToolbar(): void {
+  if (!toolbarView || toolbarView.webContents.isDestroyed()) return
+
+  const active = tabs.find(t => t.id === activeTabId)
+  if (!active || active.view.webContents.isDestroyed()) return
+
+  const safeUrl = JSON.stringify(active.view.webContents.getURL())
+  const canGoBack = active.view.webContents.navigationHistory.canGoBack()
+  const canGoForward = active.view.webContents.navigationHistory.canGoForward()
+  const loading = active.view.webContents.isLoading()
+
+  toolbarView.webContents.executeJavaScript(`
+    document.getElementById('urlBar').value = ${safeUrl};
+    document.getElementById('backBtn').disabled = ${!canGoBack};
+    document.getElementById('forwardBtn').disabled = ${!canGoForward};
+    document.getElementById('toolbar').classList.toggle('loading', ${loading});
+  `).catch(() => {})
+}
+
+function updateTabStrip(): void {
+  if (!toolbarView || toolbarView.webContents.isDestroyed()) return
+
+  const tabData = tabs.map(t => ({
+    id: t.id,
+    title: (t.title || 'New Tab').slice(0, 30),
+    active: t.id === activeTabId,
+  }))
+
+  const safeData = JSON.stringify(tabData)
+  toolbarView.webContents.executeJavaScript(`
+    if (window.__updateTabs) window.__updateTabs(${safeData});
+  `).catch(() => {})
+}
+
+// ---------------------------------------------------------------------------
+// Region masking (preserved as-is)
+// ---------------------------------------------------------------------------
 
 function injectRegionMasking(view: WebContentsView, regionEnv: Record<string, string>, lang: string): void {
   if (regionEnv.LANG) {
@@ -319,6 +576,10 @@ function injectRegionMasking(view: WebContentsView, regionEnv: Record<string, st
   }
 }
 
+// ---------------------------------------------------------------------------
+// Toolbar HTML
+// ---------------------------------------------------------------------------
+
 function buildToolbarHtml(): string {
   return `<!DOCTYPE html>
 <html>
@@ -336,10 +597,57 @@ function buildToolbarHtml(): string {
     user-select: none;
     overflow: hidden;
   }
+  /* --- Tab strip (top 30px) --- */
+  .tab-strip {
+    display: flex;
+    height: 30px;
+    background: #e8e8e8;
+    padding: 4px 8px 0;
+    gap: 2px;
+    overflow-x: auto;
+    align-items: flex-end;
+  }
+  .tab-strip::-webkit-scrollbar { display: none; }
+  .tab {
+    display: flex;
+    align-items: center;
+    height: 26px;
+    padding: 0 8px 0 12px;
+    background: #d8d8d8;
+    border-radius: 6px 6px 0 0;
+    font-size: 12px;
+    cursor: pointer;
+    max-width: 200px;
+    min-width: 80px;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .tab.active { background: #f0f0f0; }
+  .tab-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  .tab-close {
+    width: 16px; height: 16px;
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: #888; flex-shrink: 0;
+  }
+  .tab-close:hover { background: #c0c0c0; color: #333; }
+  .tab-new {
+    width: 26px; height: 26px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; color: #888; cursor: pointer;
+    border-radius: 6px 6px 0 0; flex-shrink: 0;
+  }
+  .tab-new:hover { background: #d0d0d0; }
+  /* --- Address bar (bottom 42px) --- */
   .toolbar {
     display: flex;
     align-items: center;
-    height: 100%;
+    height: 42px;
     padding: 0 8px;
     gap: 4px;
     border-bottom: 1px solid #d0d0d0;
@@ -377,22 +685,17 @@ function buildToolbarHtml(): string {
     min-width: 100px;
   }
   .url-bar:focus { border-color: #4a90d9; box-shadow: 0 0 0 2px rgba(74,144,217,0.2); }
-  .new-tab-btn {
-    font-size: 18px;
-    font-weight: 300;
-    color: #666;
-  }
   .loading .reload-btn::after { content: '\\2715'; }
   .reload-btn::after { content: '\\21BB'; }
 </style>
 </head>
 <body>
+<div class="tab-strip" id="tabStrip"></div>
 <div class="toolbar" id="toolbar">
   <button class="nav-btn back-btn" id="backBtn" title="Back" disabled>&#9664;</button>
   <button class="nav-btn forward-btn" id="forwardBtn" title="Forward" disabled>&#9654;</button>
   <button class="nav-btn reload-btn" id="reloadBtn" title="Reload"></button>
   <input class="url-bar" id="urlBar" type="text" placeholder="Enter URL..." spellcheck="false" autocomplete="off">
-  <button class="nav-btn new-tab-btn" id="newTabBtn" title="New Window">+</button>
 </div>
 </body>
 </html>`
