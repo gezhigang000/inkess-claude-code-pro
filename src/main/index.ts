@@ -16,6 +16,7 @@ import { checkForAppUpdate, downloadAppUpdate, installAppUpdate, onUpdateStatus 
 import { Analytics } from './analytics'
 import { ErrorReporter } from './error-reporter'
 import { SessionRecorder } from './session/session-recorder'
+import { TUN_LOCAL_PORT } from './proxy/sing-box-config'
 import { SubscriptionManager } from './subscription/subscription-manager'
 import { getDeviceId } from './subscription/device-id'
 import { fetchSubscription, detectRegion } from './proxy/subscription'
@@ -542,7 +543,13 @@ ipcMain.handle('pty:create', (_event, options: {
 
     // Proxy env only in non-TUN mode (TUN captures all traffic at network level)
     const tunInfo = singBoxManager.getInfo()
-    const proxyEnv = (proxySettings.enabled && !tunInfo.tunRunning) ? buildProxyEnv(proxySettings.url) : {}
+    // TUN mode: route PTY traffic through localhost proxy (immune to route hijacking)
+    // Non-TUN mode: route through upstream proxy URL directly
+    const proxyEnv = proxySettings.enabled
+      ? (tunInfo.tunRunning
+        ? buildProxyEnv(`http://127.0.0.1:${TUN_LOCAL_PORT}`)
+        : buildProxyEnv(proxySettings.url))
+      : {}
 
     // Browser interceptor env (BROWSER, INKESS_BROWSER_SOCK, ZDOTDIR)
     const interceptorEnv = browserInterceptor.getEnv()
@@ -808,6 +815,7 @@ function getBrowserConfig() {
     proxyUrl: proxySettings.url,
     proxyEnabled: proxySettings.enabled,
     tunRunning: sbInfo.tunRunning,
+    localProxyUrl: `http://127.0.0.1:${TUN_LOCAL_PORT}`,
     claudeCredentials,
     claudeAutoFillScript,
   }
