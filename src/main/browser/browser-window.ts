@@ -471,6 +471,9 @@ function switchTab(tabId: number): void {
     try { tab.view.setVisible(tab.id === tabId) } catch { /* view may be destroyed */ }
   }
 
+  // Layout active tab (may have missed resize while hidden)
+  layoutContentView(target.view)
+
   updateToolbar()
   updateTabStrip()
 
