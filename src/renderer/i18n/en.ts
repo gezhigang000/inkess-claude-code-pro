@@ -131,6 +131,7 @@ export const en = {
   // StatusBar
   'statusbar.preventingSleep': 'Preventing sleep',
   'statusbar.expiryWarning': 'Subscription expiring soon',
+  'statusbar.openBrowser': 'Open Browser',
 
   // Close Tab
   'tab.pressAgainToClose': 'Press again to close',

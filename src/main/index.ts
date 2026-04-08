@@ -825,6 +825,11 @@ ipcMain.handle('browser:open', async (_event, url: string) => {
   return openBuiltinBrowser(url)
 })
 
+ipcMain.handle('browser:openEmpty', async () => {
+  const { openBrowserEmpty } = require('./browser/browser-window')
+  return openBrowserEmpty(getBrowserConfig())
+})
+
 // IPC: Window controls (Windows only)
 ipcMain.on('window:minimize', () => mainWindow?.minimize())
 ipcMain.on('window:maximize', () => {

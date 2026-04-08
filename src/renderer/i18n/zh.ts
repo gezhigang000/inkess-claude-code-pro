@@ -133,6 +133,7 @@ export const zh: Record<TranslationKey, string> = {
   // StatusBar
   'statusbar.preventingSleep': '阻止休眠中',
   'statusbar.expiryWarning': '订阅即将到期',
+  'statusbar.openBrowser': '打开浏览器',
 
   // Close Tab
   'tab.pressAgainToClose': '再次点击关闭',
