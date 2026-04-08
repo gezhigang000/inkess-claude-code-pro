@@ -3,6 +3,8 @@
  * Supports: direct URL (socks5/http), subscription nodes (ss/vmess/vless/trojan)
  */
 
+import { join } from 'path'
+
 export interface SingBoxOutbound {
   type: string
   tag: string
@@ -15,14 +17,52 @@ export interface SingBoxConfig {
   log: { level: string; timestamp: boolean; output?: string }
   dns: {
     servers: { address: string; tag: string; address_resolver?: string; detour?: string; strategy?: string }[]
-    rules?: { outbound?: string; server?: string }[]
-    final?: string
+    rules?: Record<string, unknown>[]
+    fakeip?: { enabled: boolean; inet4_range: string; inet6_range: string }
     independent_cache?: boolean
+    final?: string
   }
   inbounds: { type: string; tag: string; [key: string]: unknown }[]
   outbounds: SingBoxOutbound[]
-  route: { rules: Record<string, unknown>[]; auto_detect_interface: boolean; final: string }
+  route: { rules: Record<string, unknown>[]; rule_set?: Record<string, unknown>[]; auto_detect_interface: boolean; final: string }
+  experimental?: { cache_file?: { enabled: boolean; path?: string; store_fakeip?: boolean } }
 }
+
+/**
+ * Whitelist: only these domains go through proxy, everything else is direct.
+ * Keeps proxy load minimal and domestic traffic fast.
+ */
+const PROXY_DOMAINS = [
+  // Anthropic / Claude
+  'anthropic.com', 'claude.ai', 'claudeusercontent.com',
+  // OpenAI / ChatGPT
+  'openai.com', 'chatgpt.com', 'oaiusercontent.com',
+  // Google AI
+  'googleapis.com', 'gemini.google.com', 'ai.google.dev', 'deepmind.com',
+  // Google
+  'google.com', 'google.co.jp', 'gstatic.com', 'googleusercontent.com', 'googlevideo.com',
+  // GitHub
+  'github.com', 'githubusercontent.com', 'github.io', 'githubassets.com',
+  // Dev tools
+  'npmjs.org', 'npmjs.com', 'registry.npmjs.org', 'yarnpkg.com',
+  'pypi.org', 'pythonhosted.org',
+  'crates.io', 'docs.rs',
+  'stackoverflow.com', 'stackexchange.com',
+  // Privacy / Email
+  'proton.me', 'protonmail.com',
+  // Cloud
+  'amazonaws.com', 'cloudflare.com', 'cloudfront.net',
+  // Other commonly blocked
+  'wikipedia.org', 'wikimedia.org',
+  'twitter.com', 'x.com', 'twimg.com',
+  'youtube.com', 'ytimg.com', 'ggpht.com',
+  'telegram.org', 't.me',
+  'reddit.com', 'redd.it', 'redditstatic.com',
+  'medium.com',
+  'docker.com', 'docker.io',
+  // Connectivity test
+  'oxylabs.io',
+]
 
 interface ProxyNode {
   name: string
@@ -36,25 +76,63 @@ interface ProxyNode {
 }
 
 /**
- * Build a sing-box config for TUN mode
+ * Build a sing-box config for TUN mode.
+ *
+ * Supports two modes:
+ * - Single proxy: proxyUrl only → app → proxy → target
+ * - Chain proxy:  proxyUrl + tunnelOutbound → app → tunnel(VPN) → proxy(residential IP) → target
+ *
+ * tunnelOutbound: pre-parsed sing-box outbound for the VPN tunnel (vless/trojan/ss).
+ * When provided, the proxy outbound uses `detour: 'tunnel'` to route through it.
  */
-export function buildTunConfig(proxyUrl: string, logOutput?: string): SingBoxConfig {
-  const outbound = parseProxyUrl(proxyUrl)
+export interface TunConfigOptions {
+  proxyUrl: string
+  logOutput?: string
+  tunnelOutbound?: SingBoxOutbound
+  ruleSetDir?: string  // directory containing geosite-cn.srs + geoip-cn.srs
+}
+
+export function buildTunConfig(opts: TunConfigOptions): SingBoxConfig {
+  const { proxyUrl, logOutput, tunnelOutbound, ruleSetDir } = opts
+  const proxyOb = parseProxyUrl(proxyUrl)
+
+  // Build outbounds: proxy (+ optional tunnel detour) + direct
+  const outbounds: SingBoxOutbound[] = []
+  if (tunnelOutbound) {
+    // Chain mode: proxy goes through tunnel
+    outbounds.push({ ...proxyOb, tag: 'proxy', detour: 'tunnel' })
+    outbounds.push({ ...tunnelOutbound, tag: 'tunnel' })
+  } else {
+    // Single mode: proxy connects directly
+    outbounds.push({ ...proxyOb, tag: 'proxy' })
+  }
+  outbounds.push({ type: 'direct', tag: 'direct' })
+
+  // CN bypass: geosite-cn/geoip-cn rule sets (pre-bundled .srs files)
+  const hasRuleSet = !!ruleSetDir
+  const ruleSetDefs = hasRuleSet ? [
+    { type: 'local', tag: 'geosite-cn', format: 'binary', path: join(ruleSetDir!, 'geosite-cn.srs') },
+    { type: 'local', tag: 'geoip-cn', format: 'binary', path: join(ruleSetDir!, 'geoip-cn.srs') },
+  ] : []
+
+  // Chain mode: DNS goes through tunnel (VPN), not proxy (residential SOCKS5 may block DNS targets with code=2)
+  // Single mode: DNS goes through proxy as before
+  const dnsDetour = tunnelOutbound ? 'tunnel' : 'proxy'
 
   return {
     log: { level: 'info', timestamp: true, ...(logOutput ? { output: logOutput } : {}) },
     dns: {
       servers: [
-        // Remote DNS: DoH through proxy — works with ALL proxy types (HTTP/SOCKS5/VLESS/Trojan)
-        // HTTP proxy can't forward UDP, so DoH (HTTPS/TCP) is the only universal option.
-        // address_resolver: local-dns resolves dns.google hostname (avoids circular dep)
-        { address: 'https://dns.google/dns-query', tag: 'remote-dns', detour: 'proxy', address_resolver: 'local-dns', strategy: 'ipv4_only' },
-        // Local DNS: resolves proxy server hostname + DoH hostname (must be direct, no proxy)
+        // Remote DNS: DoH — all non-CN domains
+        { address: 'https://dns.google/dns-query', tag: 'remote-dns', detour: dnsDetour, address_resolver: 'local-dns', strategy: 'ipv4_only' },
+        // Local DNS: CN domains + proxy/tunnel server hostname resolution
         { address: '114.114.114.114', tag: 'local-dns', detour: 'direct', strategy: 'ipv4_only' },
       ],
       rules: [
-        // Proxy/DoH server hostname resolution goes direct (avoids circular dependency)
+        // Proxy/tunnel server hostname → local DNS (avoids circular dependency)
         { outbound: 'any', server: 'local-dns' },
+        // CN domains → local DNS (real IP for direct outbound)
+        ...(hasRuleSet ? [{ rule_set: 'geosite-cn', server: 'local-dns' }] : []),
       ],
       final: 'remote-dns',
       independent_cache: true,
@@ -66,22 +144,20 @@ export function buildTunConfig(proxyUrl: string, logOutput?: string): SingBoxCon
         address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
         auto_route: true,
         strict_route: true,
-        stack: 'mixed', // system TCP + gvisor UDP; gvisor intercepts DNS (UDP 53) at L3 before Windows DNS Client sees it. 'system' stack breaks DNS hijack on Windows (Smart Multi-Homed Name Resolution bypasses TUN)
-        // sniff: true — moved to route rule (deprecated in 1.11)
+        stack: 'mixed',
       },
     ],
-    outbounds: [
-      { ...outbound, tag: 'proxy' },
-      { type: 'direct', tag: 'direct' },
-      // 'block' outbound removed — use action:'reject' in route rules (1.11 migration)
-    ],
+    outbounds,
     route: {
       rules: [
-        { action: 'sniff' },                    // replaces inbound sniff:true (1.11)
+        { action: 'sniff' },
         { protocol: 'dns', action: 'hijack-dns' },
-        { ip_version: 6, action: 'reject' },    // block IPv6 to prevent leak
+        { ip_version: 6, action: 'reject' },
         { ip_is_private: true, action: 'route', outbound: 'direct' },
+        // CN traffic → direct (domain match + IP match)
+        ...(hasRuleSet ? [{ rule_set: ['geosite-cn', 'geoip-cn'], action: 'route', outbound: 'direct' }] : []),
       ],
+      ...(ruleSetDefs.length > 0 ? { rule_set: ruleSetDefs } : {}),
       auto_detect_interface: true,
       final: 'proxy',
     },
@@ -120,7 +196,7 @@ export function buildLocalProxyConfig(proxyUrl: string, localPort = 7891): SingB
   }
 }
 
-function parseProxyUrl(url: string): SingBoxOutbound {
+export function parseProxyUrl(url: string): SingBoxOutbound {
   url = url.trim()
   const lower = url.toLowerCase()
 
@@ -144,6 +220,11 @@ function parseProxyUrl(url: string): SingBoxOutbound {
   }
   if (lower.startsWith('hysteria2://') || lower.startsWith('hy2://')) {
     return parseHysteria2(url)
+  }
+
+  // Auto-detect: user:pass@host:port without protocol prefix → treat as HTTP proxy
+  if (url.includes('@') && url.includes(':')) {
+    return parseHttp('http://' + url)
   }
 
   // Fallback: treat as socks5
