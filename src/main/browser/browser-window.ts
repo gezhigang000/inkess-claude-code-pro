@@ -46,6 +46,27 @@ export async function openBrowserWindow(url: string, config: BrowserConfig): Pro
     return { error: 'Network not connected. Please start TUN first.' }
   }
 
+  // Reuse existing browser window if available — navigate instead of opening new window
+  const existing = allBrowserWindows.find(w => !w.isDestroyed())
+  if (existing) {
+    try {
+      const contentView = existing.contentView?.children?.[1] as WebContentsView | undefined
+      if (contentView && !contentView.webContents.isDestroyed()) {
+        contentView.webContents.loadURL(url)
+        // Update address bar
+        const safeUrl = JSON.stringify(url)
+        const toolbarView = existing.contentView?.children?.[0] as WebContentsView | undefined
+        if (toolbarView && !toolbarView.webContents.isDestroyed()) {
+          toolbarView.webContents.executeJavaScript(`document.getElementById('url').value = ${safeUrl}`).catch(() => {})
+        }
+        existing.focus()
+        return { success: true }
+      }
+    } catch {
+      // Fall through to create new window
+    }
+  }
+
   const lang = config.regionEnv.LANG?.split('.')[0]?.replace('_', '-') || 'en-US'
 
   // Create main window
