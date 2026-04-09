@@ -45,6 +45,7 @@ const errorReporter = new ErrorReporter()
 const sessionRecorder = new SessionRecorder()
 const subscriptionManager = new SubscriptionManager()
 errorReporter.setTokenGetter(() => subscriptionManager.getSession()?.token ?? null)
+errorReporter.setUsernameGetter(() => subscriptionManager.getUsername())
 const singBoxManager = new SingBoxManager()
 // Clean up any stale tunnel processes from previous crashes
 singBoxManager.cleanupStaleProcesses().catch(err => {
@@ -333,13 +334,21 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => 
   win.loadURL('https://claude.ai/login')
 
   // Auto-close browser and notify renderer when login succeeds
+  let loginSucceeded = false
   win.webContents.on('did-navigate', (_event, url) => {
     if (url.includes('claude.ai') && !url.includes('login') && !url.includes('accounts')) {
+      loginSucceeded = true
       safeSend('subscription:claudeLoginSuccess')
-      // Close the login browser window after a short delay (let cookies settle)
       setTimeout(() => {
         try { if (!win.isDestroyed()) win.close() } catch { /* ignore */ }
       }, 2000)
+    }
+  })
+
+  // Notify renderer if window is closed without successful login
+  win.on('closed', () => {
+    if (!loginSucceeded) {
+      safeSend('subscription:claudeLoginFailed')
     }
   })
 
@@ -690,7 +699,9 @@ ipcMain.on('pty:resize', (_event, payload) => {
   ptyManager.resize(payload.id, payload.cols, payload.rows)
 })
 
-ipcMain.on('pty:kill', (_event, { id }: { id: string }) => {
+ipcMain.on('pty:kill', (_event, payload: unknown) => {
+  const { id } = (payload || {}) as { id?: string }
+  if (typeof id !== 'string') return
   ptyManager.kill(id)
   statsCollector.sessionClose(id)
   statsCollector.logEvent('tab:close', id)
@@ -759,11 +770,21 @@ ipcMain.handle('session:clearAll', () => sessionRecorder.clearAll())
 
 // IPC: Filesystem helpers (for drag & drop, file preview)
 ipcMain.handle('fs:isDirectory', (_event, path: string) => {
+  if (typeof path !== 'string') return false
+  const resolved = resolve(normalize(path))
+  const home = os.homedir()
+  if (!resolved.startsWith(home + sep) && resolved !== home) return false
   return isValidDirectory(path)
 })
 
 ipcMain.handle('fs:exists', (_event, path: string) => {
-  try { return existsSync(resolve(normalize(path))) } catch { return false }
+  if (typeof path !== 'string') return false
+  try {
+    const resolved = resolve(normalize(path))
+    const home = os.homedir()
+    if (!resolved.startsWith(home + sep) && resolved !== home) return false
+    return existsSync(resolved)
+  } catch { return false }
 })
 
 ipcMain.handle('fs:readFile', (_event, filePath: string, maxSize?: number) => {

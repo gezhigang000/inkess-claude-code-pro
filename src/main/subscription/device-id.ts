@@ -27,7 +27,7 @@ export function getDeviceId(): string {
   // Cache to disk
   try {
     mkdirSync(cacheDir, { recursive: true })
-    writeFileSync(cachePath, id)
+    writeFileSync(cachePath, id, { mode: 0o600 })
   } catch (err) {
     log.warn('Failed to cache device ID:', err)
   }

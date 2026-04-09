@@ -227,6 +227,8 @@ export class SingBoxManager {
    *   true: used by app quit, tun:stop IPC, logout (restore DNS to system default)
    */
   async stop(restoreDns = true): Promise<void> {
+    // Signal any in-progress startTun to abort after its internal stop()
+    if (restoreDns) this._stopRequested = true
     // Mutex: if already stopping, wait for that to finish
     if (this._stopPromise) {
       await this._stopPromise
@@ -310,6 +312,8 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
    * Start sing-box in TUN mode (requires admin/root).
    * Blocks until sing-box is confirmed running or fails.
    */
+  private _stopRequested = false
+
   async startTun(proxyUrl: string): Promise<void> {
     // Mutex: if already starting, await the existing promise
     if (this._startPromise) {
@@ -319,6 +323,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       return
     }
 
+    this._stopRequested = false
     this._startPromise = this._startTunImpl(proxyUrl)
     try {
       const result = await this._startPromise
@@ -346,6 +351,12 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
 
       await this.ensureInstalled()
       await this.stop(false) // stop without restoring DNS (avoid leak window on restart)
+
+      // Check if an external stop() was requested while we were stopping
+      if (this._stopRequested) {
+        log.info(`[sing-box] startTun aborted — stop was requested during startup`)
+        return { error: 'Start cancelled — stop requested' }
+      }
 
       log.info(`[sing-box] building TUN config for proxy: ${proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')}`)
       const logOutput = join(this.singboxDir, 'sing-box.log')
@@ -678,7 +689,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
   // --- Internal start methods ---
 
   private writeConfig(config: SingBoxConfig): void {
-    writeFileSync(this.configPath, JSON.stringify(config, null, 2))
+    writeFileSync(this.configPath, JSON.stringify(config, null, 2), { mode: 0o600 })
   }
 
   private async ensureInstalled(): Promise<void> {

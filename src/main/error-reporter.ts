@@ -29,6 +29,7 @@ export class ErrorReporter {
   private bizQueue: BizErrorEntry[] = []
   private timer: NodeJS.Timeout | null = null
   private tokenGetter: (() => string | null) | null = null
+  private usernameGetter: (() => string | null) | null = null
   private flushing = false
   private bizFlushing = false
 
@@ -51,6 +52,10 @@ export class ErrorReporter {
 
   setTokenGetter(fn: () => string | null): void {
     this.tokenGetter = fn
+  }
+
+  setUsernameGetter(fn: () => string | null): void {
+    this.usernameGetter = fn
   }
 
   /** Queue an error for batch upload */
@@ -85,8 +90,10 @@ export class ErrorReporter {
     return text
       // Redact URLs with credentials (user:pass@host)
       .replace(/:\/\/([^:@\s]+):([^@\s]+)@/g, '://$1:***@')
-      // Redact common token/key patterns
-      .replace(/(token|password|secret|key|authorization)['":\s]*[=:]\s*['"]?[^\s'"}{,]+/gi, '$1=***')
+      // Redact Bearer tokens
+      .replace(/Bearer\s+\S+/gi, 'Bearer ***')
+      // Redact common token/key/password patterns
+      .replace(/(token|password|passwd|pass|secret|key|authorization|credential)['":\s]*[=:]\s*['"]?[^\s'"}{,]+/gi, '$1=***')
   }
 
   /** Upload complete log file */
@@ -148,6 +155,7 @@ export class ErrorReporter {
           errors: batch,
           version: app.getVersion(),
           platform: process.platform,
+          username: this.usernameGetter?.() || undefined,
         }),
         signal: controller.signal,
       }).finally(() => clearTimeout(timer))
@@ -183,6 +191,7 @@ export class ErrorReporter {
           errors: batch,
           version: app.getVersion(),
           platform: process.platform,
+          username: this.usernameGetter?.() || undefined,
         }),
         signal: controller.signal,
       }).finally(() => clearTimeout(timer))

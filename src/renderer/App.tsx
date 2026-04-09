@@ -279,6 +279,7 @@ export function App() {
     setSubscriptionLoggedIn(false)
     setSubscriptionExpiry(null)
     setSubscriptionExitIp('')
+    setSubscriptionTunnelUrl('')
     expiryAtRef.current = null
     setExpiryMinutesRemaining(null)
   }, [])
@@ -300,6 +301,7 @@ export function App() {
   const handleSwitchAccount = useCallback(async () => {
     await window.api.tun.stop()
     await window.api.pty.killAll()
+    window.api.browser.closeAll()
     window.api.claude.clearCredentials()
     window.api.subscription.logout()
     if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null }
@@ -308,6 +310,7 @@ export function App() {
     setSubscriptionLoggedIn(false)
     setSubscriptionExpiry(null)
     setSubscriptionExitIp('')
+    setSubscriptionTunnelUrl('')
     expiryAtRef.current = null
     setExpiryMinutesRemaining(null)
   }, [])

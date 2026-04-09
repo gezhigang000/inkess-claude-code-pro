@@ -205,7 +205,7 @@ export class PtyManager {
       session.onDataCallbacks = []
       session.onExitCallbacks = []
       this.sessions.delete(id)
-      session.process.kill()
+      try { session.process.kill() } catch { /* already exited */ }
       exitCbs.forEach(cb => cb(-1))
     }
   }
