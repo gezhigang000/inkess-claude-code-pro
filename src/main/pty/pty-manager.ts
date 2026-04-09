@@ -80,10 +80,20 @@ export function buildCleanEnv(
     env.SHELL = process.env.SHELL || '/bin/zsh'
   }
   if (process.platform === 'win32') {
-    if (process.env.TEMP) env.TEMP = process.env.TEMP
-    if (process.env.TMP) env.TMP = process.env.TMP
-    if (process.env.USERPROFILE) env.USERPROFILE = process.env.USERPROFILE
-    if (process.env.USERNAME) env.USERNAME = process.env.USERNAME
+    // Windows critical env vars — many programs and node-pty depend on these
+    const WIN_REQUIRED = [
+      'SYSTEMROOT', 'WINDIR', 'COMSPEC',
+      'TEMP', 'TMP',
+      'USERPROFILE', 'USERNAME', 'USERDOMAIN',
+      'APPDATA', 'LOCALAPPDATA',
+      'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMDATA', 'COMMONPROGRAMFILES',
+      'HOMEDRIVE', 'HOMEPATH',
+      'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'OS',
+      'SYSTEMDRIVE',
+    ]
+    for (const key of WIN_REQUIRED) {
+      if (process.env[key]) env[key] = process.env[key]!
+    }
   } else {
     if (process.env.TMPDIR) env.TMPDIR = process.env.TMPDIR
   }
@@ -183,7 +193,9 @@ export class PtyManager {
 
   resize(id: string, cols: number, rows: number): void {
     if (cols < 1 || rows < 1 || !Number.isFinite(cols) || !Number.isFinite(rows)) return
-    this.sessions.get(id)?.process.resize(Math.floor(cols), Math.floor(rows))
+    try {
+      this.sessions.get(id)?.process.resize(Math.floor(cols), Math.floor(rows))
+    } catch { /* PTY already exited — ignore resize */ }
   }
 
   kill(id: string): void {
