@@ -449,7 +449,10 @@ export function App() {
       launchClaude: cliInstalled,
     })
 
-    if (result.error || !result.id) return
+    if (result.error || !result.id) {
+      console.error(`[handleNewTab] pty.create failed:`, result.error || 'no id returned')
+      return
+    }
 
     const id = crypto.randomUUID()
     const title = pathBasename(targetCwd)

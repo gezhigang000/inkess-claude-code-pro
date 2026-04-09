@@ -590,8 +590,10 @@ ipcMain.handle('pty:create', (_event, options: {
   launchClaude?: boolean
 }) => {
   try {
+    log.info(`[pty:create] cwd=${options.cwd} launchClaude=${options.launchClaude}`)
     // Validate cwd exists and is a directory
     if (!isValidDirectory(options.cwd)) {
+      log.error(`[pty:create] invalid cwd: ${options.cwd}`)
       return { error: `Directory does not exist: ${options.cwd}` }
     }
 
