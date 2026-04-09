@@ -5,6 +5,7 @@ type Phase = 'idle' | 'installing' | 'resolving' | 'starting' | 'testing' | 'con
 
 interface TunGateProps {
   proxyUrl: string
+  tunnelUrl?: string
   exitIp: string
   onReady: () => void
   isReconnect: boolean
@@ -14,14 +15,16 @@ interface TunGateProps {
 
 const WORKING_PHASES: Phase[] = ['idle', 'installing', 'resolving', 'starting', 'testing']
 
-export function TunGate({ proxyUrl, exitIp, onReady, isReconnect, onRefreshConfig, onSwitchAccount }: TunGateProps) {
+export function TunGate({ proxyUrl, tunnelUrl, exitIp, onReady, isReconnect, onRefreshConfig, onSwitchAccount }: TunGateProps) {
   const { t } = useI18n()
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [latency, setLatency] = useState<number | null>(null)
   const proxyUrlRef = useRef(proxyUrl)
+  const tunnelUrlRef = useRef(tunnelUrl)
   const connectingRef = useRef(false)
   useEffect(() => { proxyUrlRef.current = proxyUrl }, [proxyUrl])
+  useEffect(() => { tunnelUrlRef.current = tunnelUrl }, [tunnelUrl])
 
   const connect = async () => {
     if (connectingRef.current) return
@@ -100,7 +103,7 @@ export function TunGate({ proxyUrl, exitIp, onReady, isReconnect, onRefreshConfi
       // Start TUN (blocks until tunnel confirmed running or fails)
       setPhase('starting')
       console.log(`[TunGate:${id}] starting TUN...`)
-      const startResult = await window.api.tun.startTun(resolveResult.resolved)
+      const startResult = await window.api.tun.startTun(resolveResult.resolved, tunnelUrlRef.current || undefined)
       console.log(`[TunGate:${id}] startTun result: success=${startResult.success}, error=${startResult.error}`)
       if (!startResult.success) {
         setPhase('failed')
@@ -218,6 +221,23 @@ export function TunGate({ proxyUrl, exitIp, onReady, isReconnect, onRefreshConfi
             )}
             <span>{phaseLabel}</span>
           </div>
+
+          {/* Cancel button — shown during connecting phases */}
+          {isWorking && onSwitchAccount && (
+            <button
+              onClick={async () => {
+                await window.api.tun.stop().catch(() => {})
+                onSwitchAccount()
+              }}
+              style={{
+                padding: '7px 16px', fontSize: 13, fontWeight: 500,
+                background: 'transparent', color: 'var(--text-muted)',
+                border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer',
+              }}
+            >
+              {t('tun.cancel') || 'Cancel'}
+            </button>
+          )}
 
           {/* Error detail box */}
           {isFailed && error && (

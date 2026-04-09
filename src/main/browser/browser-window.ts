@@ -25,6 +25,7 @@ interface BrowserConfig {
   proxyUrl: string
   proxyEnabled: boolean
   tunRunning: boolean
+  accountId: string  // subscription username — browser sessions are isolated per account
   claudeCredentials: { email: string; password: string } | null
   claudeAutoFillScript: (email: string, password: string) => string
 }
@@ -63,6 +64,8 @@ export function closeAllBrowserWindows(): void {
 
   allBrowserWindows.forEach(w => { try { if (!w.isDestroyed()) w.close() } catch { /* ignore */ } })
   allBrowserWindows = []
+  // Clear header handlers so re-opened sessions get fresh Accept-Language for current region
+  sessionsWithHeaderStripping.clear()
 }
 
 export async function openBrowserWindow(url: string, config: BrowserConfig): Promise<{ success?: boolean; error?: string }> {
@@ -298,8 +301,9 @@ function ensureBrowserWindow(config: BrowserConfig): void {
 async function createTab(url: string, config: BrowserConfig): Promise<TabInfo> {
   const tabId = nextTabId++
   const isClaude = /claude\.ai/i.test(url)
-  // Claude tabs share persist:claude, all other tabs share persist:browser (cookies/login shared)
-  const sessionKey = isClaude ? 'persist:claude' : 'persist:browser'
+  // Sessions are isolated per subscription account — switching accounts gets a clean browser
+  const acct = (config.accountId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')
+  const sessionKey = isClaude ? `persist:claude-${acct}` : `persist:browser-${acct}`
   const browserSession = electronSession.fromPartition(sessionKey)
 
   // TUN mode: no session proxy needed (TUN captures all traffic at network level)
@@ -329,20 +333,27 @@ async function createTab(url: string, config: BrowserConfig): Promise<TabInfo> {
   // Strip Client Hints headers (once per session to avoid listener accumulation)
   if (!sessionsWithHeaderStripping.has(sessionKey)) {
     sessionsWithHeaderStripping.add(sessionKey)
+    // Build Accept-Language from region (e.g. 'en-US' → 'en-US,en;q=0.9')
+    const acceptLang = lang.includes('-') ? `${lang},${lang.split('-')[0]};q=0.9` : `${lang};q=0.9`
     view.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
       const headers = { ...details.requestHeaders }
+      // Strip Client Hints
       for (const key of Object.keys(headers)) {
         if (key.toLowerCase().startsWith('sec-ch-')) delete headers[key]
       }
+      // Override Accept-Language to match region (prevents Chinese locale leaking)
+      headers['Accept-Language'] = acceptLang
       callback({ requestHeaders: headers })
     })
   }
 
-  // Fingerprint masking
+  // Fingerprint masking + language injection (dom-ready = before page JS runs)
   const fpProfile = FINGERPRINT_PROFILES[config.region] || FINGERPRINT_PROFILES.default
   const fpScript = buildFingerprintMaskScript(fpProfile)
   view.webContents.on('dom-ready', () => {
     view.webContents.executeJavaScript(fpScript).catch(() => {})
+    // Inject navigator.language early (before page JS reads it)
+    injectRegionMasking(view, config.regionEnv, lang)
   })
 
   // Set language header + mask Electron/app from User-Agent

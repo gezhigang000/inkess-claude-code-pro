@@ -20,6 +20,7 @@ import { SubscriptionManager } from './subscription/subscription-manager'
 import { getDeviceId } from './subscription/device-id'
 import { fetchSubscription, detectRegion } from './proxy/subscription'
 import { parseProxyUrl } from './proxy/sing-box-config'
+import { buildFingerprintMaskScript, FINGERPRINT_PROFILES } from './browser/fingerprint-mask'
 import { SingBoxManager } from './proxy/sing-box-manager'
 import { StatsCollector } from './stats/stats-collector'
 import { BrowserInterceptor } from './browser/browser-interceptor'
@@ -27,6 +28,9 @@ import { openBrowserWindow, openBrowserEmpty, closeAllBrowserWindows } from './b
 
 // Disable IPv6 in Chromium to prevent IPv6 traffic bypassing TUN proxy
 app.commandLine.appendSwitch('disable-ipv6')
+// Set Chromium locale to en-US — prevents Chinese locale leaking through internal pages
+// Per-window locale is further refined via JS injection based on actual region
+app.commandLine.appendSwitch('lang', 'en-US')
 
 process.on('uncaughtException', (err) => log.error('Uncaught:', err))
 process.on('unhandledRejection', (reason) => log.error('Unhandled:', reason))
@@ -235,12 +239,14 @@ ipcMain.handle('subscription:getSession', () => {
 })
 
 ipcMain.handle('subscription:logout', async () => {
+  const username = subscriptionManager.getUsername() || 'default'
   subscriptionManager.logout()
   claudeCredentials = null
-  // Clear Claude browser session cookies on logout
+  // Clear this account's browser sessions + login session
   const { session: electronSession } = require('electron') as typeof import('electron')
   try {
-    await electronSession.fromPartition('persist:claude').clearStorageData()
+    await electronSession.fromPartition(`persist:claude-${username}`).clearStorageData()
+    await electronSession.fromPartition(`persist:browser-${username}`).clearStorageData()
     await electronSession.fromPartition('persist:claude-login').clearStorageData().catch(() => {})
   } catch { /* ignore */ }
 })
@@ -279,14 +285,34 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => 
     }
   })
 
-  // Auto-fill login form when page loads
-  const safeEmail = JSON.stringify(email)
-  const safePass = JSON.stringify(password)
+  // === Full browser hardening (same as built-in browser) ===
+  // WebRTC IP leak prevention
+  win.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
 
-  win.webContents.on('did-finish-load', () => {
-    const url = win.webContents.getURL()
+  // User-Agent: strip Electron/app identifiers
+  const cleanUA = win.webContents.getUserAgent()
+    .replace(/\s*Electron\/\S+/g, '')
+    .replace(/\s*inkess-claude-code-pro\/\S+/g, '')
+  win.webContents.setUserAgent(cleanUA)
 
-    // Override language/timezone
+  // Accept-Language + Client Hints headers
+  const acceptLang = lang.includes('-') ? `${lang},${lang.split('-')[0]};q=0.9` : `${lang};q=0.9`
+  loginSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers = { ...details.requestHeaders }
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase().startsWith('sec-ch-')) delete headers[key]
+    }
+    headers['Accept-Language'] = acceptLang
+    callback({ requestHeaders: headers })
+  })
+
+  // Fingerprint masking (canvas/WebGL/audio/timezone/locale)
+  const fpProfile = FINGERPRINT_PROFILES[proxySettings.region] || FINGERPRINT_PROFILES.default
+  const fpScript = buildFingerprintMaskScript(fpProfile)
+
+  win.webContents.on('dom-ready', () => {
+    win.webContents.executeJavaScript(fpScript).catch(() => {})
+    // navigator.language/languages injection
     if (regionEnv.LANG) {
       const safeLang = JSON.stringify(lang)
       win.webContents.executeJavaScript(`
@@ -294,7 +320,11 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => 
         Object.defineProperty(navigator, 'languages', { get: () => [${safeLang}, 'en'] });
       `).catch(() => {})
     }
+  })
 
+  // Auto-fill login form when page loads
+  win.webContents.on('did-finish-load', () => {
+    const url = win.webContents.getURL()
     if (url.includes('claude.ai/login') || url.includes('clerk') || url.includes('accounts.anthropic.com')) {
       win.webContents.executeJavaScript(claudeAutoFillScript(email, password)).catch(() => {})
     }
@@ -851,6 +881,7 @@ function getBrowserConfig() {
     proxyUrl: proxySettings.url,
     proxyEnabled: proxySettings.enabled,
     tunRunning: sbInfo.tunRunning,
+    accountId: subscriptionManager.getUsername() || 'default',
     claudeCredentials,
     claudeAutoFillScript,
   }

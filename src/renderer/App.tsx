@@ -73,6 +73,7 @@ export function App() {
   const [subscriptionUsername, setSubscriptionUsername] = useState<string | null>(null)
   const [subscriptionExpiry, setSubscriptionExpiry] = useState<string | null>(null)
   const [subscriptionExitIp, setSubscriptionExitIp] = useState<string>('')
+  const [subscriptionTunnelUrl, setSubscriptionTunnelUrl] = useState<string>('')
   const [subscriptionPlan, setSubscriptionPlan] = useState<string>('monthly')
   const [expiryMinutesRemaining, setExpiryMinutesRemaining] = useState<number | null>(null)
   const expiryAtRef = useRef<string | null>(null)
@@ -197,6 +198,7 @@ export function App() {
         if (region) store.setProxyRegion(region)
       }
       setSubscriptionExitIp(status?.exitIp || session.session?.exitIp || '')
+      setSubscriptionTunnelUrl(session.session?.tunnelUrl || '')
       // Check if subscription already expired before proceeding
       const expiresAt = status?.expiresAt || session.session?.expiresAt
       if (expiresAt) {
@@ -839,6 +841,7 @@ export function App() {
       {subscriptionLoggedIn && !tunOk && (
         <TunGate
           proxyUrl={proxyUrl}
+          tunnelUrl={subscriptionTunnelUrl}
           exitIp={subscriptionExitIp}
           isReconnect={tunWasOkRef.current}
           onReady={() => {
@@ -849,7 +852,10 @@ export function App() {
               checkCliAndProceed()
               window.api.browser.open('https://browserleaks.com/ip').catch(() => {})
             }
-            // Reconnect: just restore tunOk, don't re-check CLI or open browser
+            // Run network diagnostics after TUN is ready
+            window.api.tun.diagnostics().then(r => {
+              console.log('[App] Network diagnostics:', JSON.stringify(r, null, 2))
+            }).catch(() => {})
           }}
           onRefreshConfig={handleRefreshConfig}
           onSwitchAccount={handleSwitchAccount}

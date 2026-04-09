@@ -17,6 +17,9 @@ export function buildFingerprintMaskScript(options: {
   screenHeight?: number
   colorDepth?: number
   pixelRatio?: number
+  timezone?: string       // e.g. 'America/New_York'
+  timezoneOffset?: number // minutes (e.g. 300 for UTC-5, -480 for UTC+8)
+  locale?: string         // e.g. 'en-US'
 } = {}): string {
   const {
     platform = 'Win32',
@@ -26,6 +29,9 @@ export function buildFingerprintMaskScript(options: {
     screenHeight = 1080,
     colorDepth = 24,
     pixelRatio = 1,
+    timezone = 'America/New_York',
+    timezoneOffset = 300,
+    locale = 'en-US',
   } = options
 
   return `(function() {
@@ -183,6 +189,81 @@ export function buildFingerprintMaskScript(options: {
       return Promise.resolve([]);
     };
   }
+
+  // === Timezone masking (Critical: getTimezoneOffset + Date.toString) ===
+  var __targetOffset = ${timezoneOffset};
+  var __targetTz = ${JSON.stringify(timezone)};
+  var __targetLocale = ${JSON.stringify(locale)};
+
+  // Override getTimezoneOffset — most common timezone detection method
+  // Must handle DST: compute correct offset for each date instance (not a fixed value)
+  var __origGetTZO = Date.prototype.getTimezoneOffset;
+  Date.prototype.getTimezoneOffset = function() {
+    try {
+      var fmt = new __origDTF('en-US', { timeZone: __targetTz, timeZoneName: 'longOffset' });
+      var parts = fmt.formatToParts(this);
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i].type === 'timeZoneName') {
+          // Parse "GMT-05:00" or "GMT+08:00" → offset in minutes
+          var m = parts[i].value.match(/GMT([+-])(\\d{2}):(\\d{2})/);
+          if (m) return (m[1] === '+' ? -1 : 1) * (parseInt(m[2]) * 60 + parseInt(m[3]));
+        }
+      }
+    } catch(e) {}
+    return __targetOffset; // fallback
+  };
+
+  // Override Date.toString/toTimeString — leaks "China Standard Time"
+  var __origToString = Date.prototype.toString;
+  var __origToTimeString = Date.prototype.toTimeString;
+  function __fakeDateStr(d) {
+    try {
+      var fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: __targetTz, weekday: 'short', year: 'numeric', month: 'short',
+        day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false, timeZoneName: 'long'
+      });
+      var parts = fmt.formatToParts(d);
+      var get = function(t) { for (var i=0;i<parts.length;i++) if(parts[i].type===t) return parts[i].value; return ''; };
+      var sign = __targetOffset <= 0 ? '+' : '-';
+      var absOff = Math.abs(__targetOffset);
+      var offStr = 'GMT' + sign + String(Math.floor(absOff/60)).padStart(2,'0') + String(absOff%60).padStart(2,'0');
+      return get('weekday') + ' ' + get('month') + ' ' + get('day') + ' ' + get('year') + ' ' +
+             get('hour') + ':' + get('minute') + ':' + get('second') + ' ' + offStr + ' (' + get('timeZoneName') + ')';
+    } catch(e) { return __origToString.call(d); }
+  }
+  Date.prototype.toString = function() { return __fakeDateStr(this); };
+  Date.prototype.toTimeString = function() {
+    var s = __fakeDateStr(this);
+    var idx = s.indexOf(' ', s.indexOf(' ', s.indexOf(' ', s.indexOf(' ') + 1) + 1) + 1);
+    return idx > 0 ? s.slice(idx + 1) : __origToTimeString.call(this);
+  };
+
+  // === Intl locale masking ===
+  // Intl.NumberFormat — prevents locale leak via number formatting
+  var __origNF = Intl.NumberFormat;
+  Intl.NumberFormat = function(locales, opts) {
+    return new __origNF(locales || __targetLocale, opts);
+  };
+  Intl.NumberFormat.prototype = __origNF.prototype;
+  Intl.NumberFormat.supportedLocalesOf = __origNF.supportedLocalesOf.bind(__origNF);
+
+  // Intl.Collator — prevents locale leak via string sorting
+  var __origCollator = Intl.Collator;
+  Intl.Collator = function(locales, opts) {
+    return new __origCollator(locales || __targetLocale, opts);
+  };
+  Intl.Collator.prototype = __origCollator.prototype;
+  Intl.Collator.supportedLocalesOf = __origCollator.supportedLocalesOf.bind(__origCollator);
+
+  // Intl.DateTimeFormat — force locale + timezone (enhances existing injectRegionMasking)
+  var __origDTF = Intl.DateTimeFormat;
+  Intl.DateTimeFormat = function(locales, opts) {
+    return new __origDTF(locales || __targetLocale, Object.assign({}, opts, { timeZone: (opts && opts.timeZone) || __targetTz }));
+  };
+  Intl.DateTimeFormat.prototype = __origDTF.prototype;
+  Intl.DateTimeFormat.supportedLocalesOf = __origDTF.supportedLocalesOf.bind(__origDTF);
+  Object.defineProperty(Intl.DateTimeFormat, Symbol.hasInstance, { value: function(i) { return i instanceof __origDTF; } });
 })();`
 }
 
@@ -193,18 +274,20 @@ export const FINGERPRINT_PROFILES: Record<string, {
   deviceMemory: number
   screenWidth: number
   screenHeight: number
+  timezone: string
+  timezoneOffset: number  // minutes: positive = west of UTC (US), negative = east (Asia)
+  locale: string
 }> = {
-  // Default: generic Windows profile (most common globally)
-  default: { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  // Keys MUST be lowercase to match REGION_ENV keys (us, jp, gb, etc.)
-  us:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  usw: { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  gb:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  de:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  jp:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  kr:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  sg:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  hk:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  tw:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
-  au:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080 },
+  // Default: generic US Windows profile
+  default: { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080, timezone: 'America/New_York', timezoneOffset: 300, locale: 'en-US' },
+  us:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080, timezone: 'America/New_York', timezoneOffset: 300, locale: 'en-US' },
+  usw: { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080, timezone: 'America/Los_Angeles', timezoneOffset: 480, locale: 'en-US' },
+  gb:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080, timezone: 'Europe/London', timezoneOffset: 0, locale: 'en-GB' },
+  de:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080, timezone: 'Europe/Berlin', timezoneOffset: -60, locale: 'de-DE' },
+  jp:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080, timezone: 'Asia/Tokyo', timezoneOffset: -540, locale: 'ja-JP' },
+  kr:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080, timezone: 'Asia/Seoul', timezoneOffset: -540, locale: 'ko-KR' },
+  sg:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080, timezone: 'Asia/Singapore', timezoneOffset: -480, locale: 'en-SG' },
+  hk:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080, timezone: 'Asia/Hong_Kong', timezoneOffset: -480, locale: 'en-HK' },
+  tw:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080, timezone: 'Asia/Taipei', timezoneOffset: -480, locale: 'zh-TW' },
+  au:  { platform: 'Win32', cpuCores: 8, deviceMemory: 8, screenWidth: 1920, screenHeight: 1080, timezone: 'Australia/Sydney', timezoneOffset: -600, locale: 'en-AU' },
 }

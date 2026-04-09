@@ -5,19 +5,17 @@ import { execSync, execFile, spawn, type ChildProcess } from 'child_process'
 import { promisify } from 'util'
 import * as os from 'os'
 import log from '../logger'
-import { buildTunConfig, buildLocalProxyConfig, type SingBoxConfig } from './sing-box-config'
+import { buildTunConfig, buildLocalProxyConfig, type SingBoxConfig, type SingBoxOutbound, type TunConfigOptions } from './sing-box-config'
 import { fetchWithTimeout } from '../utils/fetch'
 
 const execFileAsync = promisify(execFile)
 
-// DNS server to set via scutil — use 8.8.8.8 (Google DNS).
-// When TUN is up, DNS queries to 8.8.8.8 route through TUN,
-// where sing-box hijack-dns intercepts them and resolves via proxy.
-// Using 8.8.8.8 instead of a fake IP so DNS still works even if hijack-dns
-// has a brief gap during TUN startup.
+// DNS server to set via scutil — any routable IP works because sing-box
+// hijack-dns intercepts ALL DNS queries (UDP 53) at the route level.
+// FakeIP returns instant fake IPs; real resolution happens on the proxy server.
 const SYSTEM_DNS_OVERRIDE = '8.8.8.8'
 
-const SINGBOX_VERSION = '1.11.0'
+const SINGBOX_VERSION = '1.11.15'
 const SINGBOX_DOWNLOAD_BASE = 'https://inkess-install-file.oss-cn-beijing.aliyuncs.com/singbox-mirror'
 
 type SingBoxMode = 'tun' | 'local-proxy' | 'off'
@@ -45,6 +43,7 @@ export class SingBoxManager {
   private _interfaceMonitor: ReturnType<typeof setInterval> | null = null
   private _baselineInterfaces: Set<string> = new Set()
   private _onInterfaceAlert: ((newInterfaces: string[]) => void) | null = null
+  private _baselineTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor() {
     this.singboxDir = join(app.getPath('userData'), 'sing-box')
@@ -73,8 +72,20 @@ export class SingBoxManager {
     return 'linux-amd64'
   }
 
+  private get versionMarkerPath(): string {
+    return join(this.singboxDir, '.version')
+  }
+
   isInstalled(): boolean {
     return existsSync(this.binaryPath)
+  }
+
+  /** Check if installed version matches expected version */
+  private isVersionMatch(): boolean {
+    try {
+      const marker = readFileSync(this.versionMarkerPath, 'utf-8').trim()
+      return marker === SINGBOX_VERSION
+    } catch { return false }
   }
 
   // --- Process lifecycle helpers ---
@@ -317,6 +328,18 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     }
   }
 
+  private _tunnelOutbound: SingBoxOutbound | undefined
+
+  /** Set tunnel outbound for chain proxy mode (call before startTun) */
+  setTunnelOutbound(outbound: SingBoxOutbound | undefined): void {
+    this._tunnelOutbound = outbound
+    if (outbound) {
+      log.info(`[sing-box] tunnel outbound set: type=${outbound.type}, server=${outbound.server}:${outbound.server_port}`)
+    } else {
+      log.info(`[sing-box] tunnel outbound cleared (single proxy mode)`)
+    }
+  }
+
   private async _startTunImpl(proxyUrl: string): Promise<{ success?: boolean; error?: string }> {
     try {
       this.reconcileStatus()
@@ -326,9 +349,17 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
 
       log.info(`[sing-box] building TUN config for proxy: ${proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')}`)
       const logOutput = join(this.singboxDir, 'sing-box.log')
-      const config = buildTunConfig(proxyUrl, logOutput)
+      // Resolve rule-set directory (pre-bundled geosite-cn.srs + geoip-cn.srs)
+      const ruleSetDir = join(process.resourcesPath, 'rule-set')
+      const config = buildTunConfig({
+        proxyUrl,
+        logOutput,
+        tunnelOutbound: this._tunnelOutbound,
+        ruleSetDir: existsSync(join(ruleSetDir, 'geosite-cn.srs')) ? ruleSetDir : undefined,
+      })
       this.writeConfig(config)
-      log.info(`[sing-box] config written: stack=${config.inbounds[0]?.stack}, dns=${config.dns.servers.map(s => s.tag + ':' + s.address).join(', ')}`)
+      const mode = this._tunnelOutbound ? 'chain (tunnel → proxy)' : 'single proxy'
+      log.info(`[sing-box] config written: mode=${mode}, stack=${config.inbounds[0]?.stack}, dns=${config.dns.servers.map(s => s.tag + ':' + s.address).join(', ')}`)
       log.info(`[sing-box] outbound: type=${config.outbounds[0]?.type}, server=${config.outbounds[0]?.server}:${config.outbounds[0]?.server_port}, username=${config.outbounds[0]?.username ? 'set' : 'none'}`)
 
       this._mode = 'tun'
@@ -412,29 +443,41 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     this.stopInterfaceMonitor()
     this._onInterfaceAlert = onAlert
 
-    // Capture baseline: all current network interfaces
-    this._baselineInterfaces = new Set(Object.keys(os.networkInterfaces()))
-    log.info(`[sing-box] interface monitor started, baseline: ${[...this._baselineInterfaces].filter(i => /^(utun|tun)/.test(i)).join(', ') || 'none'}`)
+    // Delay baseline capture by 5s — sing-box TUN interface may not appear immediately
+    // after PID confirmed. Without delay, sing-box's own utun is misdetected as "external VPN".
+    const BASELINE_DELAY = 5000
+    const POLL_INTERVAL = 10000
 
-    this._interfaceMonitor = setInterval(() => {
-      if (this._status !== 'running') return
-      const current = Object.keys(os.networkInterfaces())
-      const newTunInterfaces = current.filter(name =>
-        !this._baselineInterfaces.has(name) && /^(utun|tun|wintun)/i.test(name)
-      )
-      if (newTunInterfaces.length > 0) {
-        log.warn(`[sing-box] new TUN interface(s) detected: ${newTunInterfaces.join(', ')}`)
-        this._onInterfaceAlert?.(newTunInterfaces)
-        // Update baseline so we don't alert repeatedly for the same interface
-        for (const name of newTunInterfaces) {
-          this._baselineInterfaces.add(name)
+    const baselineTimer = setTimeout(() => {
+      this._baselineInterfaces = new Set(Object.keys(os.networkInterfaces()))
+      log.info(`[sing-box] interface monitor started, baseline: ${[...this._baselineInterfaces].filter(i => /^(utun|tun)/.test(i)).join(', ') || 'none'}`)
+
+      this._interfaceMonitor = setInterval(() => {
+        if (this._status !== 'running') return
+        const current = Object.keys(os.networkInterfaces())
+        const newTunInterfaces = current.filter(name =>
+          !this._baselineInterfaces.has(name) && /^(utun|tun|wintun)/i.test(name)
+        )
+        if (newTunInterfaces.length > 0) {
+          log.warn(`[sing-box] new TUN interface(s) detected: ${newTunInterfaces.join(', ')}`)
+          this._onInterfaceAlert?.(newTunInterfaces)
+          for (const name of newTunInterfaces) {
+            this._baselineInterfaces.add(name)
+          }
         }
-      }
-    }, 10000)
+      }, POLL_INTERVAL)
+    }, BASELINE_DELAY)
+
+    // Store timer ref so stopInterfaceMonitor can clear it
+    this._baselineTimer = baselineTimer
   }
 
   /** Stop interface monitor. */
   stopInterfaceMonitor(): void {
+    if (this._baselineTimer) {
+      clearTimeout(this._baselineTimer)
+      this._baselineTimer = null
+    }
     if (this._interfaceMonitor) {
       clearInterval(this._interfaceMonitor)
       this._interfaceMonitor = null
@@ -490,6 +533,61 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       this._latencyMs = null
       return { success: false, error: (err as Error).message }
     }
+  }
+
+  /**
+   * Run network diagnostics — tests each hop to identify where latency comes from.
+   * Returns timing for: DNS, direct connection, proxy connection, proxy DNS+connect.
+   */
+  async runDiagnostics(): Promise<Record<string, unknown>> {
+    const results: Record<string, unknown> = { timestamp: new Date().toISOString(), tunStatus: this._status }
+
+    // 1. DNS resolution speed (local DNS)
+    try {
+      const start = Date.now()
+      const res = await fetchWithTimeout('http://114.114.114.114', {}, 5000).catch(() => null)
+      results.localDns = { ms: Date.now() - start, ok: !!res }
+    } catch { results.localDns = { ms: -1, ok: false } }
+
+    // 2. Direct connection to domestic site (should NOT go through proxy)
+    try {
+      const start = Date.now()
+      const res = await fetchWithTimeout('https://www.baidu.com', {}, 10000)
+      results.directDomestic = { ms: Date.now() - start, status: res.status }
+    } catch (e) { results.directDomestic = { ms: -1, error: (e as Error).message } }
+
+    // 3. Proxy connection — whitelisted domain (should go through proxy)
+    try {
+      const start = Date.now()
+      const res = await fetchWithTimeout('https://api.anthropic.com', {}, 15000)
+      results.proxyForeign = { ms: Date.now() - start, status: res.status }
+    } catch (e) { results.proxyForeign = { ms: -1, error: (e as Error).message } }
+
+    // 4. Exit IP check (through proxy)
+    try {
+      const start = Date.now()
+      const res = await fetchWithTimeout('https://ip.oxylabs.io/location', {}, 15000)
+      const data = await res.json()
+      results.exitIp = { ms: Date.now() - start, ip: data.ip, status: res.status }
+    } catch (e) { results.exitIp = { ms: -1, error: (e as Error).message } }
+
+    // 5. Google (through proxy)
+    try {
+      const start = Date.now()
+      const res = await fetchWithTimeout('https://www.google.com', {}, 15000)
+      results.proxyGoogle = { ms: Date.now() - start, status: res.status }
+    } catch (e) { results.proxyGoogle = { ms: -1, error: (e as Error).message } }
+
+    // 6. Read recent sing-box log (last 20 lines)
+    try {
+      const logPath = join(this.singboxDir, 'sing-box.log')
+      const content = readFileSync(logPath, 'utf-8')
+      const lines = content.trim().split('\n')
+      results.recentLog = lines.slice(-20)
+    } catch { results.recentLog = [] }
+
+    log.info(`[diagnostics] results: ${JSON.stringify(results, null, 2)}`)
+    return results
   }
 
   // --- Install ---
@@ -568,7 +666,8 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     onProgress?.('Verifying...', 0.9)
     try {
       execSync(`"${this.binaryPath}" version`, { timeout: 5000, encoding: 'utf-8' })
-      log.info('SingBox: installed successfully')
+      writeFileSync(this.versionMarkerPath, SINGBOX_VERSION)
+      log.info(`SingBox: installed v${SINGBOX_VERSION} successfully`)
     } catch (err) {
       throw new Error(`sing-box verification failed: ${(err as Error).message}`)
     }
@@ -583,7 +682,8 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
   }
 
   private async ensureInstalled(): Promise<void> {
-    if (!this.isInstalled()) {
+    if (!this.isInstalled() || !this.isVersionMatch()) {
+      log.info(`SingBox: need install/upgrade to ${SINGBOX_VERSION}`)
       await this.install()
     }
   }
@@ -635,8 +735,8 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       // This prevents process leak when before-quit cleanup fails.
       const parentPid = process.pid
       // DNS setup (runs as root inside osascript):
-      // Set system DNS to 198.18.0.2 so macOS mDNSResponder sends DNS through TUN
-      // where sing-box hijack-dns intercepts and resolves via proxy
+      // Set system DNS so macOS mDNSResponder sends DNS through TUN
+      // where sing-box hijack-dns intercepts → FakeIP returns instant fake IP
       const dnsSetup = `scutil <<DNSEOF
 d.init
 d.add ServerAddresses * ${SYSTEM_DNS_OVERRIDE}

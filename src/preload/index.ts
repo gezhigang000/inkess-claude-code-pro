@@ -164,9 +164,10 @@ const api = {
       internetReachable: boolean | null; latencyMs: number | null
     }>,
     install: () => ipcRenderer.invoke('tun:install') as Promise<{ success: boolean; error?: string }>,
-    startTun: (proxyUrl: string) => ipcRenderer.invoke('tun:startTun', proxyUrl) as Promise<{ success: boolean; error?: string }>,
+    startTun: (proxyUrl: string, tunnelUrl?: string) => ipcRenderer.invoke('tun:startTun', proxyUrl, tunnelUrl) as Promise<{ success: boolean; error?: string }>,
     stop: () => ipcRenderer.invoke('tun:stop') as Promise<{ success: boolean }>,
     testConnectivity: (exitIp?: string) => ipcRenderer.invoke('tun:testConnectivity', exitIp) as Promise<{ success: boolean; latency?: number; error?: string; actualIp?: string }>,
+    diagnostics: () => ipcRenderer.invoke('tun:diagnostics') as Promise<Record<string, unknown>>,
     onInstallProgress: (callback: (event: { step: string; pct: number }) => void) => {
       const listener = (_: unknown, event: { step: string; pct: number }) => callback(event)
       ipcRenderer.on('tun:installProgress', listener)
@@ -212,7 +213,7 @@ const api = {
       status: string; plan?: string; expiresAt: string; daysRemaining: number; minutesRemaining?: number; proxyUrl?: string; proxyRegion?: string; exitIp?: string
     } | null>,
     getSession: () => ipcRenderer.invoke('subscription:getSession') as Promise<{
-      isLoggedIn: boolean; username: string | null; session: { plan?: string; expiresAt: string; proxyUrl: string; proxyRegion: string; exitIp?: string } | null
+      isLoggedIn: boolean; username: string | null; session: { plan?: string; expiresAt: string; proxyUrl: string; tunnelUrl?: string; proxyRegion: string; exitIp?: string } | null
     }>,
     logout: () => ipcRenderer.invoke('subscription:logout'),
     autoLoginClaude: (email: string, password: string) =>

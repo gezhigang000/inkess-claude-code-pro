@@ -12,6 +12,7 @@ export interface SubscriptionConfig {
   claudeEmail: string
   claudePassword: string
   proxyUrl: string
+  tunnelUrl?: string
   proxyRegion: string
   exitIp?: string
   expiresAt: string
@@ -38,6 +39,7 @@ interface StoredSession {
   plan: string
   expiresAt: string
   proxyUrl: string
+  tunnelUrl?: string
   proxyRegion: string
   exitIp: string
 }
@@ -158,6 +160,7 @@ export class SubscriptionManager {
         plan: config.plan || 'monthly',
         expiresAt: config.expiresAt,
         proxyUrl: config.proxyUrl,
+        tunnelUrl: config.tunnelUrl || undefined,
         proxyRegion: config.proxyRegion,
         exitIp,
       })
