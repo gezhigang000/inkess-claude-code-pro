@@ -138,7 +138,12 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
       if (!modifier) return true
 
       if (event.type === 'keydown' && event.key === 'c' && term.hasSelection()) {
-        navigator.clipboard.writeText(term.getSelection())
+        // xterm pads each line to terminal width with spaces; when a long URL
+        // wraps across lines, getSelection() includes trailing spaces at wrap
+        // points. Strip them so copied URLs/text stay clean.
+        const raw = term.getSelection()
+        const cleaned = raw.replace(/ *\n/g, '')
+        navigator.clipboard.writeText(cleaned)
         return false
       }
 
