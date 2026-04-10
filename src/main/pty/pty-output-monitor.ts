@@ -88,7 +88,10 @@ export class PtyOutputMonitor extends EventEmitter {
     // Detect URLs that Claude Code tries to auto-open (e.g. OAuth login)
     // On Windows, `start` is a cmd builtin that can't be intercepted via PATH,
     // so we detect the URL in PTY output and open it in the built-in browser.
-    const urlMatches = cleanData.matchAll(/https?:\/\/[^\s"'<>)\]]+/g)
+    // Use the accumulated buffer (not just current chunk) because long URLs
+    // like OAuth URLs may arrive split across multiple PTY data events.
+    const cleanBuffer = PtyOutputMonitor.stripAnsi(session.buffer)
+    const urlMatches = cleanBuffer.matchAll(/https?:\/\/[^\s"'<>)\]]+/g)
     for (const urlMatch of urlMatches) {
       const url = urlMatch[0]
       // Only intercept URLs that look like they should open in a browser

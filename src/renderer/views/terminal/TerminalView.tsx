@@ -138,12 +138,32 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
       if (!modifier) return true
 
       if (event.type === 'keydown' && event.key === 'c' && term.hasSelection()) {
-        // xterm pads each line to terminal width with spaces; when a long URL
-        // wraps across lines, getSelection() includes trailing spaces at wrap
-        // points. Strip them so copied URLs/text stay clean.
-        const raw = term.getSelection()
-        const cleaned = raw.replace(/ *\n/g, '')
-        navigator.clipboard.writeText(cleaned)
+        // Rebuild selection text using buffer API to handle wrapped lines correctly.
+        // xterm.js getSelection() inserts \n at every terminal row boundary, even for
+        // soft-wrapped lines, causing URLs/paths that span rows to contain spaces/newlines.
+        // Fix: use IBufferLine.isWrapped to detect soft wraps and join them without \n,
+        // and translateToString(true) to trim trailing whitespace padding.
+        const sel = term.getSelectionPosition()
+        if (sel) {
+          const buf = term.buffer.active
+          const parts: string[] = []
+          for (let y = sel.start.y; y <= sel.end.y; y++) {
+            const line = buf.getLine(y)
+            if (!line) continue
+            const startCol = y === sel.start.y ? sel.start.x : 0
+            const endCol = y === sel.end.y ? sel.end.x : undefined
+            const text = line.translateToString(true, startCol, endCol)
+            // If this line is a soft-wrap continuation, join without newline
+            if (parts.length > 0 && line.isWrapped) {
+              parts[parts.length - 1] += text
+            } else {
+              parts.push(text)
+            }
+          }
+          navigator.clipboard.writeText(parts.join('\n'))
+        } else {
+          navigator.clipboard.writeText(term.getSelection())
+        }
         return false
       }
 
