@@ -94,6 +94,7 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
   useEffect(() => {
     if (!containerRef.current) return
 
+    const isWindows = window.api.platform === 'win32'
     const term = new Terminal({
       theme: getTermTheme(),
       fontFamily: '"Menlo", "Consolas", "DejaVu Sans Mono", "Courier New", monospace',
@@ -101,7 +102,10 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
       lineHeight: 1.5,
       cursorBlink: true,
       cursorStyle: 'block',
-      allowProposedApi: true
+      allowProposedApi: true,
+      // Tell xterm.js about Windows ConPTY so it correctly detects wrapped lines.
+      // Without this, isWrapped is never true on Windows, breaking copy + link detection.
+      ...(isWindows ? { windowsPty: { backend: 'conpty' as const, buildNumber: 19041 } } : {}),
     })
 
     const fitAddon = new FitAddon()

@@ -98,6 +98,7 @@ export function HistoryView({ onClose, onOpenProject }: HistoryViewProps) {
   useEffect(() => {
     if (!termContainerRef.current) return
 
+    const isWindows = window.api.platform === 'win32'
     const term = new Terminal({
       theme: getTermTheme(),
       fontFamily: '"Menlo", "Consolas", "DejaVu Sans Mono", "Courier New", monospace',
@@ -107,6 +108,7 @@ export function HistoryView({ onClose, onOpenProject }: HistoryViewProps) {
       disableStdin: true,
       allowProposedApi: true,
       scrollback: 10000,
+      ...(isWindows ? { windowsPty: { backend: 'conpty' as const, buildNumber: 19041 } } : {}),
     })
 
     const fitAddon = new FitAddon()
