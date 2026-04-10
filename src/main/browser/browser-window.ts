@@ -28,6 +28,7 @@ interface BrowserConfig {
   accountId: string  // subscription username — browser sessions are isolated per account
   claudeCredentials: { email: string; password: string } | null
   claudeAutoFillScript: (email: string, password: string) => string
+  localStorageImportScript?: string | null  // One-time localStorage injection for claude.ai (from BrowserSync)
 }
 
 interface TabInfo {
@@ -350,10 +351,17 @@ async function createTab(url: string, config: BrowserConfig): Promise<TabInfo> {
   // Fingerprint masking + language injection (dom-ready = before page JS runs)
   const fpProfile = FINGERPRINT_PROFILES[config.region] || FINGERPRINT_PROFILES.default
   const fpScript = buildFingerprintMaskScript(fpProfile)
+  let localStorageInjected = false
   view.webContents.on('dom-ready', () => {
     view.webContents.executeJavaScript(fpScript).catch(() => {})
     // Inject navigator.language early (before page JS reads it)
     injectRegionMasking(view, config.regionEnv, lang)
+    // One-time localStorage import from BrowserSync (only first claude.ai tab load)
+    if (isClaude && !localStorageInjected && config.localStorageImportScript) {
+      localStorageInjected = true
+      view.webContents.executeJavaScript(config.localStorageImportScript).catch(() => {})
+      log.info('[BrowserSync] localStorage injected into claude.ai')
+    }
   })
 
   // Set language header + mask Electron/app from User-Agent
