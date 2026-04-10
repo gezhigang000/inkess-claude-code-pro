@@ -990,6 +990,14 @@ ptyMonitor.on('activity', (event: PtyActivityEvent) => {
     } catch { /* ignore malformed payload */ }
   }
 
+  // Auto-open detected URLs in built-in browser (works on all platforms,
+  // especially needed on Windows where `start` cmd builtin can't be intercepted)
+  if (event.type === 'url-open' && event.payload) {
+    openBuiltinBrowser(event.payload).catch(err =>
+      log.error('[PtyMonitor] failed to open URL:', err)
+    )
+  }
+
   if (event.type === 'task-complete' && !isWindowFocused) {
     safeSend('notification:shouldShow', event)
   }

@@ -2,7 +2,7 @@ import { EventEmitter } from 'events'
 
 export interface PtyActivityEvent {
   id: string
-  type: 'task-complete' | 'prompt-idle' | 'streaming' | 'model-info' | 'mode-change' | 'token-usage' | 'ttfb-ready'
+  type: 'task-complete' | 'prompt-idle' | 'streaming' | 'model-info' | 'mode-change' | 'token-usage' | 'ttfb-ready' | 'url-open'
   payload?: string
 }
 
@@ -18,6 +18,7 @@ export class PtyOutputMonitor extends EventEmitter {
     buffer: string
     lastIdleTime: number
     streamingStartTime: number
+    openedUrls: Set<string>
   }>()
 
   private static IDLE_TIMEOUT = 2000 // 2s no output = idle
@@ -39,7 +40,8 @@ export class PtyOutputMonitor extends EventEmitter {
       isStreaming: false,
       buffer: '',
       lastIdleTime: Date.now(),
-      streamingStartTime: 0
+      streamingStartTime: 0,
+      openedUrls: new Set()
     })
   }
 
@@ -81,6 +83,22 @@ export class PtyOutputMonitor extends EventEmitter {
     if (modeMatch) {
       const mode = modeMatch[1].toLowerCase().replace('-', '')
       this.emit('activity', { id, type: 'mode-change', payload: mode } as PtyActivityEvent)
+    }
+
+    // Detect URLs that Claude Code tries to auto-open (e.g. OAuth login)
+    // On Windows, `start` is a cmd builtin that can't be intercepted via PATH,
+    // so we detect the URL in PTY output and open it in the built-in browser.
+    const urlMatches = cleanData.matchAll(/https?:\/\/[^\s"'<>)\]]+/g)
+    for (const urlMatch of urlMatches) {
+      const url = urlMatch[0]
+      // Only intercept URLs that look like they should open in a browser
+      // (OAuth, claude.ai, anthropic.com, etc.) — not API endpoints
+      // Dedup: don't open the same URL twice in one session
+      if (/claude\.ai|anthropic\.com|accounts\.google|github\.com\/login/i.test(url) &&
+          !session.openedUrls.has(url)) {
+        session.openedUrls.add(url)
+        this.emit('activity', { id, type: 'url-open', payload: url } as PtyActivityEvent)
+      }
     }
 
     // Reset idle timer
