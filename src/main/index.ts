@@ -46,6 +46,15 @@ const errorReporter = new ErrorReporter()
 const sessionRecorder = new SessionRecorder()
 const subscriptionManager = new SubscriptionManager()
 const browserSync = new BrowserSync()
+// Initialize BrowserSync from existing session (app restart path — no login IPC)
+{
+  const existingSession = subscriptionManager.getSession()
+  if (existingSession?.username && existingSession?.token) {
+    browserSync.downloadAndImportCookies(existingSession.username, existingSession.token).catch(err =>
+      log.warn('[startup] browser sync init failed:', err)
+    )
+  }
+}
 errorReporter.setTokenGetter(() => subscriptionManager.getSession()?.token ?? null)
 errorReporter.setUsernameGetter(() => subscriptionManager.getUsername())
 const singBoxManager = new SingBoxManager()

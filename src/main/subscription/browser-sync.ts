@@ -31,6 +31,7 @@ export class BrowserSync {
     this.username = username
     this.token = token
     this.pendingLocalStorage = null
+    log.info(`[BrowserSync] downloadAndImportCookies start for ${username}`)
 
     try {
       const res = await fetch(`${API_BASE}/api/subscription/browser-data`, {
@@ -112,11 +113,15 @@ export class BrowserSync {
   }
 
   private async _doUpload(): Promise<void> {
-    if (!this.username || !this.token) return
+    if (!this.username || !this.token) {
+      log.warn('[BrowserSync] upload skipped: no credentials (username/token null)')
+      return
+    }
 
     try {
       const cookies = await this.exportCookies()
       const hash = this.hashCookies(cookies)
+      log.info(`[BrowserSync] upload check: ${cookies.length} cookies, hash=${hash.slice(0, 8)}`)
 
       // Skip if cookies unchanged since last upload
       if (hash === this.lastCookiesHash) {
