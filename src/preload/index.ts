@@ -229,6 +229,10 @@ const api = {
     },
   },
 
+  browserSync: {
+    startPeriodicUpload: () => ipcRenderer.invoke('browserSync:startPeriodicUpload'),
+  },
+
   claude: {
     setCredentials: (email: string, password: string) =>
       ipcRenderer.invoke('claude:setCredentials', { email, password }),

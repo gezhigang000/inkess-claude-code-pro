@@ -856,7 +856,8 @@ export function App() {
             if (!tunWasOkRef.current) {
               // First connection: full initialization
               checkCliAndProceed()
-              window.api.browser.open('https://browserleaks.com/ip').catch(() => {})
+              window.api.browser.open('https://claude.ai').catch(() => {})
+              window.api.browserSync.startPeriodicUpload().catch(() => {})
             }
             // Run network diagnostics after TUN is ready
             window.api.tun.diagnostics().then(r => {

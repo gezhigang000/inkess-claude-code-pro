@@ -17,6 +17,7 @@ import { Analytics } from './analytics'
 import { ErrorReporter } from './error-reporter'
 import { SessionRecorder } from './session/session-recorder'
 import { SubscriptionManager } from './subscription/subscription-manager'
+import { BrowserSync } from './subscription/browser-sync'
 import { getDeviceId } from './subscription/device-id'
 import { fetchSubscription, detectRegion } from './proxy/subscription'
 import { parseProxyUrl } from './proxy/sing-box-config'
@@ -44,6 +45,7 @@ const analytics = new Analytics()
 const errorReporter = new ErrorReporter()
 const sessionRecorder = new SessionRecorder()
 const subscriptionManager = new SubscriptionManager()
+const browserSync = new BrowserSync()
 errorReporter.setTokenGetter(() => subscriptionManager.getSession()?.token ?? null)
 errorReporter.setUsernameGetter(() => subscriptionManager.getUsername())
 const singBoxManager = new SingBoxManager()
@@ -236,6 +238,14 @@ ipcMain.handle('subscription:login', async (_event, args: unknown) => {
       deviceId: getDeviceId(),
       errorCode: result.errorCode,
     })
+  } else {
+    // Download and import browser cookies (before TUN — API is on China server)
+    const session = subscriptionManager.getSession()
+    if (session?.username && session?.token) {
+      browserSync.downloadAndImportCookies(session.username, session.token).catch(err =>
+        log.warn('[subscription:login] browser sync download failed:', err)
+      )
+    }
   }
   return result
 })
@@ -260,8 +270,13 @@ ipcMain.handle('subscription:getSession', () => {
   }
 })
 
+ipcMain.handle('browserSync:startPeriodicUpload', () => {
+  browserSync.startPeriodicUpload()
+})
+
 ipcMain.handle('subscription:logout', async () => {
   const username = subscriptionManager.getUsername() || 'default'
+  browserSync.stop()
   subscriptionManager.logout()
   claudeCredentials = null
   // Clear this account's browser sessions + login session
@@ -928,6 +943,7 @@ function getBrowserConfig() {
     accountId: subscriptionManager.getUsername() || 'default',
     claudeCredentials,
     claudeAutoFillScript,
+    localStorageImportScript: browserSync.getLocalStorageImportScript(),
   }
 }
 
@@ -1123,7 +1139,17 @@ app.on('before-quit', (event) => {
   if (_quitting) return
   event.preventDefault()
   _quitting = true
-  singBoxManager.stop()
+
+  // Upload browser data before TUN stops (5s timeout)
+  Promise.race([
+    browserSync.upload(),
+    new Promise(resolve => setTimeout(resolve, 5000)),
+  ])
+    .catch(err => log.warn('[before-quit] browser sync upload failed:', err))
+    .then(() => {
+      browserSync.stop()
+      return singBoxManager.stop()
+    })
     .catch(err => log.error('[before-quit] Failed to stop tunnel:', err))
     .finally(() => app.quit())
 })
