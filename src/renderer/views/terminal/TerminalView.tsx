@@ -141,11 +141,12 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
         // Rebuild selection text using buffer API to handle wrapped lines correctly.
         // xterm.js getSelection() inserts \n at every terminal row boundary, even for
         // soft-wrapped lines, causing URLs/paths that span rows to contain spaces/newlines.
-        // Fix: use IBufferLine.isWrapped to detect soft wraps and join them without \n,
-        // and translateToString(true) to trim trailing whitespace padding.
+        // Fix: detect soft wraps (isWrapped + ConPTY heuristic) and join without \n,
+        // use translateToString(true) to trim trailing whitespace padding.
         const sel = term.getSelectionPosition()
         if (sel) {
           const buf = term.buffer.active
+          const cols = term.cols
           const parts: string[] = []
           for (let y = sel.start.y; y <= sel.end.y; y++) {
             const line = buf.getLine(y)
@@ -153,8 +154,17 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
             const startCol = y === sel.start.y ? sel.start.x : 0
             const endCol = y === sel.end.y ? sel.end.x : undefined
             const text = line.translateToString(true, startCol, endCol)
-            // If this line is a soft-wrap continuation, join without newline
-            if (parts.length > 0 && line.isWrapped) {
+            // Detect soft wrap: isWrapped flag OR ConPTY heuristic
+            // (previous line fills terminal width and ends with non-space)
+            let isSoftWrap = line.isWrapped
+            if (!isSoftWrap && y > sel.start.y) {
+              const prev = buf.getLine(y - 1)
+              if (prev) {
+                const prevFull = prev.translateToString(false)
+                if (prevFull.length >= cols && prevFull[cols - 1] !== ' ') isSoftWrap = true
+              }
+            }
+            if (parts.length > 0 && isSoftWrap) {
               parts[parts.length - 1] += text
             } else {
               parts.push(text)
@@ -203,47 +213,111 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
     })
 
     // Link providers — file paths + URLs
+    // Merges soft-wrapped lines into a single logical line so long URLs/paths
+    // that span multiple terminal rows are detected as complete links.
     const linkDisposable = term.registerLinkProvider({
       provideLinks(lineNumber, callback) {
-        const line = term.buffer.active.getLine(lineNumber - 1)
+        const buf = term.buffer.active
+        const line = buf.getLine(lineNumber - 1)
         if (!line) { callback(undefined); return }
-        const text = line.translateToString()
+
+        // Detect if a line is a soft-wrap continuation.
+        // xterm.js sets isWrapped, but Windows ConPTY may not flag it correctly.
+        // Fallback heuristic: previous line fills the full terminal width and ends
+        // with a non-space character → likely a soft wrap.
+        const cols = term.cols
+        const isWrappedLine = (y: number): boolean => {
+          const row = buf.getLine(y)
+          if (!row) return false
+          if (row.isWrapped) return true
+          // ConPTY fallback: check if previous line is completely filled
+          if (y > 0) {
+            const prev = buf.getLine(y - 1)
+            if (prev) {
+              const prevText = prev.translateToString(false)
+              if (prevText.length >= cols && prevText[cols - 1] !== ' ') return true
+            }
+          }
+          return false
+        }
+
+        // Find the first line of this logical (wrapped) group
+        let startRow = lineNumber - 1
+        while (startRow > 0 && isWrappedLine(startRow)) {
+          startRow--
+        }
+
+        // Only process from the first row of the group to avoid duplicate links
+        if (startRow !== lineNumber - 1) {
+          callback(undefined)
+          return
+        }
+
+        // Collect all rows in this wrapped group
+        const rowLengths: number[] = []
+        let fullText = ''
+        for (let y = startRow; ; y++) {
+          const row = buf.getLine(y)
+          if (!row) break
+          if (y > startRow && !isWrappedLine(y)) break
+          const rowText = row.translateToString()
+          rowLengths.push(rowText.length)
+          fullText += rowText
+        }
+
+        // Right-trim the merged text (last row may have padding)
+        fullText = fullText.replace(/\s+$/, '')
+
         const links: Array<{ startIndex: number; length: number; text: string; type: 'file' | 'url' }> = []
 
         // Match file paths (require at least one directory component to avoid false positives)
         // Supports Windows drive letters: C:\path\to\file.ts
         const fileRe = /(?:[a-zA-Z]:[/\\])?(?:[\w./~\\-]+[/\\])+[\w.-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|kt|swift|rb|sh|md|json|yaml|yml|toml|css|scss|html|sql|c|cpp|h|hpp|cs|vue|svelte|php|xml)\b/g
         let m: RegExpExecArray | null
-        while ((m = fileRe.exec(text)) !== null) {
+        while ((m = fileRe.exec(fullText)) !== null) {
           links.push({ startIndex: m.index, length: m[0].length, text: m[0], type: 'file' })
         }
 
         // Match URLs (http/https)
         const urlRe = /https?:\/\/[^\s"'<>)\]]+/g
-        while ((m = urlRe.exec(text)) !== null) {
-          // Avoid overlapping with file links
+        while ((m = urlRe.exec(fullText)) !== null) {
           const overlaps = links.some(l => m!.index >= l.startIndex && m!.index < l.startIndex + l.length)
           if (!overlaps) {
             links.push({ startIndex: m.index, length: m[0].length, text: m[0], type: 'url' })
           }
         }
 
-        callback(links.map(l => ({
-          range: {
-            start: { x: l.startIndex + 1, y: lineNumber },
-            end: { x: l.startIndex + l.length + 1, y: lineNumber },
-          },
-          text: l.text,
-          activate(_event: MouseEvent, linkText: string) {
-            if (l.type === 'url') {
-              window.api.browser.open(linkText).then(r => {
-                if (r?.error) window.api.notification.show('Browser', r.error)
-              })
-            } else {
-              onFileClick?.(linkText)
+        // Convert merged-text offsets back to terminal row:col coordinates
+        const offsetToPos = (offset: number): { x: number; y: number } => {
+          let remaining = offset
+          for (let i = 0; i < rowLengths.length; i++) {
+            if (remaining < rowLengths[i]) {
+              return { x: remaining + 1, y: startRow + i + 1 }
+            }
+            remaining -= rowLengths[i]
+          }
+          // Past end — clamp to last row
+          const lastRow = startRow + rowLengths.length - 1
+          return { x: rowLengths[rowLengths.length - 1] + 1, y: lastRow + 1 }
+        }
+
+        callback(links.map(l => {
+          const start = offsetToPos(l.startIndex)
+          const end = offsetToPos(l.startIndex + l.length)
+          return {
+            range: { start, end },
+            text: l.text,
+            activate(_event: MouseEvent, linkText: string) {
+              if (l.type === 'url') {
+                window.api.browser.open(linkText).then(r => {
+                  if (r?.error) window.api.notification.show('Browser', r.error)
+                })
+              } else {
+                onFileClick?.(linkText)
+              }
             }
           }
-        })))
+        }))
       }
     })
 
