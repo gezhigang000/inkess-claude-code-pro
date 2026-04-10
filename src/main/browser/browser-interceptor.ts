@@ -6,8 +6,8 @@
  * URLs to our built-in browser that has proxy + region masking applied.
  *
  * Solution:
- * 1. Start a Unix domain socket server (macOS) or named pipe (Windows)
- * 2. Create wrapper scripts (`open` for macOS, `BROWSER` for both)
+ * 1. Start a Unix domain socket server (macOS/Linux) or TCP localhost server (Windows)
+ * 2. Create wrapper scripts (`open` for macOS, `.cmd` for Windows, `BROWSER` for all)
  * 3. Set BROWSER env var and prepend wrapper dir to PATH in PTY env
  * 4. When a URL is received via socket, open it in the built-in browser
  */
@@ -25,6 +25,8 @@ export class BrowserInterceptor {
   private binDir: string
   private zdotdir: string
   private onUrlOpen: ((url: string) => void) | null = null
+  /** TCP port used on Windows (Unix socket not supported) */
+  private tcpPort: number = 0
 
   constructor() {
     const userData = app.getPath('userData')
@@ -33,17 +35,17 @@ export class BrowserInterceptor {
     this.zdotdir = join(userData, 'zdotdir')
   }
 
-  /** Start socket server and create wrapper scripts (Unix only — Windows not supported) */
+  /** Start socket server and create wrapper scripts */
   start(onUrlOpen: (url: string) => void): void {
     this.onUrlOpen = onUrlOpen
     if (process.platform === 'win32') {
-      log.info('[BrowserInterceptor] skipped on Windows (Unix socket not supported)')
-      return
+      this.startTcpServer()
+    } else {
+      this.startSocketServer()
     }
-    this.startSocketServer()
     this.createWrapperScripts()
     if (process.platform === 'darwin') this.createZdotdir()
-    log.info(`[BrowserInterceptor] started, socket: ${this.socketPath}`)
+    log.info(`[BrowserInterceptor] started, ${process.platform === 'win32' ? `tcp port: ${this.tcpPort}` : `socket: ${this.socketPath}`}`)
   }
 
   /** Stop socket server and clean up */
@@ -52,16 +54,28 @@ export class BrowserInterceptor {
       this.server.close()
       this.server = null
     }
-    try { unlinkSync(this.socketPath) } catch { /* ignore */ }
+    if (process.platform !== 'win32') {
+      try { unlinkSync(this.socketPath) } catch { /* ignore */ }
+    }
   }
 
   /** Get env vars to inject into PTY for browser interception */
   getEnv(): Record<string, string> {
+    const browserScript = process.platform === 'win32'
+      ? join(this.binDir, 'browser-open.cmd')
+      : join(this.binDir, 'browser-open')
+
     const env: Record<string, string> = {
-      INKESS_BROWSER_SOCK: this.socketPath,
-      INKESS_BIN_DIR: this.binDir,
-      BROWSER: join(this.binDir, 'browser-open'),
+      BROWSER: browserScript,
     }
+
+    if (process.platform === 'win32') {
+      env.INKESS_BROWSER_PORT = String(this.tcpPort)
+    } else {
+      env.INKESS_BROWSER_SOCK = this.socketPath
+      env.INKESS_BIN_DIR = this.binDir
+    }
+
     // macOS: ZDOTDIR wrapper ensures our bin dir stays first in PATH
     // (path_helper in /etc/zprofile reorders PATH, moving custom dirs to end)
     if (process.platform === 'darwin') {
@@ -75,12 +89,9 @@ export class BrowserInterceptor {
     return this.binDir
   }
 
-  private startSocketServer(): void {
-    // Clean up stale socket
-    try { unlinkSync(this.socketPath) } catch { /* ignore */ }
-
+  private createUrlHandler(): (conn: import('net').Socket) => void {
     const MAX_URL_SIZE = 4096
-    this.server = createServer((conn) => {
+    return (conn) => {
       let data = ''
       conn.on('data', (chunk) => {
         data += chunk.toString()
@@ -97,15 +108,36 @@ export class BrowserInterceptor {
         conn.end()
       })
       conn.on('error', () => { /* ignore connection errors */ })
-    })
+    }
+  }
 
+  private startSocketServer(): void {
+    // Clean up stale socket
+    try { unlinkSync(this.socketPath) } catch { /* ignore */ }
+
+    this.server = createServer(this.createUrlHandler())
     this.server.on('error', (err) => {
       log.error('[BrowserInterceptor] socket server error:', err)
     })
-
     this.server.listen(this.socketPath, () => {
       // Make socket accessible by child processes
       try { chmodSync(this.socketPath, 0o666) } catch { /* ignore */ }
+    })
+  }
+
+  /** Windows: use TCP localhost instead of Unix socket */
+  private startTcpServer(): void {
+    this.server = createServer(this.createUrlHandler())
+    this.server.on('error', (err) => {
+      log.error('[BrowserInterceptor] TCP server error:', err)
+    })
+    // Listen on random port on localhost
+    this.server.listen(0, '127.0.0.1', () => {
+      const addr = this.server!.address()
+      if (addr && typeof addr === 'object') {
+        this.tcpPort = addr.port
+        log.info(`[BrowserInterceptor] TCP server listening on 127.0.0.1:${this.tcpPort}`)
+      }
     })
   }
 
@@ -167,6 +199,14 @@ export class BrowserInterceptor {
   private createWrapperScripts(): void {
     mkdirSync(this.binDir, { recursive: true })
 
+    if (process.platform === 'win32') {
+      this.createWindowsWrappers()
+    } else {
+      this.createUnixWrappers()
+    }
+  }
+
+  private createUnixWrappers(): void {
     // browser-open: used as BROWSER env var value
     // Many tools (Node.js `open` package, `xdg-open`, etc.) check BROWSER first
     const browserOpenScript = `#!/bin/bash
@@ -209,5 +249,41 @@ done
       const openPath = join(this.binDir, 'open')
       writeFileSync(openPath, openWrapperScript, { mode: 0o755 })
     }
+  }
+
+  private createWindowsWrappers(): void {
+    // browser-open.cmd: used as BROWSER env var value on Windows
+    // Sends URL to TCP localhost server, falls back to system start
+    const browserOpenCmd = `@echo off
+setlocal
+set "URL=%~1"
+if "%URL%"=="" exit /b 0
+if "%INKESS_BROWSER_PORT%"=="" goto :fallback
+powershell -NoProfile -Command "$c=[System.Net.Sockets.TcpClient]::new();try{$c.Connect('127.0.0.1',%INKESS_BROWSER_PORT%);$s=$c.GetStream();$b=[System.Text.Encoding]::UTF8.GetBytes('%URL%');$s.Write($b,0,$b.Length);$s.Close()}catch{}finally{$c.Dispose()}" 2>nul
+exit /b 0
+:fallback
+start "" "%URL%"
+`
+    writeFileSync(join(this.binDir, 'browser-open.cmd'), browserOpenCmd)
+
+    // open.cmd: intercepts `open URL` calls on Windows (Claude Code may call `open`)
+    const logPath = join(app.getPath('userData'), 'browser-intercept.log').replace(/\\/g, '\\\\')
+    const openCmd = `@echo off
+setlocal enabledelayedexpansion
+set "URL="
+for %%a in (%*) do (
+  set "arg=%%~a"
+  if "!arg:~0,7!"=="http://" set "URL=!arg!"
+  if "!arg:~0,8!"=="https://" set "URL=!arg!"
+)
+if "%URL%"=="" goto :passthrough
+if "%INKESS_BROWSER_PORT%"=="" goto :passthrough
+echo [%time%] intercept: %URL% port=%INKESS_BROWSER_PORT% >> "${logPath}" 2>nul
+powershell -NoProfile -Command "$c=[System.Net.Sockets.TcpClient]::new();try{$c.Connect('127.0.0.1',%INKESS_BROWSER_PORT%);$s=$c.GetStream();$b=[System.Text.Encoding]::UTF8.GetBytes('%URL%');$s.Write($b,0,$b.Length);$s.Close()}catch{}finally{$c.Dispose()}" 2>nul
+exit /b 0
+:passthrough
+start "" %*
+`
+    writeFileSync(join(this.binDir, 'open.cmd'), openCmd)
   }
 }

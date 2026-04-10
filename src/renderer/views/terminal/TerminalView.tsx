@@ -186,7 +186,8 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
         const links: Array<{ startIndex: number; length: number; text: string; type: 'file' | 'url' }> = []
 
         // Match file paths (require at least one directory component to avoid false positives)
-        const fileRe = /(?:[\w./~\\-]+[/\\])+[\w.-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|kt|swift|rb|sh|md|json|yaml|yml|toml|css|scss|html|sql|c|cpp|h|hpp|cs|vue|svelte|php|xml)\b/g
+        // Supports Windows drive letters: C:\path\to\file.ts
+        const fileRe = /(?:[a-zA-Z]:[/\\])?(?:[\w./~\\-]+[/\\])+[\w.-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|kt|swift|rb|sh|md|json|yaml|yml|toml|css|scss|html|sql|c|cpp|h|hpp|cs|vue|svelte|php|xml)\b/g
         let m: RegExpExecArray | null
         while ((m = fileRe.exec(text)) !== null) {
           links.push({ startIndex: m.index, length: m[0].length, text: m[0], type: 'file' })
