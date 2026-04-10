@@ -28,7 +28,10 @@ interface BrowserConfig {
   accountId: string  // subscription username — browser sessions are isolated per account
   claudeCredentials: { email: string; password: string } | null
   claudeAutoFillScript: (email: string, password: string) => string
-  localStorageImportScript?: string | null  // One-time localStorage injection for claude.ai (from BrowserSync)
+  // Getter for one-time localStorage injection for claude.ai (from BrowserSync).
+  // Using a getter instead of a pre-computed string so it's only consumed when
+  // a claude.ai tab actually loads, not on every non-claude tab open.
+  getLocalStorageImportScript?: () => string | null
 }
 
 interface TabInfo {
@@ -356,11 +359,16 @@ async function createTab(url: string, config: BrowserConfig): Promise<TabInfo> {
     view.webContents.executeJavaScript(fpScript).catch(() => {})
     // Inject navigator.language early (before page JS reads it)
     injectRegionMasking(view, config.regionEnv, lang)
-    // One-time localStorage import from BrowserSync (only first claude.ai tab load)
-    if (isClaude && !localStorageInjected && config.localStorageImportScript) {
-      localStorageInjected = true
-      view.webContents.executeJavaScript(config.localStorageImportScript).catch(() => {})
-      log.info('[BrowserSync] localStorage injected into claude.ai')
+    // One-time localStorage import from BrowserSync — only for claude.ai tabs,
+    // and only consume the pending script when an actual claude.ai tab loads
+    // (so opening browserleaks.com first doesn't waste the one-shot payload).
+    if (isClaude && !localStorageInjected && config.getLocalStorageImportScript) {
+      const script = config.getLocalStorageImportScript()
+      if (script) {
+        localStorageInjected = true
+        view.webContents.executeJavaScript(script).catch(() => {})
+        log.info('[BrowserSync] localStorage injected into claude.ai')
+      }
     }
   })
 
