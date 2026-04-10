@@ -318,10 +318,76 @@ function AboutSection() {
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle')
   const [checkStatus, setCheckStatus] = useState<'idle' | 'checking' | 'up-to-date'>('idle')
 
+  // CLI version switch state
+  const [showVersionList, setShowVersionList] = useState(false)
+  const [versions, setVersions] = useState<string[]>([])
+  const [versionLoading, setVersionLoading] = useState(false)
+  const [versionError, setVersionError] = useState<string | null>(null)
+  const [switching, setSwitching] = useState(false)
+  const [switchProgress, setSwitchProgress] = useState<{ step: string; progress: number } | null>(null)
+  const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null)
+
   useEffect(() => {
     window.api.app.getVersion().then(setAppVersion)
     window.api.cli.getInfo().then(info => setCliVersion(info.version))
   }, [])
+
+  // Auto-dismiss toast
+  useEffect(() => {
+    if (!toastMsg) return
+    const timer = setTimeout(() => setToastMsg(null), 4000)
+    return () => clearTimeout(timer)
+  }, [toastMsg])
+
+  const handleSwitchClick = async () => {
+    if (showVersionList) {
+      setShowVersionList(false)
+      return
+    }
+    setVersionLoading(true)
+    setVersionError(null)
+    try {
+      const list = await window.api.cli.listVersions()
+      if (list.length === 0) {
+        setVersionError(t('settings.cliVersionFetchFail'))
+      } else {
+        setVersions(list)
+        setShowVersionList(true)
+      }
+    } catch {
+      setVersionError(t('settings.cliVersionFetchFail'))
+    } finally {
+      setVersionLoading(false)
+    }
+  }
+
+  const handleSelectVersion = async (version: string) => {
+    if (switching) return
+    const strip = (v: string) => v.replace(/^v/, '')
+    if (strip(version) === strip(cliVersion || '')) return
+
+    setSwitching(true)
+    setSwitchProgress(null)
+    const unsub = window.api.cli.onInstallProgress((event) => {
+      setSwitchProgress(event)
+    })
+    try {
+      const result = await window.api.cli.installVersion(version)
+      if (result.success) {
+        setCliVersion(version)
+        setToastMsg({ text: t('settings.cliSwitchSuccess', { version }), type: 'success' })
+        setShowVersionList(false)
+      } else {
+        setToastMsg({ text: result.error || t('settings.cliSwitchFail'), type: 'error' })
+      }
+    } catch {
+      setToastMsg({ text: t('settings.cliSwitchFail'), type: 'error' })
+    } finally {
+      unsub()
+      setSwitching(false)
+      setSwitchProgress(null)
+    }
+  }
 
   const handleCheckUpdate = () => {
     setCheckStatus('checking')
@@ -351,6 +417,8 @@ function AboutSection() {
     setTimeout(() => setUploadStatus('idle'), 3000)
   }
 
+  const strip = (v: string) => v.replace(/^v/, '')
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       <SettingsGroup title={t('settings.version')}>
@@ -359,10 +427,66 @@ function AboutSection() {
             <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Inkess Claude Code Pro</span>
             <span style={{ fontSize: 13, color: 'var(--text-primary)', fontFamily: 'var(--font-mono, monospace)' }}>v{appVersion}</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 10px', background: 'var(--bg-tertiary)', borderRadius: 6 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: 'var(--bg-tertiary)', borderRadius: 6 }}>
             <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Claude Code Pro</span>
-            <span style={{ fontSize: 13, color: 'var(--text-primary)', fontFamily: 'var(--font-mono, monospace)' }}>{cliVersion ? `v${cliVersion}` : '—'}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 13, color: 'var(--text-primary)', fontFamily: 'var(--font-mono, monospace)' }}>{cliVersion ? `v${cliVersion}` : '—'}</span>
+              <button
+                onClick={handleSwitchClick}
+                disabled={versionLoading || switching}
+                style={{
+                  padding: '2px 8px', background: 'var(--bg-primary)', color: 'var(--text-secondary)',
+                  border: '1px solid var(--border)', borderRadius: 4, fontSize: 11,
+                  cursor: versionLoading || switching ? 'wait' : 'pointer',
+                }}
+              >
+                {versionLoading ? '...' : switching ? t('settings.cliSwitching') : t('settings.cliSwitch')}
+              </button>
+            </div>
           </div>
+          {versionError && (
+            <div style={{ fontSize: 12, color: 'var(--text-error, #e55)', padding: '0 4px' }}>{versionError}</div>
+          )}
+          {showVersionList && !switching && (
+            <div style={{
+              border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden',
+              background: 'var(--bg-primary)', maxHeight: 200, overflowY: 'auto',
+            }}>
+              {versions.map((v) => {
+                const isCurrent = strip(v) === strip(cliVersion || '')
+                return (
+                  <div
+                    key={v}
+                    onClick={() => !isCurrent && handleSelectVersion(v)}
+                    style={{
+                      padding: '8px 12px', fontSize: 13, display: 'flex', justifyContent: 'space-between',
+                      alignItems: 'center', cursor: isCurrent ? 'default' : 'pointer',
+                      color: isCurrent ? 'var(--text-muted)' : 'var(--text-primary)',
+                      background: isCurrent ? 'var(--bg-tertiary)' : 'transparent',
+                      borderBottom: '1px solid var(--border)',
+                    }}
+                    onMouseEnter={(e) => { if (!isCurrent) e.currentTarget.style.background = 'var(--bg-secondary)' }}
+                    onMouseLeave={(e) => { if (!isCurrent) e.currentTarget.style.background = 'transparent' }}
+                  >
+                    <span style={{ fontFamily: 'var(--font-mono, monospace)' }}>v{v}</span>
+                    {isCurrent && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('settings.cliVersionCurrent')}</span>}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {switching && switchProgress && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{switchProgress.step}</div>
+              <div style={{ height: 3, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%', borderRadius: 2, background: 'var(--accent)',
+                  width: `${Math.min(switchProgress.progress * 100, 100)}%`, transition: 'width 0.3s ease',
+                }} />
+              </div>
+            </div>
+          )}
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 4px' }}>{t('settings.cliVersionHint')}</div>
           <button
             onClick={handleCheckUpdate}
             disabled={checkStatus === 'checking'}
@@ -378,6 +502,17 @@ function AboutSection() {
           </button>
         </div>
       </SettingsGroup>
+      {/* Toast notification */}
+      {toastMsg && (
+        <div style={{
+          position: 'fixed', bottom: 16, right: 16, padding: '10px 16px', borderRadius: 8,
+          background: toastMsg.type === 'success' ? 'var(--accent)' : 'var(--text-error, #e55)',
+          color: '#fff', fontSize: 13, boxShadow: '0 4px 12px rgba(0,0,0,0.3)', zIndex: 1000,
+          maxWidth: 360, animation: 'fadeIn 0.2s ease',
+        }}>
+          {toastMsg.text}
+        </div>
+      )}
       <SettingsGroup title={t('settings.diagnostics')}>
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>{t('settings.diagnosticsHint')}</div>
         <button

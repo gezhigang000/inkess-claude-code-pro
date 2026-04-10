@@ -16,6 +16,10 @@ const api = {
     install: () => ipcRenderer.invoke('cli:install') as Promise<{
       success: boolean; error?: string
     }>,
+    listVersions: () => ipcRenderer.invoke('cli:listVersions') as Promise<string[]>,
+    installVersion: (version: string) => ipcRenderer.invoke('cli:installVersion', version) as Promise<{
+      success: boolean; error?: string
+    }>,
     checkUpdate: () => ipcRenderer.invoke('cli:checkUpdate') as Promise<{
       available: boolean; latestVersion: string | null
     }>,

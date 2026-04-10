@@ -159,6 +159,27 @@ ipcMain.handle('cli:install', async () => {
   }
 })
 
+ipcMain.handle('cli:listVersions', async () => {
+  return cliManager.listVersions()
+})
+
+ipcMain.handle('cli:installVersion', async (_event, version: string) => {
+  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version)) {
+    return { success: false, error: 'Invalid version format' }
+  }
+  try {
+    await cliManager.installVersion(version, (step, progress) => {
+      safeSend('cli:installProgress', { step, progress })
+    })
+    analytics.track('cli_switch_version', { version })
+    statsCollector.logEvent('cli:installVersion')
+    return { success: true }
+  } catch (err) {
+    log.error('CLI installVersion failed:', err)
+    return { success: false, error: (err as Error).message }
+  }
+})
+
 ipcMain.handle('cli:checkUpdate', async () => {
   return cliManager.checkUpdate()
 })
