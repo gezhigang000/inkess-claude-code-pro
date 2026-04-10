@@ -20,6 +20,7 @@ export class BrowserSync {
   private token: string | null = null
   private lastCookiesHash: string | null = null
   private pendingLocalStorage: Record<string, string> | null = null
+  private _uploadPromise: Promise<void> | null = null
 
   /**
    * Phase 1: Download remote data, import cookies immediately.
@@ -105,6 +106,12 @@ export class BrowserSync {
 
   /** Export local session and upload to server. Skip if cookies unchanged. */
   async upload(): Promise<void> {
+    if (this._uploadPromise) return this._uploadPromise
+    this._uploadPromise = this._doUpload().finally(() => { this._uploadPromise = null })
+    return this._uploadPromise
+  }
+
+  private async _doUpload(): Promise<void> {
     if (!this.username || !this.token) return
 
     try {
@@ -148,6 +155,12 @@ export class BrowserSync {
         )
       } else {
         log.warn(`[BrowserSync] upload failed: HTTP ${res.status}`)
+        // Token expired — stop periodic uploads
+        if (res.status === 401 && this.timer) {
+          clearInterval(this.timer)
+          this.timer = null
+          log.info('[BrowserSync] token expired, periodic upload stopped')
+        }
       }
     } catch (err) {
       log.warn('[BrowserSync] upload error:', err)
@@ -202,18 +215,25 @@ export class BrowserSync {
         },
       })
 
+      let settled = false
+
       const timeout = setTimeout(() => {
-        win.destroy()
+        if (settled) return
+        settled = true
+        if (!win.isDestroyed()) win.destroy()
         reject(new Error('localStorage export timeout'))
       }, LOCALSTORAGE_TIMEOUT)
 
       const done = (data: Record<string, string>) => {
+        if (settled) return
+        settled = true
         clearTimeout(timeout)
-        win.destroy()
+        if (!win.isDestroyed()) win.destroy()
         resolve(data)
       }
 
-      win.webContents.on('dom-ready', () => {
+      const readLS = () => {
+        if (settled || win.isDestroyed()) return
         win.webContents
           .executeJavaScript('JSON.stringify(localStorage)')
           .then((json) => {
@@ -224,20 +244,10 @@ export class BrowserSync {
             }
           })
           .catch(() => done({}))
-      })
+      }
 
-      win.webContents.on('did-fail-load', () => {
-        win.webContents
-          .executeJavaScript('JSON.stringify(localStorage)')
-          .then((json) => {
-            try {
-              done(JSON.parse(json))
-            } catch {
-              done({})
-            }
-          })
-          .catch(() => done({}))
-      })
+      win.webContents.on('dom-ready', readLS)
+      win.webContents.on('did-fail-load', readLS)
 
       win.loadURL(CLAUDE_ORIGIN).catch(() => {})
     })
