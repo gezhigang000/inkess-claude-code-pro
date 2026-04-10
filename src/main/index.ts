@@ -934,7 +934,9 @@ function getBrowserConfig() {
     accountId: subscriptionManager.getUsername() || 'default',
     claudeCredentials,
     claudeAutoFillScript,
-    localStorageImportScript: browserSync.getLocalStorageImportScript(),
+    // Pass as getter so the one-shot script is only consumed when a claude.ai
+    // tab actually loads, not on every browser:open call (e.g. browserleaks).
+    getLocalStorageImportScript: () => browserSync.getLocalStorageImportScript(),
   }
 }
 

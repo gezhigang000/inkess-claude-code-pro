@@ -92,37 +92,81 @@ export function buildFingerprintMaskScript(options: {
   Object.defineProperty(window, 'outerHeight', { get: () => ${screenHeight} });
 
   // === Canvas fingerprint noise ===
+  // Design goals (prevents Cloudflare JS challenge failure):
+  //   1. Same canvas content → same noise output. Repeated calls to
+  //      toDataURL/toBlob on the same unchanged canvas return identical
+  //      strings/blobs. Cloudflare verifies stability by calling toDataURL
+  //      multiple times and comparing hashes.
+  //   2. Never mutate the original canvas. Apply noise to an off-screen
+  //      copy, leaving the caller's canvas pristine for subsequent reads.
+  //   3. Noise is based on canvas pixel content (not a mutating counter),
+  //      so different canvases get different noise patterns but the same
+  //      canvas always yields the same result.
   var origToBlob = HTMLCanvasElement.prototype.toBlob;
   var origToDataURL = HTMLCanvasElement.prototype.toDataURL;
   var origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+  var origCreateElement = Document.prototype.createElement;
 
-  // Deterministic noise seed from page URL to be consistent within a session
-  var _seed = 0;
-  for (var i = 0; i < location.href.length; i++) _seed = ((_seed << 5) - _seed + location.href.charCodeAt(i)) | 0;
-  function noise() { _seed = (_seed * 16807 + 0) % 2147483647; return (_seed & 0xf) - 8; }
+  // Stable base seed derived once per page from location.href — used as
+  // entropy mixed into content-based hashes, never mutated.
+  var baseSeed = 0;
+  for (var _i = 0; _i < location.href.length; _i++) {
+    baseSeed = ((baseSeed << 5) - baseSeed + location.href.charCodeAt(_i)) | 0;
+  }
 
-  function addNoise(canvas) {
-    try {
-      var ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      var w = canvas.width, h = canvas.height;
-      if (w === 0 || h === 0 || w > 1000 || h > 1000) return; // skip large canvases
-      var imgData = origGetImageData.call(ctx, 0, 0, w, h);
-      var d = imgData.data;
-      // Only touch a small portion of pixels to avoid visual artifacts
-      for (var j = 0; j < d.length; j += 40) {
-        d[j] = Math.max(0, Math.min(255, d[j] + noise()));
-      }
-      ctx.putImageData(imgData, 0, 0);
-    } catch(e) { /* cross-origin or other error */ }
+  // Compute a deterministic 32-bit hash from a sample of the image data.
+  // Sampling (not every pixel) keeps this fast for large canvases while
+  // still producing a distinct hash per visual content.
+  function hashImageData(d, w, h) {
+    var hash = baseSeed ^ ((w * 73856093) ^ (h * 19349663));
+    var step = Math.max(1, Math.floor(d.length / 512));
+    for (var i = 0; i < d.length; i += step) {
+      hash = ((hash << 5) - hash + d[i]) | 0;
+    }
+    return hash;
+  }
+
+  // Apply deterministic noise to a copy of the pixel buffer. Seed is
+  // derived from the buffer content so repeated calls with the same
+  // input produce byte-identical output.
+  function applyStableNoise(d, w, h) {
+    var seed = hashImageData(d, w, h);
+    for (var j = 0; j < d.length; j += 40) {
+      seed = ((seed * 16807) | 0) & 0x7fffffff;
+      d[j] = Math.max(0, Math.min(255, d[j] + ((seed & 0xf) - 8)));
+    }
+  }
+
+  // Render the source canvas into a fresh off-screen canvas with noise
+  // applied to the copy. The original canvas is never modified.
+  function snapshotWithNoise(src) {
+    var w = src.width, h = src.height;
+    if (w === 0 || h === 0) return null;
+    if (w > 2048 || h > 2048) return null; // too large, skip noise
+    var temp = origCreateElement.call(document, 'canvas');
+    temp.width = w;
+    temp.height = h;
+    var tctx = temp.getContext('2d');
+    if (!tctx) return null;
+    tctx.drawImage(src, 0, 0);
+    var imgData = origGetImageData.call(tctx, 0, 0, w, h);
+    applyStableNoise(imgData.data, w, h);
+    tctx.putImageData(imgData, 0, 0);
+    return temp;
   }
 
   HTMLCanvasElement.prototype.toBlob = function(cb, type, quality) {
-    addNoise(this);
+    try {
+      var snap = snapshotWithNoise(this);
+      if (snap) return origToBlob.call(snap, cb, type, quality);
+    } catch(e) { /* fall through */ }
     return origToBlob.call(this, cb, type, quality);
   };
   HTMLCanvasElement.prototype.toDataURL = function(type, quality) {
-    addNoise(this);
+    try {
+      var snap = snapshotWithNoise(this);
+      if (snap) return origToDataURL.call(snap, type, quality);
+    } catch(e) { /* fall through */ }
     return origToDataURL.call(this, type, quality);
   };
 
@@ -153,14 +197,18 @@ export function buildFingerprintMaskScript(options: {
     var origCreateOscillator = AC.prototype.createOscillator;
     var origCreateDynamicsCompressor = AC.prototype.createDynamicsCompressor;
 
+    // Per-session stable offset: derived from baseSeed, constant for the
+    // entire page session. Audio fingerprinters compare waveform samples,
+    // so a fixed micro-offset shifts the fingerprint without making it
+    // unstable across calls.
+    var audioOffset = 1 + (((baseSeed & 0xff) / 2550000) - 0.00005);
     AC.prototype.createOscillator = function() {
       var osc = origCreateOscillator.call(this);
       var origConnect = osc.connect.bind(osc);
       osc.connect = function(dest) {
-        // Insert a gain node with slight offset to add noise
         try {
           var gain = osc.context.createGain();
-          gain.gain.value = 1 + (noise() * 0.0001);
+          gain.gain.value = audioOffset;
           origConnect(gain);
           gain.connect(dest);
           return dest;
@@ -171,14 +219,20 @@ export function buildFingerprintMaskScript(options: {
   }
 
   // === Font enumeration protection ===
-  // Override measureText to add slight noise, making font detection unreliable
+  // Override measureText to return a stable-per-input offset. Same text +
+  // same font must always return the same width, or Cloudflare's repeated
+  // probes detect inconsistency.
   var origMeasureText = CanvasRenderingContext2D.prototype.measureText;
   CanvasRenderingContext2D.prototype.measureText = function(text) {
     var metrics = origMeasureText.call(this, text);
-    // Only add noise when measuring single characters (font probe pattern)
     if (text.length <= 3) {
       var w = metrics.width;
-      Object.defineProperty(metrics, 'width', { get: () => w + noise() * 0.1 });
+      // Hash text + font → deterministic sub-pixel offset
+      var key = text + '|' + (this.font || '');
+      var h = baseSeed;
+      for (var i = 0; i < key.length; i++) h = ((h << 5) - h + key.charCodeAt(i)) | 0;
+      var offset = (((h & 0xff) / 255) - 0.5) * 0.1; // -0.05 .. +0.05
+      Object.defineProperty(metrics, 'width', { get: () => w + offset });
     }
     return metrics;
   };
