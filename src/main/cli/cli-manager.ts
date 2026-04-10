@@ -198,31 +198,6 @@ export class CliManager {
     }
   }
 
-  async checkUpdate(): Promise<{
-    available: boolean
-    latestVersion: string | null
-  }> {
-    try {
-      const res = await fetchWithTimeout(`${MIRROR_BASE_URL}/latest`)
-      if (!res.ok) return { available: false, latestVersion: null }
-
-      const latestVersion = (await res.text()).trim()
-      const currentInfo = this.getInfo()
-
-      // If we can't determine current version, don't show update toast
-      if (!currentInfo.version)
-        return { available: false, latestVersion }
-
-      const strip = (v: string) => v.replace(/^v/, '')
-      return {
-        available: strip(latestVersion) !== strip(currentInfo.version || ''),
-        latestVersion
-      }
-    } catch {
-      return { available: false, latestVersion: null }
-    }
-  }
-
   /**
    * Install a specific version (or latest if not specified).
    * Downloads to {cliDir}/{version}/claude and sets it as active.
@@ -405,12 +380,4 @@ export class CliManager {
     await this.install(onProgress, version)
   }
 
-  /**
-   * Update to the latest version.
-   */
-  async update(
-    onProgress?: (step: string, progress: number) => void
-  ): Promise<void> {
-    await this.install(onProgress)
-  }
 }

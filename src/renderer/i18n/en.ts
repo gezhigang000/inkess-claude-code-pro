@@ -184,13 +184,6 @@ export const en = {
   'drag.dropToOpen': 'Drop to open',
   'drag.hint': 'Drop a folder to open as project, or a file to insert its path',
 
-  // Update
-  'update.available': 'Update Available',
-  'update.description': 'Claude Code Pro {latest} is available (current: {current})',
-  'update.now': 'Update Now',
-  'update.updating': 'Updating...',
-  'update.later': 'Later',
-
   // TUN Gate
   'tun.title': 'Network Connection',
   'tun.connecting': 'Connecting...',

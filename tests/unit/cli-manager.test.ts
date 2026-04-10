@@ -82,42 +82,6 @@ describe('CliManager', () => {
     })
   })
 
-  describe('checkUpdate', () => {
-    it('returns available when versions differ', async () => {
-      // getInfo must return a version for checkUpdate to compare
-      mockExistsSync.mockReturnValue(true)
-      mockReadFileSync.mockReturnValue('1.0.0|2026-01-01')
-      // Invalidate cache so getInfo re-reads
-      cli.invalidateCache()
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: async () => '1.1.0',
-      })
-      const result = await cli.checkUpdate()
-      expect(result.available).toBe(true)
-      expect(result.latestVersion).toBe('1.1.0')
-    })
-
-    it('returns not available when version is null (marker has no version)', async () => {
-      mockExistsSync.mockReturnValue(true)
-      mockReadFileSync.mockReturnValue('2026-01-01T00:00:00.000Z') // legacy marker, no version
-      cli.invalidateCache()
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: async () => '1.1.0',
-      })
-      const result = await cli.checkUpdate()
-      expect(result.available).toBe(false)
-    })
-
-    it('returns not available on network error', async () => {
-      mockFetch.mockRejectedValueOnce(new Error('Network error'))
-      const result = await cli.checkUpdate()
-      expect(result.available).toBe(false)
-      expect(result.latestVersion).toBeNull()
-    })
-  })
-
   describe('isInstalled', () => {
     it('returns false when binary missing', () => {
       mockExistsSync.mockReturnValue(false)
