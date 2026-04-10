@@ -6,7 +6,6 @@ import { TerminalView } from './views/terminal/TerminalView'
 import { Sidebar } from './views/sidebar/Sidebar'
 import { SetupScreen, startInstall, startToolsInstall } from './views/setup/SetupScreen'
 import { SettingsPanel } from './views/settings/SettingsPanel'
-import { UpdateToast } from './views/update/UpdateToast'
 import { StatusBar } from './views/statusbar/StatusBar'
 import { CommandPalette } from './views/command-palette/CommandPalette'
 import { HistoryView } from './views/history/HistoryView'
@@ -48,7 +47,6 @@ export function App() {
   const [pendingCloseTabId, setPendingCloseTabId] = useState<string | null>(null)
   const [showCommandPalette, setShowCommandPalette] = useState(false)
   const pendingCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string } | null>(null)
   const [appUpdateStatus, setAppUpdateStatus] = useState<{
     type: string; version?: string; percent?: number; message?: string
   } | null>(null)
@@ -528,20 +526,6 @@ export function App() {
     return () => { unsub() }
   }, [])
 
-  // Check CLI update once on startup
-  useEffect(() => {
-    if (phase !== 'ready') return
-    const check = async () => {
-      const info = await window.api.cli.getInfo()
-      if (!info.version) return
-      const result = await window.api.cli.checkUpdate()
-      if (result.available && result.latestVersion) {
-        setUpdateInfo({ current: info.version, latest: result.latestVersion })
-      }
-    }
-    check()
-  }, [phase])
-
   // App auto-update status listener
   useEffect(() => {
     const unsub = window.api.appUpdate.onStatus((status) => {
@@ -685,15 +669,6 @@ export function App() {
       }
     }
   }, [handleNewTab])
-
-  const handleCliUpdate = useCallback(async () => {
-    const result = await window.api.cli.update()
-    if (result.success) {
-      const info = await window.api.cli.getInfo()
-      setCliInfo(info.installed, info.version)
-      setUpdateInfo(null)
-    }
-  }, [setCliInfo])
 
   const plainTitleBar = (
     <div
@@ -882,20 +857,10 @@ export function App() {
           }}
         />
       )}
-      {updateInfo && (
-        <div style={{ position: 'fixed', bottom: 16, right: 16, zIndex: 200 }}>
-          <UpdateToast
-            currentVersion={updateInfo.current}
-            latestVersion={updateInfo.latest}
-            onUpdate={handleCliUpdate}
-            onDismiss={() => setUpdateInfo(null)}
-          />
-        </div>
-      )}
       {appUpdateStatus && !appUpdateDismissed && (appUpdateStatus.type === 'available' || appUpdateStatus.type === 'downloading' || appUpdateStatus.type === 'downloaded' || appUpdateStatus.type === 'error') && (
         <AppUpdateToast
           status={appUpdateStatus}
-          bottomOffset={updateInfo ? 100 : 16}
+          bottomOffset={16}
           onDownload={() => window.api.appUpdate.download()}
           onInstall={() => window.api.appUpdate.install()}
           onDismiss={() => setAppUpdateDismissed(true)}

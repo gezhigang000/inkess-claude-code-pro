@@ -191,24 +191,6 @@ ipcMain.handle('cli:installVersion', async (_event, version: string) => {
   }
 })
 
-ipcMain.handle('cli:checkUpdate', async () => {
-  return cliManager.checkUpdate()
-})
-
-ipcMain.handle('cli:update', async () => {
-  try {
-    await cliManager.update((step, progress) => {
-      safeSend('cli:updateProgress', { step, progress })
-    })
-    analytics.track('cli_update')
-    statsCollector.logEvent('cli:update')
-    return { success: true }
-  } catch (err) {
-    log.error('CLI update failed:', err)
-    return { success: false, error: (err as Error).message }
-  }
-})
-
 // IPC: Tools Manager
 ipcMain.handle('tools:getInfo', () => {
   return toolsManager.getInfo()

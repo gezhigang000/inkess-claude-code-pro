@@ -20,21 +20,10 @@ const api = {
     installVersion: (version: string) => ipcRenderer.invoke('cli:installVersion', version) as Promise<{
       success: boolean; error?: string
     }>,
-    checkUpdate: () => ipcRenderer.invoke('cli:checkUpdate') as Promise<{
-      available: boolean; latestVersion: string | null
-    }>,
-    update: () => ipcRenderer.invoke('cli:update') as Promise<{
-      success: boolean; error?: string
-    }>,
     onInstallProgress: (callback: (event: { step: string; progress: number }) => void) => {
       const listener = (_: unknown, event: { step: string; progress: number }) => callback(event)
       ipcRenderer.on('cli:installProgress', listener)
       return () => ipcRenderer.removeListener('cli:installProgress', listener)
-    },
-    onUpdateProgress: (callback: (event: { step: string; progress: number }) => void) => {
-      const listener = (_: unknown, event: { step: string; progress: number }) => callback(event)
-      ipcRenderer.on('cli:updateProgress', listener)
-      return () => ipcRenderer.removeListener('cli:updateProgress', listener)
     }
   },
 

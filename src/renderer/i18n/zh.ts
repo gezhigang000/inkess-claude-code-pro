@@ -186,13 +186,6 @@ export const zh: Record<TranslationKey, string> = {
   'drag.dropToOpen': '拖放以打开',
   'drag.hint': '拖入文件夹打开项目，拖入文件插入路径',
 
-  // Update
-  'update.available': '有可用更新',
-  'update.description': 'Claude Code Pro {latest} 可用（当前: {current}）',
-  'update.now': '立即更新',
-  'update.updating': '更新中...',
-  'update.later': '稍后',
-
   // TUN Gate
   'tun.title': '网络连接',
   'tun.connecting': '连接中...',
