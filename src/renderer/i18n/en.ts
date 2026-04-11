@@ -184,6 +184,23 @@ export const en = {
   'drag.dropToOpen': 'Drop to open',
   'drag.hint': 'Drop a folder to open as project, or a file to insert its path',
 
+  // Network indicator + popover (StatusBar)
+  'network.connected': 'Connected',
+  'network.offline': 'Offline',
+  'network.reconnecting': 'Reconnecting...',
+  'network.testing': 'Testing...',
+  'network.error': 'Error',
+  'network.indicatorTooltip': 'Click for network details',
+  'network.exitIp': 'Exit IP',
+  'network.latency': 'Latency',
+  'network.lastTest': 'Last test',
+  'network.testNow': 'Test Now',
+  'network.reconnect': 'Reconnect',
+  'network.reconnectConfirm': 'Reconnect will briefly drop network. Continue?',
+  'network.reconnectFailed': 'Reconnect failed',
+  'network.cancel': 'Cancel',
+  'network.ipMismatch': 'Exit IP changed: expected {expected}, got {actual}',
+
   // TUN Gate
   'tun.title': 'Network Connection',
   'tun.connecting': 'Connecting...',

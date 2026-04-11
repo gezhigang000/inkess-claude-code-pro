@@ -34,6 +34,16 @@ export interface NetworkStatus {
   latencyMs: number | null
 }
 
+/** Push payload sent to renderer whenever tunnel state changes materially. */
+export interface TunStatusUpdate {
+  tunRunning: boolean
+  latencyMs: number | null
+  actualIp: string | null
+  expectedIp: string | null
+  error: string | null
+  lastTestAt: number
+}
+
 export class SingBoxManager {
   private singboxDir: string
   private configPath: string
@@ -49,6 +59,8 @@ export class SingBoxManager {
   private _baselineInterfaces: Set<string> = new Set()
   private _onInterfaceAlert: ((newInterfaces: string[]) => void) | null = null
   private _baselineTimer: ReturnType<typeof setTimeout> | null = null
+  private _statusListeners: Array<(update: TunStatusUpdate) => void> = []
+  private _lastActualIp: string | null = null
 
   constructor() {
     this.singboxDir = join(app.getPath('userData'), 'sing-box')
@@ -59,6 +71,36 @@ export class SingBoxManager {
   get mode(): SingBoxMode { return this._mode }
   get status(): string { return this._status }
   get lastError(): string | null { return this._lastError }
+
+  /**
+   * Subscribe to tunnel status updates. Called whenever a material change
+   * happens — startTun success/failure, stop, or a connectivity test result.
+   * Returns an unsubscribe function.
+   */
+  onStatus(listener: (update: TunStatusUpdate) => void): () => void {
+    this._statusListeners.push(listener)
+    return () => {
+      const i = this._statusListeners.indexOf(listener)
+      if (i >= 0) this._statusListeners.splice(i, 1)
+    }
+  }
+
+  /** Emit the current state to all status listeners. Swallows listener errors. */
+  private emitStatus(expectedIp: string | null = null, error: string | null = null): void {
+    const update: TunStatusUpdate = {
+      tunRunning: this._status === 'running',
+      latencyMs: this._latencyMs,
+      actualIp: this._lastActualIp,
+      expectedIp,
+      error: error ?? this._lastError,
+      lastTestAt: Date.now(),
+    }
+    for (const listener of this._statusListeners) {
+      try { listener(update) } catch (err) {
+        log.warn(`[sing-box] status listener threw: ${(err as Error).message}`)
+      }
+    }
+  }
 
   private get binaryPath(): string {
     const name = os.platform() === 'win32' ? 'sing-box.exe' : 'sing-box'
@@ -438,6 +480,8 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     this._lastError = null
     this._internetReachable = null
     this._latencyMs = null
+    this._lastActualIp = null
+    this.emitStatus(null, null)
   }
 
   /**
@@ -526,9 +570,17 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       }
 
       // DNS override is handled inside startWithSudo's shell command (runs as root)
+      // Emit a status update so renderer knows TUN is up. Latency/IP remain
+      // null until the caller runs a connectivity test.
+      this._internetReachable = null
+      this._latencyMs = null
+      this._lastActualIp = null
+      this.emitStatus(null, null)
       return { success: true }
     } catch (err) {
-      return { error: (err as Error).message }
+      const error = (err as Error).message
+      this.emitStatus(null, error)
+      return { error }
     }
   }
 
@@ -648,8 +700,11 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     if (this._status !== 'running') {
       this._internetReachable = false
       this._latencyMs = null
+      this._lastActualIp = null
       log.info(`[testConnectivity] skipped — TUN status=${this._status}`)
-      return { success: false, error: 'TUN is not running' }
+      const error = 'TUN is not running'
+      this.emitStatus(exitIp || null, error)
+      return { success: false, error }
     }
 
     try {
@@ -669,21 +724,28 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       const latency = Date.now() - start
       log.info(`[testConnectivity] exit IP: ${actualIp}, latency: ${latency}ms`)
 
+      this._latencyMs = latency
+      this._lastActualIp = actualIp
+
       if (exitIp && actualIp !== exitIp) {
         log.error(`[testConnectivity] exit IP mismatch: got ${actualIp}, expected ${exitIp}`)
         this._internetReachable = false
-        this._latencyMs = latency
-        return { success: false, latency, actualIp, error: `Exit IP mismatch: got ${actualIp}, expected ${exitIp}` }
+        const error = `Exit IP mismatch: got ${actualIp}, expected ${exitIp}`
+        this.emitStatus(exitIp || null, error)
+        return { success: false, latency, actualIp, error }
       }
 
       this._internetReachable = true
-      this._latencyMs = latency
+      this.emitStatus(exitIp || null, null)
       return { success: true, latency, actualIp }
     } catch (err) {
-      log.error('[testConnectivity] failed:', (err as Error).message)
+      const error = (err as Error).message
+      log.error('[testConnectivity] failed:', error)
       this._internetReachable = false
       this._latencyMs = null
-      return { success: false, error: (err as Error).message }
+      this._lastActualIp = null
+      this.emitStatus(exitIp || null, error)
+      return { success: false, error }
     }
   }
 

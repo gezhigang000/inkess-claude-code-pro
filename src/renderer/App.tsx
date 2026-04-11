@@ -2,6 +2,7 @@ import { useCallback, useRef, useEffect, useState } from 'react'
 import { useTerminalStore } from './stores/terminal'
 import { useAppStore } from './stores/app'
 import { useSettingsStore, applyTheme } from './stores/settings'
+import { useNetworkStore } from './stores/network'
 import { TerminalView } from './views/terminal/TerminalView'
 import { Sidebar } from './views/sidebar/Sidebar'
 import { SetupScreen, startInstall, startToolsInstall } from './views/setup/SetupScreen'
@@ -87,7 +88,14 @@ export function App() {
     let failCount = 0
 
     // Process liveness check (lightweight, every 5s)
+    // Skipped while useNetworkStore.reconnecting is true — during a manual
+    // reconnect sing-box is briefly down by design, we don't want to kill
+    // terminals or force TunGate full-screen to reappear.
     const processInterval = setInterval(async () => {
+      if (useNetworkStore.getState().reconnecting) {
+        failCount = 0
+        return
+      }
       const info = await window.api.tun.getInfo()
       if (!info.tunRunning) {
         failCount++
@@ -104,8 +112,11 @@ export function App() {
     // Exit IP verification (every 60s) — informational only.
     // Only triggers reconnect if exit IP CHANGED (route hijacking by another VPN).
     // Fetch failures (network hiccup, slow proxy) do NOT trigger reconnect.
+    // Skipped during a manual reconnect: the tunnel is briefly down/switching
+    // and any "IP mismatch" observed here would be spurious.
     const exitIp = subscriptionExitIp
     const ipCheckInterval = exitIp ? setInterval(async () => {
+      if (useNetworkStore.getState().reconnecting) return
       try {
         const result = await window.api.tun.testConnectivity(exitIp)
         if (result.success) {
@@ -123,10 +134,12 @@ export function App() {
       } catch { /* ignore network errors during check */ }
     }, 60 * 1000) : null
 
-    // Interface alert: external VPN detected, immediately verify IP
+    // Interface alert: external VPN detected, immediately verify IP.
+    // Skipped during manual reconnect (see ipCheckInterval rationale above).
     const unsubscribeAlert = window.api.tun.onInterfaceAlert?.(async (event) => {
       console.warn(`[App] external TUN detected: ${event.interfaces.join(', ')}`)
       if (!exitIp) return
+      if (useNetworkStore.getState().reconnecting) return
       try {
         const result = await window.api.tun.testConnectivity(exitIp)
         if (result.actualIp && result.actualIp !== exitIp) {
@@ -540,6 +553,15 @@ export function App() {
       window.api.appUpdate.check()
     }, 2 * 60 * 60 * 1000)
     return () => { unsub(); clearInterval(recheckTimer) }
+  }, [])
+
+  // Network status push — keeps useNetworkStore in sync with sing-box
+  // manager state so the StatusBar indicator always shows current latency.
+  useEffect(() => {
+    const unsub = window.api.tun.onStatusUpdate((update) => {
+      useNetworkStore.getState().applyStatusUpdate(update)
+    })
+    return () => { unsub() }
   }, [])
 
   // Desktop notifications
