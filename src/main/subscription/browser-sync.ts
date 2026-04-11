@@ -163,6 +163,7 @@ export class BrowserSync {
       return
     }
 
+    log.info('[BrowserSync] _doUpload start')
     try {
       // Export both session jars. The browser jar may contain cookies for
       // many origins (proton.me, github.com, cloudflare, ...) — they all
@@ -181,9 +182,11 @@ export class BrowserSync {
       }
 
       // Export claude.ai localStorage (best-effort; timeout → upload cookies only).
+      log.info('[BrowserSync] exportClaudeLocalStorage start')
       let claudeLocalStorage: Record<string, string> = {}
       try {
         claudeLocalStorage = await this.exportClaudeLocalStorage()
+        log.info(`[BrowserSync] exportClaudeLocalStorage returned ${Object.keys(claudeLocalStorage).length} keys`)
       } catch (err) {
         log.warn('[BrowserSync] localStorage export failed, uploading cookies only:', err)
       }
