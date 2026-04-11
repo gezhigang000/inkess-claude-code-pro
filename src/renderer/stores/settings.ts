@@ -4,8 +4,21 @@ const STORAGE_KEY = 'inkess-settings'
 
 type ThemeChoice = 'auto' | 'dark' | 'light'
 type LanguageChoice = 'auto' | 'zh' | 'en'
+// Tunnel modes:
+// - 'single'    — no tunnel, direct SOCKS5 residential proxy (1 hop from user)
+// - 'hysteria2' — chain via Hysteria2 (QUIC) tunnel → SOCKS5
+// - 'vless'     — chain via VLESS (TCP/TLS) tunnel → SOCKS5
+// - 'trojan'    — chain via Trojan tunnel → SOCKS5
+// - 'ss'        — chain via Shadowsocks tunnel → SOCKS5
+// 'auto' triggers benchmark-and-pick; others force that specific mode.
+export type TunnelProtocolPref = 'auto' | 'single' | 'hysteria2' | 'vless' | 'trojan' | 'ss'
+// Concrete (non-'auto') mode — used for lastGoodTunnelProtocol since
+// the resolver is always a specific mode, never 'auto'.
+export type ResolvedTunnelProtocol = 'single' | 'hysteria2' | 'vless' | 'trojan' | 'ss'
 const VALID_THEMES: ThemeChoice[] = ['auto', 'dark', 'light']
 const VALID_LANGUAGES: LanguageChoice[] = ['auto', 'zh', 'en']
+const VALID_TUNNEL_PREFS: TunnelProtocolPref[] = ['auto', 'single', 'hysteria2', 'vless', 'trojan', 'ss']
+const VALID_RESOLVED_PROTOCOLS: ResolvedTunnelProtocol[] = ['single', 'hysteria2', 'vless', 'trojan', 'ss']
 
 interface SettingsState {
   fontSize: number
@@ -25,6 +38,15 @@ interface SettingsState {
   proxySubNodeUrl: string                // resolved URL of selected subscription node
   proxySelectedNode: string              // selected node name (subscription mode)
   proxyRegion: string
+  // User-facing preference for which tunnel protocol to start first.
+  // 'auto' = default priority (hysteria2 → vless → trojan → ss) with auto-fallback.
+  // Others = force-start with that protocol (still falls back if it fails).
+  tunnelProtocolPref: TunnelProtocolPref
+  // Last tunnel protocol that actually succeeded — updated after every
+  // successful startTun so the next launch starts with a known-good protocol
+  // even if pref is 'auto'. Separate from pref so the user's manual choice
+  // is never silently overwritten.
+  lastGoodTunnelProtocol: ResolvedTunnelProtocol | ''
 
   setFontSize: (v: number) => void
   setIdeChoice: (v: string) => void
@@ -43,6 +65,8 @@ interface SettingsState {
   setProxySubNodeUrl: (v: string) => void
   setProxySelectedNode: (v: string) => void
   setProxyRegion: (v: string) => void
+  setTunnelProtocolPref: (v: TunnelProtocolPref) => void
+  setLastGoodTunnelProtocol: (v: ResolvedTunnelProtocol | '') => void
 }
 
 function loadSettings(): Partial<SettingsState> {
@@ -72,6 +96,8 @@ function persistSettings(state: SettingsState) {
       proxyMode: state.proxyMode,
       proxySelectedNode: state.proxySelectedNode,
       proxyRegion: state.proxyRegion,
+      tunnelProtocolPref: state.tunnelProtocolPref,
+      lastGoodTunnelProtocol: state.lastGoodTunnelProtocol,
     }))
   } catch { /* ignore */ }
 }
@@ -103,6 +129,8 @@ const saved = loadSettings()
 const validatedTheme: ThemeChoice = VALID_THEMES.includes((saved as any).theme) ? (saved as any).theme : 'auto'
 const validatedLanguage: LanguageChoice = VALID_LANGUAGES.includes((saved as any).language) ? (saved as any).language : 'auto'
 const validatedFontSize = typeof saved.fontSize === 'number' && saved.fontSize >= 10 && saved.fontSize <= 24 ? saved.fontSize : 14
+const validatedTunnelPref: TunnelProtocolPref = VALID_TUNNEL_PREFS.includes((saved as any).tunnelProtocolPref) ? (saved as any).tunnelProtocolPref : 'auto'
+const validatedLastGood: ResolvedTunnelProtocol | '' = VALID_RESOLVED_PROTOCOLS.includes((saved as any).lastGoodTunnelProtocol) ? (saved as any).lastGoodTunnelProtocol : ''
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   fontSize: validatedFontSize,
@@ -122,6 +150,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   proxySubNodeUrl: '',         // loaded from encrypted session.json on startup, not localStorage
   proxySelectedNode: typeof (saved as any).proxySelectedNode === 'string' ? (saved as any).proxySelectedNode : '',
   proxyRegion: typeof (saved as any).proxyRegion === 'string' ? (saved as any).proxyRegion : 'us',
+  tunnelProtocolPref: validatedTunnelPref,
+  lastGoodTunnelProtocol: validatedLastGood,
 
   setFontSize: (v) => { set({ fontSize: v }); persistSettings(get()) },
   setIdeChoice: (v) => { set({ ideChoice: v }); persistSettings(get()) },
@@ -167,6 +197,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ proxyRegion: v })
     const s = get(); persistSettings(s); syncProxyToMain(s)
   },
+  setTunnelProtocolPref: (v) => { set({ tunnelProtocolPref: v }); persistSettings(get()) },
+  setLastGoodTunnelProtocol: (v) => { set({ lastGoodTunnelProtocol: v }); persistSettings(get()) },
 }))
 
 applyTheme(validatedTheme)

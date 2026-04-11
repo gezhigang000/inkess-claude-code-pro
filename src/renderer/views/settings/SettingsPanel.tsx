@@ -152,9 +152,18 @@ const REGION_OPTIONS = [
   { id: 'auto', label: '🖥 System (no mask)', tz: '' },
 ]
 
+const TUNNEL_PROTOCOL_OPTIONS: { id: 'auto' | 'single' | 'hysteria2' | 'vless' | 'trojan' | 'ss'; label: string; hint: string }[] = [
+  { id: 'auto', label: 'Auto (benchmark)', hint: 'Probe all modes on first launch, pick lowest latency, remember for next time' },
+  { id: 'single', label: 'Direct (1 hop)', hint: 'Residential proxy only, no tunnel. Best when your ISP peers well to the proxy' },
+  { id: 'hysteria2', label: 'Hysteria2 (QUIC)', hint: 'Best on lossy links; blocked/throttled on some Chinese ISPs' },
+  { id: 'vless', label: 'VLESS (TCP)', hint: 'Most compatible; use if QUIC is throttled' },
+  { id: 'trojan', label: 'Trojan', hint: 'TCP over TLS; fallback' },
+  { id: 'ss', label: 'Shadowsocks', hint: 'Legacy; fallback' },
+]
+
 function NetworkSection({ onTunStatusChange }: { onTunStatusChange?: (ok: boolean) => void }) {
   const { t } = useI18n()
-  const { proxyUrl, proxyRegion, setProxyUrl, setProxyRegion } = useSettingsStore()
+  const { proxyUrl, proxyRegion, setProxyUrl, setProxyRegion, tunnelProtocolPref, setTunnelProtocolPref, lastGoodTunnelProtocol, setLastGoodTunnelProtocol } = useSettingsStore()
 
   const region = REGION_OPTIONS.find(r => r.id === proxyRegion) || REGION_OPTIONS[0]
 
@@ -173,6 +182,47 @@ function NetworkSection({ onTunStatusChange }: { onTunStatusChange?: (ok: boolea
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('settings.proxyTunUrlHint')}</div>
       </SettingsGroup>
       <TunControl proxyUrl={proxyUrl} onTunStatusChange={onTunStatusChange} />
+
+      {/* Tunnel protocol preference */}
+      <SettingsGroup title="Tunnel protocol">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {TUNNEL_PROTOCOL_OPTIONS.map(p => (
+            <div key={p.id} onClick={() => setTunnelProtocolPref(p.id)} style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
+              borderRadius: 6, cursor: 'pointer', fontSize: 13,
+              background: tunnelProtocolPref === p.id ? 'var(--accent-subtle)' : 'transparent',
+            }}>
+              <div style={{
+                width: 8, height: 8, borderRadius: '50%',
+                background: tunnelProtocolPref === p.id ? 'var(--accent)' : 'transparent',
+                border: tunnelProtocolPref === p.id ? 'none' : '2px solid var(--text-muted)',
+              }} />
+              <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+                <span style={{ color: 'var(--text-primary)' }}>{p.label}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{p.hint}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        {lastGoodTunnelProtocol && (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>Last successful: <span style={{ color: 'var(--text-secondary)' }}>{lastGoodTunnelProtocol}</span></span>
+            <button
+              onClick={() => setLastGoodTunnelProtocol('')}
+              style={{
+                padding: '2px 8px', fontSize: 11, borderRadius: 4,
+                background: 'transparent', border: '1px solid var(--border)',
+                color: 'var(--text-muted)', cursor: 'pointer',
+              }}
+            >
+              Reset
+            </button>
+          </div>
+        )}
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+          Auto mode tests every option on first connect and picks the fastest. Changes take effect on next reconnect.
+        </div>
+      </SettingsGroup>
 
       {/* Region selector */}
       <SettingsGroup title={t('settings.proxyRegion')}>

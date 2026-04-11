@@ -407,13 +407,127 @@ ipcMain.handle('tun:install', async () => {
   }
 })
 
+// Tunnel *mode* — now includes 'single' (direct residential proxy, no
+// tunnel hop). This is a first-class citizen in the benchmark loop, not a
+// "last-resort fallback" like before.
+type TunnelMode = 'single' | 'hysteria2' | 'vless' | 'trojan' | 'ss'
+// Default probe order: single first (user's request — 1-hop is often fastest
+// when the ISP peering to the residential proxy is decent), then tunnel
+// protocols in the old priority order.
+const DEFAULT_PROBE_ORDER: TunnelMode[] = ['single', 'hysteria2', 'vless', 'trojan', 'ss']
+const ALL_MODES = new Set<TunnelMode>(DEFAULT_PROBE_ORDER)
+
+// Strategy C thresholds:
+// - FAST_ENOUGH_MS: during benchmark, any mode with verified latency ≤ this
+//   triggers an early exit — no need to keep probing.
+// - LAST_GOOD_ACCEPTABLE_MS: when reusing lastGood without full benchmark,
+//   a single verify ≤ this keeps the connection; higher → fall through to
+//   a full benchmark because the network path has likely degraded.
+const FAST_ENOUGH_MS = 1500
+const LAST_GOOD_ACCEPTABLE_MS = 3000
+
+export interface StartTunOptions {
+  exitIp?: string
+  preferredProtocol?: TunnelMode | 'auto'
+  lastGoodProtocol?: TunnelMode | ''
+}
+
+export interface ProbeResult {
+  mode: TunnelMode
+  latency: number | null  // null = failed
+  error: string | null
+}
+
+export interface StartTunResult {
+  tunnelProtocol: TunnelMode | null  // null = all modes failed (should have thrown)
+  tunnelNodeName: string | null
+  probeResults: ProbeResult[]
+}
+
+type TunnelNode = Awaited<ReturnType<typeof fetchSubscription>>[number]
+
+/**
+ * Configure sing-box to use the given mode, then spawn it.
+ * For 'single' — no tunnel outbound (direct SOCKS5 from user's ISP).
+ * For chain modes — pick the first matching node from the subscription.
+ *
+ * Returns the node name for chain modes, or 'direct' for single.
+ * Throws if the mode isn't available in the subscription or sing-box fails.
+ */
+async function startWithMode(
+  mode: TunnelMode,
+  proxyUrl: string,
+  nodes: TunnelNode[],
+): Promise<{ nodeName: string }> {
+  if (mode === 'single') {
+    singBoxManager.setTunnelOutbound(undefined)
+    await singBoxManager.startTun(proxyUrl)
+    return { nodeName: 'direct' }
+  }
+  const node = nodes.find(n => n.type === mode)
+  if (!node) throw new Error(`no ${mode} node in subscription`)
+  const tunnelOutbound = parseProxyUrl(node.raw || node.url)
+  singBoxManager.setTunnelOutbound(tunnelOutbound)
+  await singBoxManager.startTun(proxyUrl)
+  return { nodeName: node.name }
+}
+
+/**
+ * Run 1-2 testConnectivity probes against an already-started sing-box.
+ * Returns the best (lowest) latency seen, or null on failure.
+ * During benchmark we only do 1 test per mode to keep total runtime bounded.
+ */
+async function probeCurrentMode(
+  exitIp: string,
+  attempts: 1 | 2 = 1,
+): Promise<{ latency: number | null; error: string | null }> {
+  // Settle time for route table / QUIC handshake
+  await new Promise(r => setTimeout(r, 600))
+  let bestLatency: number | null = null
+  let lastError: string | null = null
+  for (let i = 0; i < attempts; i++) {
+    const t = await singBoxManager.testConnectivity(exitIp)
+    if (t.success && typeof t.latency === 'number') {
+      if (bestLatency === null || t.latency < bestLatency) bestLatency = t.latency
+    } else {
+      lastError = t.error || 'unknown'
+    }
+    if (i < attempts - 1) await new Promise(r => setTimeout(r, 500))
+  }
+  return { latency: bestLatency, error: bestLatency === null ? lastError : null }
+}
+
+function armInterfaceMonitor(): void {
+  singBoxManager.startInterfaceMonitor((newInterfaces) => {
+    log.warn(`[startTun] external TUN detected: ${newInterfaces.join(', ')}`)
+    safeSend('tun:interfaceAlert', { interfaces: newInterfaces })
+  })
+}
+
+function sendProgress(phase: string, current?: number, total?: number, detail?: string): void {
+  safeSend('tun:startupProgress', { phase, current, total, detail })
+}
+
 /**
  * Shared startup flow used by both tun:startTun and tun:reconnect IPC
- * handlers. Validates the proxy URL, resolves the tunnel subscription (if
- * any), picks the best tunnel node, and starts sing-box. Throws on failure
- * so callers can do their own error reporting / IPC return value.
+ * handlers. Uses Strategy C:
+ *
+ *   1. If `preferredProtocol` is explicit (not 'auto'): use that mode
+ *      directly with no benchmark/fallback. User is in control.
+ *   2. If `preferredProtocol` is 'auto' and `lastGoodProtocol` is set:
+ *      start with lastGood; if it verifies AND latency ≤ 3000ms, done.
+ *      Otherwise fall through to full benchmark.
+ *   3. Otherwise: probe every candidate mode (single → hy2 → vless →
+ *      trojan → ss), record latencies, early-exit on any latency ≤ 1500ms,
+ *      finally pick the lowest measured latency across all probed modes.
+ *
+ * Throws on terminal failure (all modes failed or proxy URL invalid).
  */
-async function startTunInternal(proxyUrl: string, tunnelUrl?: string): Promise<void> {
+async function startTunInternal(
+  proxyUrl: string,
+  tunnelUrl?: string,
+  opts: StartTunOptions = {},
+): Promise<StartTunResult> {
   if (typeof proxyUrl !== 'string' || proxyUrl.length > 500 || proxyUrl.length < 5) {
     log.error(`[startTun] invalid proxy URL (len=${proxyUrl?.length})`)
     throw new Error('Invalid proxy URL')
@@ -421,48 +535,222 @@ async function startTunInternal(proxyUrl: string, tunnelUrl?: string): Promise<v
   log.info(`[startTun] url: ${proxyUrl?.replace(/:\/\/.*@/, '://***@').replace(/:\/\/([^/]+)/, '://***.***:***')}`)
   if (tunnelUrl) log.info(`[startTun] tunnelUrl: ${tunnelUrl.slice(0, 50)}...`)
 
-  // Resolve tunnel subscription → pick best node → set outbound
+  // Fetch subscription once. If it fails, we can still do 'single' mode.
+  let nodes: TunnelNode[] = []
   if (tunnelUrl && typeof tunnelUrl === 'string' && tunnelUrl.length > 5) {
+    sendProgress('resolving-tunnel')
+    log.info(`[startTun] fetching tunnel subscription...`)
     try {
-      log.info(`[startTun] fetching tunnel subscription...`)
-      const nodes = await fetchSubscription(tunnelUrl)
-      // Pick best tunnel node: prefer hysteria2 (QUIC, best anti-packet-loss), then vless (UDP), then trojan, then ss
-      const tunnelNode = nodes.find(n => n.type === 'hysteria2')
-        || nodes.find(n => n.type === 'vless')
-        || nodes.find(n => n.type === 'trojan')
-        || nodes.find(n => n.type === 'ss')
-      if (tunnelNode) {
-        const tunnelOutbound = parseProxyUrl(tunnelNode.raw || tunnelNode.url)
-        singBoxManager.setTunnelOutbound(tunnelOutbound)
-        log.info(`[startTun] tunnel node: ${tunnelNode.name} (${tunnelNode.type}, ${tunnelNode.server})`)
-      } else {
-        log.warn(`[startTun] no usable tunnel node found in ${nodes.length} nodes, falling back to single proxy`)
-        singBoxManager.setTunnelOutbound(undefined)
-      }
-    } catch (tunnelErr) {
-      log.error(`[startTun] tunnel subscription failed, falling back to single proxy:`, (tunnelErr as Error).message)
-      singBoxManager.setTunnelOutbound(undefined)
+      nodes = await fetchSubscription(tunnelUrl)
+    } catch (err) {
+      log.error(`[startTun] subscription fetch failed, chain modes unavailable: ${(err as Error).message}`)
+      // nodes stays [] → only 'single' mode is available below
     }
-  } else {
-    singBoxManager.setTunnelOutbound(undefined)
   }
 
-  await singBoxManager.startTun(proxyUrl)
-  log.info(`[startTun] success`)
-  statsCollector.logEvent('tun:start')
+  // Determine which modes are actually available given the subscription.
+  const availableModes: TunnelMode[] = ['single']
+  for (const mode of DEFAULT_PROBE_ORDER) {
+    if (mode === 'single') continue
+    if (nodes.find(n => n.type === mode)) availableModes.push(mode)
+  }
+  log.info(`[startTun] available modes: ${availableModes.join(', ')}`)
 
-  // Start interface monitor — alert renderer if external VPN detected
-  singBoxManager.startInterfaceMonitor((newInterfaces) => {
-    log.warn(`[startTun] external TUN detected: ${newInterfaces.join(', ')}`)
-    safeSend('tun:interfaceAlert', { interfaces: newInterfaces })
-  })
+  // --- Branch 1: explicit user pref → use it, no benchmark ---
+  if (opts.preferredProtocol && opts.preferredProtocol !== 'auto') {
+    const forced = opts.preferredProtocol
+    if (!availableModes.includes(forced)) {
+      throw new Error(`preferred mode "${forced}" not available (subscription has: ${availableModes.join(', ')})`)
+    }
+    log.info(`[startTun] user forced mode: ${forced}`)
+    sendProgress('starting', undefined, undefined, forced)
+    const { nodeName } = await startWithMode(forced, proxyUrl, nodes)
+
+    // Verify if we have an exitIp
+    if (opts.exitIp) {
+      const p = await probeCurrentMode(opts.exitIp, 2)
+      if (p.latency === null) {
+        await singBoxManager.stop(false)
+        throw new Error(`forced mode ${forced} verification failed: ${p.error || 'unknown'}`)
+      }
+      log.info(`[startTun] success (forced ${forced}, ${p.latency}ms)`)
+    } else {
+      log.info(`[startTun] success (forced ${forced}, verification skipped)`)
+    }
+    statsCollector.logEvent('tun:start')
+    armInterfaceMonitor()
+    return {
+      tunnelProtocol: forced,
+      tunnelNodeName: nodeName,
+      probeResults: [{ mode: forced, latency: null, error: null }],
+    }
+  }
+
+  // --- Branch 2: auto + lastGood present → try lastGood first ---
+  // Only skip benchmark if it verifies AND is within acceptable latency.
+  if (opts.lastGoodProtocol && availableModes.includes(opts.lastGoodProtocol)) {
+    const lg = opts.lastGoodProtocol
+    log.info(`[startTun] trying lastGood first: ${lg}`)
+    sendProgress('trying-last-good', undefined, undefined, lg)
+    try {
+      const { nodeName } = await startWithMode(lg, proxyUrl, nodes)
+      if (opts.exitIp) {
+        const p = await probeCurrentMode(opts.exitIp, 1)
+        if (p.latency !== null && p.latency <= LAST_GOOD_ACCEPTABLE_MS) {
+          log.info(`[startTun] lastGood ${lg} verified at ${p.latency}ms — using it (skipping benchmark)`)
+          statsCollector.logEvent('tun:start')
+          armInterfaceMonitor()
+          return {
+            tunnelProtocol: lg,
+            tunnelNodeName: nodeName,
+            probeResults: [{ mode: lg, latency: p.latency, error: null }],
+          }
+        }
+        log.info(`[startTun] lastGood ${lg} not acceptable (latency=${p.latency}, error=${p.error}) — falling through to benchmark`)
+      } else {
+        // No exitIp — can't verify, but lastGood started OK, trust it.
+        log.info(`[startTun] lastGood ${lg} started (no exitIp to verify)`)
+        statsCollector.logEvent('tun:start')
+        armInterfaceMonitor()
+        return {
+          tunnelProtocol: lg,
+          tunnelNodeName: nodeName,
+          probeResults: [{ mode: lg, latency: null, error: null }],
+        }
+      }
+      // Benchmark needs a clean slate
+      await singBoxManager.stop(false)
+    } catch (err) {
+      log.warn(`[startTun] lastGood ${lg} failed to start: ${(err as Error).message} — falling through to benchmark`)
+    }
+  }
+
+  // --- Branch 3: full benchmark ---
+  // Order: lastGood first (if not already tried), then default order (dedup)
+  const probeOrder: TunnelMode[] = []
+  const push = (m: TunnelMode | undefined | '') => {
+    if (m && ALL_MODES.has(m as TunnelMode) && availableModes.includes(m as TunnelMode) && !probeOrder.includes(m as TunnelMode)) {
+      probeOrder.push(m as TunnelMode)
+    }
+  }
+  for (const m of DEFAULT_PROBE_ORDER) push(m)
+
+  if (!opts.exitIp) {
+    // Without an exitIp we can't benchmark — just start 'single' as a reasonable default
+    log.warn(`[startTun] no exitIp provided — skipping benchmark, starting 'single' directly`)
+    const { nodeName } = await startWithMode('single', proxyUrl, nodes)
+    statsCollector.logEvent('tun:start')
+    armInterfaceMonitor()
+    return {
+      tunnelProtocol: 'single',
+      tunnelNodeName: nodeName,
+      probeResults: [{ mode: 'single', latency: null, error: null }],
+    }
+  }
+
+  log.info(`[startTun] benchmark order: ${probeOrder.join(' → ')}`)
+  const probeResults: ProbeResult[] = []
+  let currentMode: TunnelMode | null = null
+  let currentNodeName: string | null = null
+  let earlyExit = false
+
+  for (let i = 0; i < probeOrder.length; i++) {
+    const mode = probeOrder[i]
+    sendProgress('benchmarking', i + 1, probeOrder.length, mode)
+    log.info(`[startTun] benchmarking ${mode} (${i + 1}/${probeOrder.length})`)
+
+    try {
+      const { nodeName } = await startWithMode(mode, proxyUrl, nodes)
+      currentMode = mode
+      currentNodeName = nodeName
+
+      const p = await probeCurrentMode(opts.exitIp, 1)
+      if (p.latency !== null) {
+        probeResults.push({ mode, latency: p.latency, error: null })
+        log.info(`[startTun] ${mode} OK: ${p.latency}ms`)
+        if (p.latency <= FAST_ENOUGH_MS) {
+          log.info(`[startTun] ${mode} is fast enough (${p.latency}ms ≤ ${FAST_ENOUGH_MS}ms) — early exit`)
+          earlyExit = true
+          break
+        }
+      } else {
+        log.warn(`[startTun] ${mode} probe failed: ${p.error}`)
+        probeResults.push({ mode, latency: null, error: p.error })
+      }
+    } catch (err) {
+      const msg = (err as Error).message
+      log.warn(`[startTun] ${mode} start failed: ${msg}`)
+      probeResults.push({ mode, latency: null, error: msg })
+      currentMode = null
+      currentNodeName = null
+    }
+
+    // Stop before next probe (unless we're the last iteration already)
+    if (!earlyExit && i < probeOrder.length - 1 && currentMode !== null) {
+      await singBoxManager.stop(false)
+      currentMode = null
+      currentNodeName = null
+    }
+  }
+
+  // Pick winner: lowest latency among non-null results
+  const working = probeResults.filter(r => r.latency !== null)
+  if (working.length === 0) {
+    // Nothing worked — leave sing-box stopped and throw
+    if (currentMode !== null) await singBoxManager.stop(false)
+    const errorSummary = probeResults.map(r => `${r.mode}=${r.error}`).join('; ')
+    throw new Error(`all modes failed: ${errorSummary}`)
+  }
+  working.sort((a, b) => (a.latency as number) - (b.latency as number))
+  const winner = working[0]
+  log.info(`[startTun] benchmark winner: ${winner.mode} (${winner.latency}ms). All results: ${probeResults.map(r => `${r.mode}=${r.latency ?? 'FAIL'}`).join(', ')}`)
+
+  // If the currently-running mode isn't the winner, restart with the winner
+  if (currentMode !== winner.mode) {
+    if (currentMode !== null) await singBoxManager.stop(false)
+    log.info(`[startTun] restarting with winner ${winner.mode}`)
+    sendProgress('starting', undefined, undefined, winner.mode)
+    const { nodeName } = await startWithMode(winner.mode, proxyUrl, nodes)
+    currentNodeName = nodeName
+  }
+
+  statsCollector.logEvent('tun:start')
+  armInterfaceMonitor()
+  return {
+    tunnelProtocol: winner.mode,
+    tunnelNodeName: currentNodeName,
+    probeResults,
+  }
 }
 
-ipcMain.handle('tun:startTun', async (_event, proxyUrl: string, tunnelUrl?: string) => {
+const VALID_PREFS = ['auto', 'single', 'hysteria2', 'vless', 'trojan', 'ss'] as const
+const VALID_LAST_GOOD = ['', 'single', 'hysteria2', 'vless', 'trojan', 'ss'] as const
+
+function sanitizeStartTunOpts(opts: unknown): StartTunOptions {
+  const out: StartTunOptions = {}
+  if (!opts || typeof opts !== 'object') return out
+  const o = opts as Record<string, unknown>
+  if (typeof o.exitIp === 'string' && /^[0-9a-fA-F:.]{0,64}$/.test(o.exitIp)) out.exitIp = o.exitIp
+  if (typeof o.preferredProtocol === 'string' && (VALID_PREFS as readonly string[]).includes(o.preferredProtocol)) {
+    out.preferredProtocol = o.preferredProtocol as StartTunOptions['preferredProtocol']
+  }
+  if (typeof o.lastGoodProtocol === 'string' && (VALID_LAST_GOOD as readonly string[]).includes(o.lastGoodProtocol)) {
+    out.lastGoodProtocol = o.lastGoodProtocol as StartTunOptions['lastGoodProtocol']
+  }
+  return out
+}
+
+ipcMain.handle('tun:startTun', async (_event, proxyUrl: string, tunnelUrl?: string, opts?: unknown) => {
   proxyUrl = typeof proxyUrl === 'string' ? proxyUrl.trim() : proxyUrl
   try {
-    await startTunInternal(proxyUrl, tunnelUrl)
-    return { success: true }
+    const safeOpts = sanitizeStartTunOpts(opts)
+    const result = await startTunInternal(proxyUrl, tunnelUrl, safeOpts)
+    return {
+      success: true,
+      tunnelProtocol: result.tunnelProtocol,
+      tunnelNodeName: result.tunnelNodeName,
+      probeResults: result.probeResults,
+    }
   } catch (err) {
     log.error(`[startTun] error:`, err)
     const error = (err as Error).message
@@ -476,7 +764,7 @@ ipcMain.handle('tun:startTun', async (_event, proxyUrl: string, tunnelUrl?: stri
   }
 })
 
-ipcMain.handle('tun:reconnect', async () => {
+ipcMain.handle('tun:reconnect', async (_event, opts?: unknown) => {
   // Manual user-triggered reconnect: stop the running tunnel, then restart
   // from the current subscription session. Reuses startTunInternal so
   // tunnel subscriptions are re-fetched (picks up any node changes) and
@@ -489,9 +777,16 @@ ipcMain.handle('tun:reconnect', async () => {
   try {
     // stop(false) = skip DNS restore; we're about to re-hijack immediately
     await singBoxManager.stop(false)
-    await startTunInternal(session.proxyUrl, session.tunnelUrl)
-    log.info('[reconnect] success')
-    return { success: true }
+    const safeOpts = sanitizeStartTunOpts(opts)
+    safeOpts.exitIp = session.exitIp  // Always use session's exitIp, not renderer-provided
+    const result = await startTunInternal(session.proxyUrl, session.tunnelUrl, safeOpts)
+    log.info(`[reconnect] success (protocol=${result.tunnelProtocol ?? 'unknown'})`)
+    return {
+      success: true,
+      tunnelProtocol: result.tunnelProtocol,
+      tunnelNodeName: result.tunnelNodeName,
+      probeResults: result.probeResults,
+    }
   } catch (err) {
     log.error('[reconnect] failed:', err)
     const error = (err as Error).message

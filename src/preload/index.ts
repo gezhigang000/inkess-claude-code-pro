@@ -157,8 +157,36 @@ const api = {
       internetReachable: boolean | null; latencyMs: number | null
     }>,
     install: () => ipcRenderer.invoke('tun:install') as Promise<{ success: boolean; error?: string }>,
-    startTun: (proxyUrl: string, tunnelUrl?: string) => ipcRenderer.invoke('tun:startTun', proxyUrl, tunnelUrl) as Promise<{ success: boolean; error?: string }>,
-    reconnect: () => ipcRenderer.invoke('tun:reconnect') as Promise<{ success: boolean; error?: string }>,
+    startTun: (
+      proxyUrl: string,
+      tunnelUrl?: string,
+      opts?: {
+        exitIp?: string
+        preferredProtocol?: 'auto' | 'single' | 'hysteria2' | 'vless' | 'trojan' | 'ss'
+        lastGoodProtocol?: '' | 'single' | 'hysteria2' | 'vless' | 'trojan' | 'ss'
+      },
+    ) => ipcRenderer.invoke('tun:startTun', proxyUrl, tunnelUrl, opts) as Promise<{
+      success: boolean
+      error?: string
+      tunnelProtocol?: 'single' | 'hysteria2' | 'vless' | 'trojan' | 'ss' | null
+      tunnelNodeName?: string | null
+      probeResults?: Array<{ mode: string; latency: number | null; error: string | null }>
+    }>,
+    reconnect: (opts?: {
+      preferredProtocol?: 'auto' | 'single' | 'hysteria2' | 'vless' | 'trojan' | 'ss'
+      lastGoodProtocol?: '' | 'single' | 'hysteria2' | 'vless' | 'trojan' | 'ss'
+    }) => ipcRenderer.invoke('tun:reconnect', opts) as Promise<{
+      success: boolean
+      error?: string
+      tunnelProtocol?: 'single' | 'hysteria2' | 'vless' | 'trojan' | 'ss' | null
+      tunnelNodeName?: string | null
+      probeResults?: Array<{ mode: string; latency: number | null; error: string | null }>
+    }>,
+    onStartupProgress: (callback: (event: { phase: string; current?: number; total?: number; detail?: string }) => void) => {
+      const listener = (_: unknown, event: { phase: string; current?: number; total?: number; detail?: string }) => callback(event)
+      ipcRenderer.on('tun:startupProgress', listener)
+      return (): void => { ipcRenderer.removeListener('tun:startupProgress', listener) }
+    },
     stop: () => ipcRenderer.invoke('tun:stop') as Promise<{ success: boolean }>,
     testConnectivity: (exitIp?: string) => ipcRenderer.invoke('tun:testConnectivity', exitIp) as Promise<{ success: boolean; latency?: number; error?: string; actualIp?: string }>,
     diagnostics: () => ipcRenderer.invoke('tun:diagnostics') as Promise<Record<string, unknown>>,

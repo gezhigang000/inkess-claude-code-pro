@@ -61,6 +61,12 @@ export class SingBoxManager {
   private _baselineTimer: ReturnType<typeof setTimeout> | null = null
   private _statusListeners: Array<(update: TunStatusUpdate) => void> = []
   private _lastActualIp: string | null = null
+  // In-flight testConnectivity fetch — aborted on stop()/startTun() so a
+  // straggling fetch can't cross the stop/start boundary and return the
+  // direct-route IP (would log spurious "exit IP mismatch"). Also bumped on
+  // every start so that tests from an older tunnel cycle are rejected as stale.
+  private _connectivityAbort: AbortController | null = null
+  private _tunnelCycle = 0
 
   constructor() {
     this.singboxDir = join(app.getPath('userData'), 'sing-box')
@@ -442,6 +448,17 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     log.info(`[sing-box] stop() called, mode=${this._mode} status=${this._status} restoreDns=${restoreDns}`)
     this.stopInterfaceMonitor()
 
+    // Abort any in-flight testConnectivity fetch so its response can't arrive
+    // after sing-box is gone and get routed via the direct outbound, which
+    // would report a bogus "exit IP mismatch" and trigger a cascading reconnect.
+    if (this._connectivityAbort) {
+      this._connectivityAbort.abort()
+      this._connectivityAbort = null
+    }
+    // Bump the tunnel cycle — any result still in flight will be discarded
+    // by the stale-result guard in testConnectivity.
+    this._tunnelCycle++
+
     // Restore system DNS before killing sing-box (skip on restart to avoid DNS leak window)
     if (restoreDns) this.restoreSystemDns()
 
@@ -707,21 +724,40 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       return { success: false, error }
     }
 
+    // Snapshot tunnel cycle at fetch start. If stop()/startTun() fires while
+    // the fetch is in flight, (a) we abort the fetch and (b) any result that
+    // somehow still comes back is discarded because the cycle no longer matches.
+    const cycleAtStart = this._tunnelCycle
+    const controller = new AbortController()
+    this._connectivityAbort = controller
+    // 10s single-shot — in line with Google Cloud / Clash / Mihomo url-test
+    // defaults (5s) plus headroom for QUIC+SOCKS5 cold-start handshake on a
+    // cross-border link. TunGate retries up to 3×, so worst case ≈ 33s before
+    // the user sees a hard failure.
+    const timer = setTimeout(() => controller.abort(), 10000)
+
     try {
       const start = Date.now()
       log.info(`[testConnectivity] verifying exit IP (expected: ${exitIp || 'any'})...`)
-
-      // Use fetch from Electron main process — in TUN mode with auto_route+strict_route,
-      // all system traffic goes through sing-box TUN including Electron's fetch.
-      // curl subprocess had 10s+ latency issues; fetch is faster and more reliable.
       log.info(`[testConnectivity] fetching https://ip.oxylabs.io/location ...`)
-      const res = await fetchWithTimeout('https://ip.oxylabs.io/location', {}, 15000)
+      // Plain fetch (no retries) + external AbortSignal — fetchWithTimeout's
+      // built-in retry would multiply latency 3x on a flaky proxy and make
+      // it more likely to straddle a stop/start boundary.
+      const res = await fetch('https://ip.oxylabs.io/location', { signal: controller.signal })
       log.info(`[testConnectivity] HTTP ${res.status} (${Date.now() - start}ms)`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       const actualIp = data.ip as string
 
       const latency = Date.now() - start
+
+      // Stale-result guard: if the tunnel cycled while we were fetching, this
+      // response is untrustworthy (may have traversed direct route after stop).
+      if (cycleAtStart !== this._tunnelCycle || this._status !== 'running') {
+        log.warn(`[testConnectivity] result discarded — tunnel cycled during fetch (cycle ${cycleAtStart}→${this._tunnelCycle}, status=${this._status})`)
+        return { success: false, error: 'Tunnel cycled during test' }
+      }
+
       log.info(`[testConnectivity] exit IP: ${actualIp}, latency: ${latency}ms`)
 
       this._latencyMs = latency
@@ -739,13 +775,21 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       this.emitStatus(exitIp || null, null)
       return { success: true, latency, actualIp }
     } catch (err) {
-      const error = (err as Error).message
+      const error = (err as Error).name === 'AbortError' ? 'aborted (tunnel stopped)' : (err as Error).message
       log.error('[testConnectivity] failed:', error)
-      this._internetReachable = false
-      this._latencyMs = null
-      this._lastActualIp = null
-      this.emitStatus(exitIp || null, error)
+      // Suppress status updates for aborts triggered by our own stop() path —
+      // they represent an intentional cancel, not an actual connectivity loss,
+      // and would otherwise flash "Offline" in the NetworkIndicator.
+      if ((err as Error).name !== 'AbortError') {
+        this._internetReachable = false
+        this._latencyMs = null
+        this._lastActualIp = null
+        this.emitStatus(exitIp || null, error)
+      }
       return { success: false, error }
+    } finally {
+      clearTimeout(timer)
+      if (this._connectivityAbort === controller) this._connectivityAbort = null
     }
   }
 
@@ -756,12 +800,16 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
   async runDiagnostics(): Promise<Record<string, unknown>> {
     const results: Record<string, unknown> = { timestamp: new Date().toISOString(), tunStatus: this._status }
 
-    // 1. DNS resolution speed (local DNS)
+    // 1. DNS resolution speed — real UDP/53 query against 114.114.114.114.
+    // (Older impl probed TCP 80 on 114DNS which never responds → always false-failed.)
     try {
+      const { Resolver } = await import('dns/promises')
+      const resolver = new Resolver({ timeout: 3000, tries: 1 })
+      resolver.setServers(['114.114.114.114'])
       const start = Date.now()
-      const res = await fetchWithTimeout('http://114.114.114.114', {}, 5000).catch(() => null)
-      results.localDns = { ms: Date.now() - start, ok: !!res }
-    } catch { results.localDns = { ms: -1, ok: false } }
+      const addrs = await resolver.resolve4('www.baidu.com')
+      results.localDns = { ms: Date.now() - start, ok: addrs.length > 0 }
+    } catch (e) { results.localDns = { ms: -1, ok: false, error: (e as Error).message } }
 
     // 2. Direct connection to domestic site (should NOT go through proxy)
     try {

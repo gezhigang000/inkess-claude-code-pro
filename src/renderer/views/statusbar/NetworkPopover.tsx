@@ -108,10 +108,19 @@ export function NetworkPopover({ anchorEl, onClose }: NetworkPopoverProps) {
     setReconnecting(true)
     setConfirmingReconnect(false)
     try {
-      const result = await window.api.tun.reconnect()
+      // Pass user pref + lastGood so main can short-circuit to a known-good
+      // protocol and skip failing ones.
+      const { useSettingsStore } = await import('../../stores/settings')
+      const settings = useSettingsStore.getState()
+      const result = await window.api.tun.reconnect({
+        preferredProtocol: settings.tunnelProtocolPref,
+        lastGoodProtocol: settings.lastGoodTunnelProtocol || '',
+      })
       if (!result.success) {
         safeSetActionError(result.error || t('network.reconnectFailed'))
       } else {
+        // Persist whatever protocol ended up winning.
+        if (result.tunnelProtocol) settings.setLastGoodTunnelProtocol(result.tunnelProtocol as any)
         // After reconnect, immediately re-test so the UI shows fresh latency
         try { await window.api.tun.testConnectivity(expectedIp || undefined) } catch { /* ignore */ }
       }

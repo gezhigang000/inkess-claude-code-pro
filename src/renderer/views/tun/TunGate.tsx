@@ -20,17 +20,27 @@ export function TunGate({ proxyUrl, tunnelUrl, exitIp, onReady, isReconnect, onR
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [latency, setLatency] = useState<number | null>(null)
+  // Benchmark progress pushed from main via tun:startupProgress events.
+  // Example: { phase: 'benchmarking', current: 2, total: 5, detail: 'hysteria2' }
+  const [progress, setProgress] = useState<{ phase: string; current?: number; total?: number; detail?: string } | null>(null)
   const proxyUrlRef = useRef(proxyUrl)
   const tunnelUrlRef = useRef(tunnelUrl)
   const connectingRef = useRef(false)
   useEffect(() => { proxyUrlRef.current = proxyUrl }, [proxyUrl])
   useEffect(() => { tunnelUrlRef.current = tunnelUrl }, [tunnelUrl])
 
+  // Subscribe to startup progress events from main
+  useEffect(() => {
+    const unsubscribe = window.api.tun.onStartupProgress?.(setProgress)
+    return () => unsubscribe?.()
+  }, [])
+
   const connect = async () => {
     if (connectingRef.current) return
     connectingRef.current = true
     setPhase('idle')
     setError(null)
+    setProgress(null)
     try { await _connect() } finally { connectingRef.current = false }
   }
 
@@ -100,40 +110,63 @@ export function TunGate({ proxyUrl, tunnelUrl, exitIp, onReady, isReconnect, onR
         useSettingsStore.getState().setProxyRegion(resolveResult.detectedRegion)
       }
 
-      // Start TUN (blocks until tunnel confirmed running or fails)
+      // Start TUN (main runs benchmark-and-pick internally — Strategy C).
+      // Passes user pref + lastGood so main can skip benchmark if lastGood
+      // still looks healthy, or run a full latency comparison otherwise.
       setPhase('starting')
-      console.log(`[TunGate:${id}] starting TUN...`)
-      const startResult = await window.api.tun.startTun(resolveResult.resolved, tunnelUrlRef.current || undefined)
-      console.log(`[TunGate:${id}] startTun result: success=${startResult.success}, error=${startResult.error}`)
+      const { useSettingsStore } = await import('../../stores/settings')
+      const settings = useSettingsStore.getState()
+      console.log(`[TunGate:${id}] starting TUN... (pref=${settings.tunnelProtocolPref}, lastGood=${settings.lastGoodTunnelProtocol || 'none'})`)
+      const startResult = await window.api.tun.startTun(
+        resolveResult.resolved,
+        tunnelUrlRef.current || undefined,
+        {
+          exitIp: exitIp || undefined,
+          preferredProtocol: settings.tunnelProtocolPref,
+          lastGoodProtocol: settings.lastGoodTunnelProtocol || '',
+        },
+      )
+      console.log(`[TunGate:${id}] startTun result: success=${startResult.success}, protocol=${startResult.tunnelProtocol}, probe=${JSON.stringify(startResult.probeResults)}, error=${startResult.error}`)
       if (!startResult.success) {
         setPhase('failed')
         setError(startResult.error ?? 'Failed to start TUN')
+        setProgress(null)
         return
       }
 
-      // Test connectivity with retries (routes may take a moment to take effect)
+      // Main has already verified connectivity if we provided exitIp — but
+      // run one more sanity test so the renderer has a fresh latency to show.
       setPhase('testing')
-      console.log(`[TunGate:${id}] testing connectivity (up to 3 attempts)...`)
+      console.log(`[TunGate:${id}] final connectivity check...`)
+      await new Promise(resolve => setTimeout(resolve, 500))
       let connectResult: { success: boolean; latency?: number; error?: string; actualIp?: string } = { success: false }
       for (let attempt = 1; attempt <= 3; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 1000))
         connectResult = await window.api.tun.testConnectivity(exitIp)
         console.log(`[TunGate:${id}] attempt ${attempt}: success=${connectResult.success}, latency=${connectResult.latency}, actualIp=${connectResult.actualIp}`)
         if (connectResult.success) break
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1000))
       }
 
       if (connectResult.success) {
+        // Persist the winning mode so next launch's 'auto' path tries it
+        // first (may skip benchmark entirely if still within threshold).
+        if (startResult.tunnelProtocol) {
+          settings.setLastGoodTunnelProtocol(startResult.tunnelProtocol as any)
+        }
         setLatency(connectResult.latency ?? null)
         setPhase('connected')
+        setProgress(null)
         setTimeout(() => onReady(), 300)
       } else {
         setPhase('failed')
         setError(connectResult.error ?? 'Connectivity test failed')
+        setProgress(null)
       }
     } catch (err) {
       console.error(`[TunGate:${id}] error:`, err)
       setPhase('failed')
       setError(err instanceof Error ? err.message : String(err))
+      setProgress(null)
     }
   }
 
@@ -151,6 +184,20 @@ export function TunGate({ proxyUrl, tunnelUrl, exitIp, onReady, isReconnect, onR
   const isFailed = phase === 'failed'
 
   const phaseLabel = (() => {
+    // Prefer main-process progress detail during starting/testing — it tells
+    // the user what we're actually doing (benchmarking, trying last-good, etc).
+    if (progress && !['connected', 'failed'].includes(phase)) {
+      switch (progress.phase) {
+        case 'resolving-tunnel':
+          return t('tun.resolving')
+        case 'trying-last-good':
+          return `Reusing ${progress.detail} (last successful)…`
+        case 'benchmarking':
+          return `Benchmarking ${progress.detail} (${progress.current}/${progress.total})…`
+        case 'starting':
+          return `Starting with ${progress.detail}…`
+      }
+    }
     switch (phase) {
       case 'installing': return t('tun.installing')
       case 'resolving':  return t('tun.resolving')

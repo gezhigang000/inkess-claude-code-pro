@@ -114,41 +114,61 @@ export function App() {
     // Fetch failures (network hiccup, slow proxy) do NOT trigger reconnect.
     // Skipped during a manual reconnect: the tunnel is briefly down/switching
     // and any "IP mismatch" observed here would be spurious.
+    //
+    // Mismatch confirmation: a single mismatch is not enough. A stop/start
+    // boundary or a momentary direct-route blip (e.g. main process aborted an
+    // in-flight fetch) can report the wrong IP once. Require 2 consecutive
+    // mismatches ~3s apart before killing terminals.
     const exitIp = subscriptionExitIp
     const ipCheckInterval = exitIp ? setInterval(async () => {
       if (useNetworkStore.getState().reconnecting) return
       try {
         const result = await window.api.tun.testConnectivity(exitIp)
-        if (result.success) {
-          // IP matches — all good
-        } else if (result.actualIp && result.actualIp !== exitIp) {
-          // Exit IP CHANGED — route may have been hijacked by another VPN
-          console.warn(`[App] exit IP changed: expected ${exitIp}, got ${result.actualIp} — reconnecting`)
-          window.api.pty.killAll()
-          setTunOk(false)
-          window.api.browser.closeAll()
-        } else {
+        if (result.success) return
+        if (!result.actualIp || result.actualIp === exitIp) {
           // Fetch failed or no actualIp — network hiccup, ignore
           console.warn(`[App] exit IP check failed (ignored): ${result.error}`)
+          return
         }
+        // First mismatch — confirm with a second test before acting.
+        console.warn(`[App] exit IP mismatch (1/2): expected ${exitIp}, got ${result.actualIp} — confirming...`)
+        await new Promise(resolve => setTimeout(resolve, 3000))
+        if (useNetworkStore.getState().reconnecting) return
+        const confirm = await window.api.tun.testConnectivity(exitIp)
+        if (confirm.success) {
+          console.warn(`[App] exit IP mismatch cleared on confirm — ignoring`)
+          return
+        }
+        if (!confirm.actualIp || confirm.actualIp === exitIp) {
+          console.warn(`[App] exit IP mismatch confirm failed to fetch (ignored): ${confirm.error}`)
+          return
+        }
+        // Both attempts saw a DIFFERENT non-expected IP — treat as real route hijack.
+        console.warn(`[App] exit IP mismatch confirmed (2/2): expected ${exitIp}, got ${confirm.actualIp} — reconnecting`)
+        window.api.pty.killAll()
+        setTunOk(false)
+        window.api.browser.closeAll()
       } catch { /* ignore network errors during check */ }
     }, 60 * 1000) : null
 
     // Interface alert: external VPN detected, immediately verify IP.
     // Skipped during manual reconnect (see ipCheckInterval rationale above).
+    // Requires 2 consecutive mismatches (same rationale as periodic check).
     const unsubscribeAlert = window.api.tun.onInterfaceAlert?.(async (event) => {
       console.warn(`[App] external TUN detected: ${event.interfaces.join(', ')}`)
       if (!exitIp) return
       if (useNetworkStore.getState().reconnecting) return
       try {
         const result = await window.api.tun.testConnectivity(exitIp)
-        if (result.actualIp && result.actualIp !== exitIp) {
-          // IP changed after external VPN appeared — route hijacked
-          console.warn(`[App] IP changed after external TUN: expected ${exitIp}, got ${result.actualIp}`)
-          window.api.pty.killAll()
-          setTunOk(false)
-          window.api.browser.closeAll()
-        }
+        if (!result.actualIp || result.actualIp === exitIp) return
+        await new Promise(resolve => setTimeout(resolve, 3000))
+        if (useNetworkStore.getState().reconnecting) return
+        const confirm = await window.api.tun.testConnectivity(exitIp)
+        if (!confirm.actualIp || confirm.actualIp === exitIp) return
+        console.warn(`[App] IP changed after external TUN (confirmed): expected ${exitIp}, got ${confirm.actualIp}`)
+        window.api.pty.killAll()
+        setTunOk(false)
+        window.api.browser.closeAll()
       } catch { /* ignore */ }
     })
 
