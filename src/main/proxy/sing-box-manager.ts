@@ -6,6 +6,7 @@ import { promisify } from 'util'
 import * as os from 'os'
 import log from '../logger'
 import { buildTunConfig, buildLocalProxyConfig, type SingBoxConfig, type SingBoxOutbound, type TunConfigOptions } from './sing-box-config'
+import { parseStaleSingBoxInterfaces, parseStaleSingBoxRouteCount } from './sing-box-stale-state'
 import { fetchWithTimeout } from '../utils/fetch'
 
 const execFileAsync = promisify(execFile)
@@ -180,12 +181,11 @@ export class SingBoxManager {
 
   /**
    * Clean up stale sing-box processes from previous app crashes.
-   * Call once at app startup.
-   */
-  /**
-   * Clean up stale sing-box processes from previous app crashes.
    * Uses non-interactive kill (no sudo dialog). If the root process can't be killed
    * without sudo, it will be killed when startTun() calls stop() with sudo.
+   *
+   * Also detects and cleans up orphan network state (utun interfaces + split
+   * routes) left behind by ungraceful shutdowns — see detectStaleNetworkState().
    */
   async cleanupStaleProcesses(): Promise<void> {
     const pid = this.readPidFile()
@@ -212,9 +212,125 @@ export class SingBoxManager {
       this.removePidFile()
     }
 
+    // After the process is gone (or was never running), check for orphan
+    // network state — utun interfaces and split routes left behind by
+    // SIGKILL / force-quit scenarios. Cleanup is deferred until startTun()
+    // so we don't force a sudo dialog at app launch.
+    try {
+      const stale = this.detectStaleNetworkState()
+      if (stale.hasResiduals) {
+        log.warn(
+          `[sing-box] startup cleanup: detected stale network state — ` +
+          `interfaces=${JSON.stringify(stale.interfaces)} routes=${stale.routeCount}. ` +
+          `Will clean up on next startTun().`,
+        )
+        this._hasStaleNetworkState = true
+      }
+    } catch (err) {
+      log.warn(`[sing-box] detectStaleNetworkState failed: ${(err as Error).message}`)
+    }
+
     this._mode = 'off'
     this._status = 'stopped'
     this._lastError = null
+  }
+
+  /** Set when cleanupStaleProcesses finds orphan network state at startup. */
+  private _hasStaleNetworkState = false
+
+  /**
+   * Scan the system for orphan sing-box network state — utun interfaces with
+   * IPs in 198.18.0.0/15 (sing-box's default TUN subnet) and split-default
+   * routes (0.0.0.0/1 + 128.0.0.0/1 via 198.18.0.1). These linger when
+   * sing-box is killed by SIGKILL before its own cleanup handlers run.
+   *
+   * Detection-only: caller decides whether to attempt a cleanup.
+   * macOS only — Windows uses WFP rules (different failure mode).
+   */
+  private detectStaleNetworkState(): {
+    hasResiduals: boolean
+    interfaces: string[]
+    routeCount: number
+  } {
+    const empty = { hasResiduals: false, interfaces: [] as string[], routeCount: 0 }
+    if (os.platform() !== 'darwin') return empty
+
+    let ifconfigOut = ''
+    try {
+      ifconfigOut = execSync('ifconfig', { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString()
+    } catch { return empty }
+
+    const interfaces = parseStaleSingBoxInterfaces(ifconfigOut)
+
+    let routeCount = 0
+    try {
+      const routeOut = execSync('netstat -rn -f inet', {
+        timeout: 3000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).toString()
+      routeCount = parseStaleSingBoxRouteCount(routeOut)
+    } catch { /* ignore — route count optional */ }
+
+    return {
+      hasResiduals: interfaces.length > 0 || routeCount > 0,
+      interfaces,
+      routeCount,
+    }
+  }
+
+  /**
+   * Actively clean up orphan network state. Requires sudo (via osascript).
+   * Safe to call only when no sing-box process is running — caller must ensure.
+   *
+   * Deletes split-default routes pointing at 198.18.x.x and destroys utun
+   * interfaces in that subnet. Runs inside a single osascript invocation so
+   * the user sees exactly one password prompt.
+   */
+  private async cleanupStaleNetworkState(): Promise<void> {
+    if (os.platform() !== 'darwin') return
+    const stale = this.detectStaleNetworkState()
+    if (!stale.hasResiduals) {
+      this._hasStaleNetworkState = false
+      return
+    }
+
+    log.warn(
+      `[sing-box] cleaning up stale network state: ` +
+      `interfaces=${JSON.stringify(stale.interfaces)} routes=${stale.routeCount}`,
+    )
+
+    // Build a single shell script that tries every common sing-box route +
+    // every detected utun. Ignore individual failures — the goal is to leave
+    // the system in a clean state, not to verify each operation.
+    const splitRoutes = [
+      '1', '2/7', '4/6', '8/5', '16/4', '32/3', '64/2', '128.0/1',
+    ]
+    const routeCleanup = splitRoutes
+      .map((net) => `route -n delete -net ${net} 198.18.0.1 2>/dev/null || true`)
+      .join('; ')
+    const hostRouteCleanup = 'route -n delete -host 198.18.0.1 2>/dev/null || true'
+    const ifaceCleanup = stale.interfaces
+      .map((iface) => `ifconfig ${iface} destroy 2>/dev/null || true`)
+      .join('; ')
+    const dnsCleanup = `scutil <<DNSEOF 2>/dev/null
+remove State:/Network/Service/sing-box-tun/DNS
+DNSEOF
+dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
+
+    const fullScript = `${routeCleanup}; ${hostRouteCleanup}; ${ifaceCleanup}; ${dnsCleanup}`
+
+    try {
+      execSync(
+        `osascript -e 'do shell script "${fullScript.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" with administrator privileges'`,
+        { timeout: 30000, stdio: 'pipe' },
+      )
+      log.info('[sing-box] stale network state cleanup complete')
+      this._hasStaleNetworkState = false
+    } catch (err) {
+      log.error(`[sing-box] stale network state cleanup failed: ${(err as Error).message}`)
+      // Don't throw — caller should still attempt to start TUN; worst case
+      // the residuals remain and sing-box's own startup will override them.
+    }
   }
 
   /**
@@ -356,6 +472,15 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       if (this._stopRequested) {
         log.info(`[sing-box] startTun aborted — stop was requested during startup`)
         return { error: 'Start cancelled — stop requested' }
+      }
+
+      // After stop() completes, the process is dead. If it was killed
+      // ungracefully (SIGKILL, force-quit, user cancelled sudo last time),
+      // utun interfaces and split routes may still be lingering. Clean them
+      // up now so the new sing-box can claim a fresh interface. Checks both
+      // the startup-detected flag and a fresh scan for runtime residuals.
+      if (this._hasStaleNetworkState || this.detectStaleNetworkState().hasResiduals) {
+        await this.cleanupStaleNetworkState()
       }
 
       log.info(`[sing-box] building TUN config for proxy: ${proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@')}`)
@@ -775,7 +900,14 @@ DNSEOF
 dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
 
       // Shell: start sing-box → write PID → set DNS → watchdog → cleanup DNS + kill
-      const shellCmd = `'${safeBin}' run -c '${safeCfg}' > '${logFile}' 2>&1 & SB_PID=$!; echo $SB_PID > '${safePid}'; sleep 1; ${dnsSetup}; while kill -0 ${parentPid} 2>/dev/null && kill -0 $SB_PID 2>/dev/null; do sleep 2; done; ${dnsCleanup}; kill -TERM $SB_PID 2>/dev/null; kill -9 $SB_PID 2>/dev/null`
+      //
+      // Graceful shutdown: after SIGTERM we wait up to ~5 seconds polling for
+      // the process to exit before escalating to SIGKILL. This gives sing-box
+      // time to run its own cleanup handlers — tear down the TUN interface,
+      // remove auto_route entries, and unbind DNS rules. Without this grace
+      // period, SIGKILL leaves utun interfaces and /1 split routes behind,
+      // black-holing the user's network until manual cleanup.
+      const shellCmd = `'${safeBin}' run -c '${safeCfg}' > '${logFile}' 2>&1 & SB_PID=$!; echo $SB_PID > '${safePid}'; sleep 1; ${dnsSetup}; while kill -0 ${parentPid} 2>/dev/null && kill -0 $SB_PID 2>/dev/null; do sleep 2; done; ${dnsCleanup}; kill -TERM $SB_PID 2>/dev/null; for _i in 1 2 3 4 5 6 7 8 9 10; do kill -0 $SB_PID 2>/dev/null || break; sleep 0.5; done; kill -9 $SB_PID 2>/dev/null`
 
       let settled = false
       let pidPollInterval: ReturnType<typeof setInterval> | null = null
