@@ -6,7 +6,11 @@ import { promisify } from 'util'
 import * as os from 'os'
 import log from '../logger'
 import { buildTunConfig, buildLocalProxyConfig, type SingBoxConfig, type SingBoxOutbound, type TunConfigOptions } from './sing-box-config'
-import { parseStaleSingBoxInterfaces, parseStaleSingBoxRouteCount } from './sing-box-stale-state'
+import {
+  parseStaleSingBoxInterfaces,
+  parseStaleSingBoxRoutes,
+  parseStaleSingBoxRouteCount,
+} from './sing-box-stale-state'
 import { fetchWithTimeout } from '../utils/fetch'
 
 const execFileAsync = promisify(execFile)
@@ -221,7 +225,7 @@ export class SingBoxManager {
       if (stale.hasResiduals) {
         log.warn(
           `[sing-box] startup cleanup: detected stale network state — ` +
-          `interfaces=${JSON.stringify(stale.interfaces)} routes=${stale.routeCount}. ` +
+          `interfaces=${JSON.stringify(stale.interfaces)} routes=${stale.routeDestinations.length}. ` +
           `Will clean up on next startTun().`,
         )
         this._hasStaleNetworkState = true
@@ -250,9 +254,9 @@ export class SingBoxManager {
   private detectStaleNetworkState(): {
     hasResiduals: boolean
     interfaces: string[]
-    routeCount: number
+    routeDestinations: string[]
   } {
-    const empty = { hasResiduals: false, interfaces: [] as string[], routeCount: 0 }
+    const empty = { hasResiduals: false, interfaces: [] as string[], routeDestinations: [] as string[] }
     if (os.platform() !== 'darwin') return empty
 
     let ifconfigOut = ''
@@ -262,19 +266,19 @@ export class SingBoxManager {
 
     const interfaces = parseStaleSingBoxInterfaces(ifconfigOut)
 
-    let routeCount = 0
+    let routeDestinations: string[] = []
     try {
       const routeOut = execSync('netstat -rn -f inet', {
         timeout: 3000,
         stdio: ['ignore', 'pipe', 'ignore'],
       }).toString()
-      routeCount = parseStaleSingBoxRouteCount(routeOut)
-    } catch { /* ignore — route count optional */ }
+      routeDestinations = parseStaleSingBoxRoutes(routeOut)
+    } catch { /* ignore — route list optional */ }
 
     return {
-      hasResiduals: interfaces.length > 0 || routeCount > 0,
+      hasResiduals: interfaces.length > 0 || routeDestinations.length > 0,
       interfaces,
-      routeCount,
+      routeDestinations,
     }
   }
 
@@ -296,20 +300,31 @@ export class SingBoxManager {
 
     log.warn(
       `[sing-box] cleaning up stale network state: ` +
-      `interfaces=${JSON.stringify(stale.interfaces)} routes=${stale.routeCount}`,
+      `interfaces=${JSON.stringify(stale.interfaces)} ` +
+      `routes=${JSON.stringify(stale.routeDestinations)}`,
     )
 
-    // Build a single shell script that tries every common sing-box route +
-    // every detected utun. Ignore individual failures — the goal is to leave
-    // the system in a clean state, not to verify each operation.
-    const splitRoutes = [
-      '1', '2/7', '4/6', '8/5', '16/4', '32/3', '64/2', '128.0/1',
-    ]
-    const routeCleanup = splitRoutes
-      .map((net) => `route -n delete -net ${net} 198.18.0.1 2>/dev/null || true`)
+    // Validate route destinations before interpolating into shell — the
+    // parser already constrains format, but defense in depth. Allowed
+    // characters for netstat-style destinations: digits, dots, slashes.
+    const safeDests = stale.routeDestinations.filter((d) => /^[\d./]+$/.test(d))
+    // Validate interface names — parser guarantees /^utun\d+$/, but belt-and-suspenders.
+    const safeIfaces = stale.interfaces.filter((i) => /^utun\d+$/.test(i))
+
+    // Build a single shell script that deletes every discovered route and
+    // destroys every discovered utun. Ignore individual failures — the goal
+    // is to leave the system in a clean state, not to verify each operation.
+    const routeCleanup = safeDests
+      .map((dest) => `route -n delete -net ${dest} 198.18.0.1 2>/dev/null || true`)
       .join('; ')
-    const hostRouteCleanup = 'route -n delete -host 198.18.0.1 2>/dev/null || true'
-    const ifaceCleanup = stale.interfaces
+    // Also try explicit 0.0.0.0/1 + 128.0.0.0/1 (alternative sing-box split)
+    // and the host route to the gateway itself. These are no-ops if absent.
+    const extraRoutes = [
+      'route -n delete -net 0.0.0.0/1 198.18.0.1 2>/dev/null || true',
+      'route -n delete -net 128.0.0.0/1 198.18.0.1 2>/dev/null || true',
+      'route -n delete -host 198.18.0.1 2>/dev/null || true',
+    ].join('; ')
+    const ifaceCleanup = safeIfaces
       .map((iface) => `ifconfig ${iface} destroy 2>/dev/null || true`)
       .join('; ')
     const dnsCleanup = `scutil <<DNSEOF 2>/dev/null
@@ -317,7 +332,8 @@ remove State:/Network/Service/sing-box-tun/DNS
 DNSEOF
 dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
 
-    const fullScript = `${routeCleanup}; ${hostRouteCleanup}; ${ifaceCleanup}; ${dnsCleanup}`
+    const parts = [routeCleanup, extraRoutes, ifaceCleanup, dnsCleanup].filter(Boolean)
+    const fullScript = parts.join('; ')
 
     try {
       execSync(

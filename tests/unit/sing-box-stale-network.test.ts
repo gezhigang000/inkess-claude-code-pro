@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   parseStaleSingBoxInterfaces,
+  parseStaleSingBoxRoutes,
   parseStaleSingBoxRouteCount,
 } from '../../src/main/proxy/sing-box-stale-state'
 
@@ -71,9 +72,10 @@ en0: flags=8863 mtu 1500
   })
 })
 
-describe('parseStaleSingBoxRouteCount', () => {
-  it('counts split-default routes via 198.18.0.1', () => {
-    const netstat = `Routing tables
+describe('parseStaleSingBoxRoutes', () => {
+  // Captured from a real macOS system after sing-box was SIGKILL'd — the
+  // sing-box "auto_route" table uses classful split-default shorthand.
+  const realNetstat = `Routing tables
 
 Internet:
 Destination        Gateway            Flags               Netif Expire
@@ -87,39 +89,68 @@ default            192.168.10.1       UGScg                 en0
 64/2               198.18.0.1         UGSc             utun1024
 128.0/1            198.18.0.1         UGSc             utun1024
 198.18.0.1         198.18.0.1         UH               utun1024
+127                127.0.0.1          UCS                   lo0
 `
-    expect(parseStaleSingBoxRouteCount(netstat)).toBe(9)
+
+  it('extracts destinations of routes whose gateway is in the sing-box subnet', () => {
+    const routes = parseStaleSingBoxRoutes(realNetstat)
+    // All 9 routes with gateway 198.18.0.1, in file order
+    expect(routes).toEqual([
+      '1', '2/7', '4/6', '8/5', '16/4', '32/3', '64/2', '128.0/1', '198.18.0.1',
+    ])
   })
 
-  it('returns 0 when no sing-box routes present', () => {
+  it('preserves netstat shorthand exactly (for round-trip with route delete)', () => {
+    const routes = parseStaleSingBoxRoutes('16/4               198.18.0.1         UGSc             utun1024')
+    expect(routes).toEqual(['16/4'])
+  })
+
+  it('handles 0.0.0.0/1 + 128.0.0.0/1 (alternative split pattern)', () => {
+    const netstat = `0.0.0.0/1          198.18.0.1         UGSc             utun5
+128.0.0.0/1        198.18.0.1         UGSc             utun5`
+    expect(parseStaleSingBoxRoutes(netstat)).toEqual(['0.0.0.0/1', '128.0.0.0/1'])
+  })
+
+  it('does not match gateway column entries that start with 198.18 as text', () => {
+    // A destination of 198.180.0.0/8 with an unrelated gateway — should NOT match
+    const netstat = `198.180.0.0/8      192.168.1.1        UGSc             en0`
+    expect(parseStaleSingBoxRoutes(netstat)).toEqual([])
+  })
+
+  it('does not false-positive on 198.20.x.x gateway (outside 198.18.0.0/15)', () => {
+    const netstat = `1                  198.20.0.1         UGSc             utun5`
+    expect(parseStaleSingBoxRoutes(netstat)).toEqual([])
+  })
+
+  it('matches 198.19.x.x gateway (upper half of 198.18.0.0/15)', () => {
+    const netstat = `default            198.19.250.1       UGSc             utun2048`
+    expect(parseStaleSingBoxRoutes(netstat)).toEqual(['default'])
+  })
+
+  it('handles empty input', () => {
+    expect(parseStaleSingBoxRoutes('')).toEqual([])
+  })
+
+  it('skips header lines and blank lines', () => {
     const netstat = `Routing tables
 
 Internet:
 Destination        Gateway            Flags               Netif Expire
-default            192.168.10.1       UGScg                 en0
-127                127.0.0.1          UCS                   lo0
-192.168.10         link#14            UCS                   en0
+
+1                  198.18.0.1         UGSc             utun1024
 `
-    expect(parseStaleSingBoxRouteCount(netstat)).toBe(0)
+    expect(parseStaleSingBoxRoutes(netstat)).toEqual(['1'])
+  })
+})
+
+describe('parseStaleSingBoxRouteCount', () => {
+  it('delegates to parseStaleSingBoxRoutes', () => {
+    const netstat = `1                  198.18.0.1         UGSc             utun1024
+2/7                198.18.0.1         UGSc             utun1024`
+    expect(parseStaleSingBoxRouteCount(netstat)).toBe(2)
   })
 
-  it('ignores gateways with non-matching subnet', () => {
-    const netstat = `Routing tables
-
-Internet:
-default            198.180.0.1        UGScg                 en0
-1                  198.20.0.1         UGSc             utun5
-`
-    expect(parseStaleSingBoxRouteCount(netstat)).toBe(0)
-  })
-
-  it('handles empty input', () => {
+  it('returns 0 for empty input', () => {
     expect(parseStaleSingBoxRouteCount('')).toBe(0)
-  })
-
-  it('counts routes with 198.19.x.x gateway (upper half of 198.18.0.0/15)', () => {
-    const netstat = `default            198.19.250.1       UGSc             utun2048
-`
-    expect(parseStaleSingBoxRouteCount(netstat)).toBe(1)
   })
 })
