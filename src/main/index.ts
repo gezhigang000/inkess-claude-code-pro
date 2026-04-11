@@ -1171,30 +1171,112 @@ app.whenReady().then(() => {
   })
 })
 
-// Ensure tunnel is stopped before app quits (async cleanup)
-let _quitting = false
-app.on('before-quit', (event) => {
-  if (_quitting) return
-  event.preventDefault()
-  _quitting = true
+// ─── App quit flow ─────────────────────────────────────────
+//
+// State machine for graceful shutdown. Prior implementation had a double-quit
+// race: first Cmd+Q fires before-quit → preventDefault → starts async work.
+// If the user impatiently Cmd+Q's again while the work is still running, the
+// second before-quit sees `_quitting=true`, RETURNS WITHOUT preventDefault,
+// and Electron proceeds with the default quit → windows close → process
+// exits → the first handler's .then never reaches singBoxManager.stop().
+//
+// Fix: three-state flag. `running` (work in progress) → second call MUST
+// preventDefault again and wait; `done` (work complete, awaiting app.quit) →
+// second call allows Electron's default quit to run.
+//
+// All diagnostic events are logged synchronously so they survive even if
+// the process is force-killed mid-shutdown.
+let _quitState: 'idle' | 'running' | 'done' = 'idle'
 
-  // Upload browser data before TUN stops (5s timeout)
-  Promise.race([
-    browserSync.upload(),
-    new Promise(resolve => setTimeout(resolve, 5000)),
-  ])
-    .catch(err => log.warn('[before-quit] browser sync upload failed:', err))
-    .then(() => {
+// Upper bound on shutdown work. Anything longer than this and we force
+// quit anyway — no user should be stuck with an unquittable app because of
+// a misbehaving sudo prompt or hung sing-box. 30s is generous for the
+// worst-case path (osascript sudo restore DNS + SIGTERM wait + SIGKILL wait).
+const QUIT_WORK_HARD_TIMEOUT_MS = 30000
+
+async function doQuitWork(): Promise<void> {
+  log.info('[before-quit] doQuitWork start')
+
+  const work = (async () => {
+    // Upload browser data before TUN stops (5s timeout race — the underlying
+    // upload may hang on Cloudflare JS challenge or a dead network, so we
+    // cap the wait and let the periodic timer pick up next time).
+    try {
+      await Promise.race([
+        browserSync.upload(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ])
+      log.info('[before-quit] browser sync upload race resolved')
+    } catch (err) {
+      log.warn('[before-quit] browser sync upload failed:', err)
+    }
+
+    try {
       browserSync.stop()
-      return singBoxManager.stop()
+      log.info('[before-quit] browserSync.stop() returned')
+    } catch (err) {
+      log.warn('[before-quit] browserSync.stop() threw:', err)
+    }
+
+    try {
+      await singBoxManager.stop()
+      log.info('[before-quit] singBoxManager.stop() returned')
+    } catch (err) {
+      log.error('[before-quit] Failed to stop tunnel:', err)
+    }
+  })()
+
+  const hardTimeout = new Promise<void>((resolve) => {
+    setTimeout(() => {
+      log.error(`[before-quit] doQuitWork hard timeout (${QUIT_WORK_HARD_TIMEOUT_MS}ms) — aborting`)
+      resolve()
+    }, QUIT_WORK_HARD_TIMEOUT_MS)
+  })
+
+  await Promise.race([work, hardTimeout])
+  log.info('[before-quit] doQuitWork finished')
+}
+
+app.on('before-quit', (event) => {
+  log.info(`[before-quit] fired, state=${_quitState}`)
+  if (_quitState === 'done') {
+    // Second call after doQuitWork completed — from our own app.quit()
+    // below. Let Electron proceed with the default quit flow.
+    log.info('[before-quit] state=done — allowing Electron to quit')
+    return
+  }
+  // Any other state (idle or running) → block the default quit. Running
+  // state means user double-Cmd+Q'd while our async work is still in
+  // flight; we must NOT let Electron force-exit before stop() completes.
+  event.preventDefault()
+
+  if (_quitState === 'running') {
+    log.info('[before-quit] state=running — ignoring duplicate, waiting for first invocation')
+    return
+  }
+
+  _quitState = 'running'
+  doQuitWork()
+    .catch((err) => log.error('[before-quit] doQuitWork rejected:', err))
+    .finally(() => {
+      _quitState = 'done'
+      log.info('[before-quit] transitioning to done — calling app.quit()')
+      app.quit()
     })
-    .catch(err => log.error('[before-quit] Failed to stop tunnel:', err))
-    .finally(() => app.quit())
+})
+
+app.on('will-quit', () => {
+  // Last-chance diagnostic. Fires after all before-quit listeners have
+  // settled and Electron is about to tear down. If we reach here without
+  // `[before-quit] doQuitWork finished` in the log, the quit work was
+  // interrupted (external SIGKILL or similar).
+  log.info(`[will-quit] fired, state=${_quitState}`)
 })
 
 // Handle process signals for cleanup
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, () => {
+    log.info(`[${sig}] received — cleaning up tunnel`)
     singBoxManager.stop()
       .catch(() => { /* best effort */ })
       .finally(() => process.exit(0))
@@ -1202,6 +1284,7 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
 }
 
 app.on('window-all-closed', async () => {
+  log.info('[window-all-closed] fired')
   // Close all browser windows
   closeAllBrowserWindows()
   browserInterceptor.stop()
