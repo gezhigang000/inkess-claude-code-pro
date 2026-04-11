@@ -5,27 +5,56 @@ import log from '../logger'
 const API_BASE = 'https://llm.starapp.net'
 const SYNC_INTERVAL = 10 * 60 * 1000 // 10 minutes
 const UPLOAD_TIMEOUT = 15000
-const LOCALSTORAGE_TIMEOUT = 10000
+const LOCALSTORAGE_TIMEOUT = 30000 // 30s — must exceed Cloudflare JS challenge time
 const CLAUDE_ORIGIN = 'https://claude.ai'
 
-interface SyncData {
+/**
+ * v2 sync payload — carries BOTH the claude-dedicated session and the
+ * general "browser" session (used for proton.me, cloudflare dash, and
+ * anything else the user manually opens). Each session partition in the
+ * Electron app has its own cookie jar, so we store + restore them
+ * separately. localStorage is only synced for claude.ai (single origin),
+ * because cross-site localStorage sync would require loading every origin
+ * in a hidden window — infeasible and privacy-hostile.
+ */
+interface SyncDataV2 {
+  version: 2
+  claude: {
+    cookies: Electron.Cookie[]
+    localStorage: Record<string, string>
+  }
+  browser: {
+    cookies: Electron.Cookie[]
+  }
+  timestamp: string
+}
+
+/**
+ * v1 legacy payload — single cookie jar (claude-only), flat. Older clients
+ * uploaded this; new clients must still be able to restore it. Detected by
+ * presence of top-level `cookies` and absence of `version`.
+ */
+interface SyncDataV1 {
   cookies: Electron.Cookie[]
   localStorage: Record<string, string>
   timestamp: string
 }
 
+type SyncDataAny = SyncDataV2 | SyncDataV1
+
 export class BrowserSync {
   private timer: NodeJS.Timeout | null = null
   private username: string | null = null
   private token: string | null = null
-  private lastCookiesHash: string | null = null
+  private lastHash: string | null = null
   private pendingLocalStorage: Record<string, string> | null = null
   private _uploadPromise: Promise<void> | null = null
 
   /**
    * Phase 1: Download remote data, import cookies immediately.
-   * Stores localStorage in memory for Phase 2 (after TUN ready).
-   * Called before TUN starts — API is on inkess server (China), no TUN needed.
+   * Stores localStorage in memory for Phase 2 (after TUN ready + claude.ai
+   * tab loads). Called before TUN starts — API is on inkess server (China),
+   * no TUN needed.
    */
   async downloadAndImportCookies(username: string, token: string): Promise<void> {
     this.username = username
@@ -48,19 +77,38 @@ export class BrowserSync {
         return
       }
 
-      const data: SyncData = await res.json()
-      log.info(
-        `[BrowserSync] downloaded ${data.cookies?.length ?? 0} cookies, localStorage keys: ${Object.keys(data.localStorage || {}).length}`,
-      )
+      const data = (await res.json()) as SyncDataAny
+      const isV2 = 'version' in data && data.version === 2
 
-      // Import cookies immediately (pure Electron API, no network needed)
-      if (data.cookies?.length) {
-        await this.importCookies(data.cookies)
-      }
-
-      // Store localStorage for Phase 2
-      if (data.localStorage && Object.keys(data.localStorage).length > 0) {
-        this.pendingLocalStorage = data.localStorage
+      if (isV2) {
+        const v2 = data as SyncDataV2
+        log.info(
+          `[BrowserSync] downloaded v2: claude=${v2.claude?.cookies?.length ?? 0} cookies, ` +
+          `browser=${v2.browser?.cookies?.length ?? 0} cookies, ` +
+          `claudeLocalStorage=${Object.keys(v2.claude?.localStorage || {}).length} keys`,
+        )
+        if (v2.claude?.cookies?.length) {
+          await this.importCookies(this.getClaudeSession(), v2.claude.cookies, 'claude')
+        }
+        if (v2.browser?.cookies?.length) {
+          await this.importCookies(this.getBrowserSession(), v2.browser.cookies, 'browser')
+        }
+        if (v2.claude?.localStorage && Object.keys(v2.claude.localStorage).length > 0) {
+          this.pendingLocalStorage = v2.claude.localStorage
+        }
+      } else {
+        // v1 legacy: cookies are treated as claude-only (matches old client semantics)
+        const v1 = data as SyncDataV1
+        log.info(
+          `[BrowserSync] downloaded v1: ${v1.cookies?.length ?? 0} cookies, ` +
+          `localStorage keys: ${Object.keys(v1.localStorage || {}).length}`,
+        )
+        if (v1.cookies?.length) {
+          await this.importCookies(this.getClaudeSession(), v1.cookies, 'claude')
+        }
+        if (v1.localStorage && Object.keys(v1.localStorage).length > 0) {
+          this.pendingLocalStorage = v1.localStorage
+        }
       }
     } catch (err) {
       log.warn('[BrowserSync] download error:', err)
@@ -68,11 +116,8 @@ export class BrowserSync {
   }
 
   /**
-   * Phase 2: Import pending localStorage into a visible browser window.
-   * Called after TUN is ready. The browser window is opened by the caller
-   * (App.tsx opens claude.ai) — we inject localStorage on dom-ready.
-   *
-   * Returns the JS code to execute on dom-ready, or null if nothing to import.
+   * Phase 2: consumed once by the first claude.ai tab load. Returns the JS
+   * to execute on dom-ready that restores pending localStorage entries.
    */
   getLocalStorageImportScript(): string | null {
     if (!this.pendingLocalStorage || Object.keys(this.pendingLocalStorage).length === 0) {
@@ -101,11 +146,11 @@ export class BrowserSync {
     }
     this.username = null
     this.token = null
-    this.lastCookiesHash = null
+    this.lastHash = null
     this.pendingLocalStorage = null
   }
 
-  /** Export local session and upload to server. Skip if cookies unchanged. */
+  /** Export local sessions and upload to server. Skip if data unchanged. */
   async upload(): Promise<void> {
     if (this._uploadPromise) return this._uploadPromise
     this._uploadPromise = this._doUpload().finally(() => { this._uploadPromise = null })
@@ -119,27 +164,39 @@ export class BrowserSync {
     }
 
     try {
-      const cookies = await this.exportCookies()
-      const hash = this.hashCookies(cookies)
-      log.info(`[BrowserSync] upload check: ${cookies.length} cookies, hash=${hash.slice(0, 8)}`)
+      // Export both session jars. The browser jar may contain cookies for
+      // many origins (proton.me, github.com, cloudflare, ...) — they all
+      // ride along in the same encrypted blob.
+      const claudeCookies = await this.getClaudeSession().cookies.get({})
+      const browserCookies = await this.getBrowserSession().cookies.get({})
+      const hash = this.hashAll(claudeCookies, browserCookies)
+      log.info(
+        `[BrowserSync] upload check: claude=${claudeCookies.length} browser=${browserCookies.length} hash=${hash.slice(0, 8)}`,
+      )
 
-      // Skip if cookies unchanged since last upload
-      if (hash === this.lastCookiesHash) {
+      // Skip if nothing changed since last upload.
+      if (hash === this.lastHash) {
         log.info('[BrowserSync] cookies unchanged, skipping upload')
         return
       }
 
-      // Export localStorage (heavyweight — only when cookies changed)
-      let localStorage: Record<string, string> = {}
+      // Export claude.ai localStorage (best-effort; timeout → upload cookies only).
+      let claudeLocalStorage: Record<string, string> = {}
       try {
-        localStorage = await this.exportLocalStorage()
+        claudeLocalStorage = await this.exportClaudeLocalStorage()
       } catch (err) {
         log.warn('[BrowserSync] localStorage export failed, uploading cookies only:', err)
       }
 
-      const body: SyncData = {
-        cookies,
-        localStorage,
+      const body: SyncDataV2 = {
+        version: 2,
+        claude: {
+          cookies: claudeCookies,
+          localStorage: claudeLocalStorage,
+        },
+        browser: {
+          cookies: browserCookies,
+        },
         timestamp: new Date().toISOString(),
       }
 
@@ -154,9 +211,11 @@ export class BrowserSync {
       })
 
       if (res.ok) {
-        this.lastCookiesHash = hash
+        this.lastHash = hash
         log.info(
-          `[BrowserSync] uploaded ${cookies.length} cookies, ${Object.keys(localStorage).length} localStorage keys`,
+          `[BrowserSync] uploaded v2: claude=${claudeCookies.length} cookies + ` +
+          `${Object.keys(claudeLocalStorage).length} localStorage keys, ` +
+          `browser=${browserCookies.length} cookies`,
         )
       } else {
         log.warn(`[BrowserSync] upload failed: HTTP ${res.status}`)
@@ -172,16 +231,24 @@ export class BrowserSync {
     }
   }
 
-  private getSession(): Electron.Session {
+  private getClaudeSession(): Electron.Session {
     return electronSession.fromPartition(`persist:claude-${this.username}`)
   }
 
-  private async exportCookies(): Promise<Electron.Cookie[]> {
-    return this.getSession().cookies.get({})
+  private getBrowserSession(): Electron.Session {
+    return electronSession.fromPartition(`persist:browser-${this.username}`)
   }
 
-  private async importCookies(cookies: Electron.Cookie[]): Promise<void> {
-    const ses = this.getSession()
+  /**
+   * Import cookies into the given session. Individual cookie errors (expired,
+   * invalid domain, etc.) are silently skipped so one bad entry does not
+   * abort the whole restore.
+   */
+  private async importCookies(
+    ses: Electron.Session,
+    cookies: Electron.Cookie[],
+    label: string,
+  ): Promise<void> {
     let imported = 0
     for (const cookie of cookies) {
       try {
@@ -199,15 +266,25 @@ export class BrowserSync {
         })
         imported++
       } catch {
-        // Skip individual cookie errors (e.g. expired, invalid domain)
+        // Skip individual cookie errors
       }
     }
-    log.info(`[BrowserSync] imported ${imported}/${cookies.length} cookies`)
+    log.info(`[BrowserSync] imported ${imported}/${cookies.length} ${label} cookies`)
   }
 
-  private async exportLocalStorage(): Promise<Record<string, string>> {
+  /**
+   * Load claude.ai in a hidden window under the claude session and read its
+   * localStorage. The hidden window must actually hit claude.ai because
+   * localStorage is per-origin.
+   *
+   * Timeout was bumped from 10s to 30s — Cloudflare JS challenge delays the
+   * first dom-ready by 5-10s, and under slow network the challenge itself
+   * can take another 10s to solve. Previous 10s timeout was hitting before
+   * dom-ready fired, causing localStorage to silently never upload.
+   */
+  private async exportClaudeLocalStorage(): Promise<Record<string, string>> {
     return new Promise((resolve, reject) => {
-      const ses = this.getSession()
+      const ses = this.getClaudeSession()
       const win = new BrowserWindow({
         show: false,
         width: 100,
@@ -258,11 +335,21 @@ export class BrowserSync {
     })
   }
 
-  private hashCookies(cookies: Electron.Cookie[]): string {
-    const sorted = cookies
-      .map((c) => `${c.domain}|${c.name}|${c.value}`)
-      .sort()
-      .join('\n')
+  /**
+   * Combined hash used for change detection across BOTH session jars.
+   * Any cookie add/update/remove in either session invalidates the hash
+   * and triggers a fresh upload.
+   */
+  private hashAll(
+    claudeCookies: Electron.Cookie[],
+    browserCookies: Electron.Cookie[],
+  ): string {
+    const toKeys = (cs: Electron.Cookie[], prefix: string) =>
+      cs.map((c) => `${prefix}:${c.domain}|${c.name}|${c.value}`)
+    const sorted = [
+      ...toKeys(claudeCookies, 'c'),
+      ...toKeys(browserCookies, 'b'),
+    ].sort().join('\n')
     return createHash('sha256').update(sorted).digest('hex').slice(0, 16)
   }
 }
