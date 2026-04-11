@@ -158,6 +158,7 @@ const api = {
     }>,
     install: () => ipcRenderer.invoke('tun:install') as Promise<{ success: boolean; error?: string }>,
     startTun: (proxyUrl: string, tunnelUrl?: string) => ipcRenderer.invoke('tun:startTun', proxyUrl, tunnelUrl) as Promise<{ success: boolean; error?: string }>,
+    reconnect: () => ipcRenderer.invoke('tun:reconnect') as Promise<{ success: boolean; error?: string }>,
     stop: () => ipcRenderer.invoke('tun:stop') as Promise<{ success: boolean }>,
     testConnectivity: (exitIp?: string) => ipcRenderer.invoke('tun:testConnectivity', exitIp) as Promise<{ success: boolean; latency?: number; error?: string; actualIp?: string }>,
     diagnostics: () => ipcRenderer.invoke('tun:diagnostics') as Promise<Record<string, unknown>>,
@@ -170,6 +171,18 @@ const api = {
       const listener = (_: unknown, event: { interfaces: string[] }) => callback(event)
       ipcRenderer.on('tun:interfaceAlert', listener)
       return () => ipcRenderer.removeListener('tun:interfaceAlert', listener)
+    },
+    onStatusUpdate: (callback: (update: {
+      tunRunning: boolean
+      latencyMs: number | null
+      actualIp: string | null
+      expectedIp: string | null
+      error: string | null
+      lastTestAt: number
+    }) => void) => {
+      const listener = (_: unknown, update: Parameters<typeof callback>[0]) => callback(update)
+      ipcRenderer.on('tun:statusUpdate', listener)
+      return () => ipcRenderer.removeListener('tun:statusUpdate', listener)
     },
   },
 

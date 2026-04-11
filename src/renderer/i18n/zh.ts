@@ -186,6 +186,23 @@ export const zh: Record<TranslationKey, string> = {
   'drag.dropToOpen': '拖放以打开',
   'drag.hint': '拖入文件夹打开项目，拖入文件插入路径',
 
+  // Network indicator + popover (StatusBar)
+  'network.connected': '已连接',
+  'network.offline': '离线',
+  'network.reconnecting': '重连中...',
+  'network.testing': '测试中...',
+  'network.error': '错误',
+  'network.indicatorTooltip': '点击查看网络详情',
+  'network.exitIp': '出口 IP',
+  'network.latency': '延迟',
+  'network.lastTest': '最近测试',
+  'network.testNow': '立即测试',
+  'network.reconnect': '重连',
+  'network.reconnectConfirm': '重连会短暂中断网络，继续吗？',
+  'network.reconnectFailed': '重连失败',
+  'network.cancel': '取消',
+  'network.ipMismatch': '出口 IP 变化：预期 {expected}，实际 {actual}',
+
   // TUN Gate
   'tun.title': '网络连接',
   'tun.connecting': '连接中...',

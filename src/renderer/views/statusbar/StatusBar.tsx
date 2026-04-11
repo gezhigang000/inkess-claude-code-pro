@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useTerminalStore } from '../../stores/terminal'
 import { useSettingsStore } from '../../stores/settings'
 import { useI18n } from '../../i18n'
+import { NetworkIndicator } from './NetworkIndicator'
 
 const MODES = ['suggest', 'autoedit', 'fullauto'] as const
 const MODE_LABELS: Record<string, string> = {
@@ -108,10 +109,8 @@ export function StatusBar({ expiryMinutesRemaining, subscriptionPlan }: StatusBa
       alignItems: 'center', padding: '0 12px', borderTop: '1px solid var(--border)',
       fontSize: 12, color: 'var(--text-muted)', flexShrink: 0, gap: 12
     }}>
-      {/* Connection status — green dot only, no text when connected */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} title={t('app.connected')}>
-        <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--success)' }} />
-      </div>
+      {/* Network indicator — colored dot + latency, click for detail popover */}
+      <NetworkIndicator />
 
       {/* Git branch — SVG icon */}
       {!isMedium && activeTab?.gitBranch && (

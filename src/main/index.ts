@@ -62,6 +62,12 @@ const singBoxManager = new SingBoxManager()
 singBoxManager.cleanupStaleProcesses().catch(err => {
   log.warn('[startup] Failed to clean up stale tunnel processes:', err)
 })
+// Forward tunnel status updates to renderer for the StatusBar network
+// indicator. This fires on startTun success, stop, and every connectivity
+// test — the renderer uses it to keep its cached latency / exit IP fresh.
+singBoxManager.onStatus((update) => {
+  safeSend('tun:statusUpdate', update)
+})
 const statsCollector = new StatsCollector()
 const browserInterceptor = new BrowserInterceptor()
 
@@ -401,51 +407,61 @@ ipcMain.handle('tun:install', async () => {
   }
 })
 
-ipcMain.handle('tun:startTun', async (_event, proxyUrl: string, tunnelUrl?: string) => {
-  proxyUrl = typeof proxyUrl === 'string' ? proxyUrl.trim() : proxyUrl
-  log.info(`[startTun] url: ${proxyUrl?.replace(/:\/\/.*@/, '://***@').replace(/:\/\/([^/]+)/, '://***.***:***')}`)
-  if (tunnelUrl) log.info(`[startTun] tunnelUrl: ${tunnelUrl.slice(0, 50)}...`)
+/**
+ * Shared startup flow used by both tun:startTun and tun:reconnect IPC
+ * handlers. Validates the proxy URL, resolves the tunnel subscription (if
+ * any), picks the best tunnel node, and starts sing-box. Throws on failure
+ * so callers can do their own error reporting / IPC return value.
+ */
+async function startTunInternal(proxyUrl: string, tunnelUrl?: string): Promise<void> {
   if (typeof proxyUrl !== 'string' || proxyUrl.length > 500 || proxyUrl.length < 5) {
     log.error(`[startTun] invalid proxy URL (len=${proxyUrl?.length})`)
-    return { success: false, error: 'Invalid proxy URL' }
+    throw new Error('Invalid proxy URL')
   }
-  try {
-    // Resolve tunnel subscription → pick best node → set outbound
-    if (tunnelUrl && typeof tunnelUrl === 'string' && tunnelUrl.length > 5) {
-      try {
-        log.info(`[startTun] fetching tunnel subscription...`)
-        const nodes = await fetchSubscription(tunnelUrl)
-        // Pick best tunnel node: prefer hysteria2 (QUIC, best anti-packet-loss), then vless (UDP), then trojan, then ss
-        const tunnelNode = nodes.find(n => n.type === 'hysteria2')
-          || nodes.find(n => n.type === 'vless')
-          || nodes.find(n => n.type === 'trojan')
-          || nodes.find(n => n.type === 'ss')
-        if (tunnelNode) {
-          const tunnelOutbound = parseProxyUrl(tunnelNode.raw || tunnelNode.url)
-          singBoxManager.setTunnelOutbound(tunnelOutbound)
-          log.info(`[startTun] tunnel node: ${tunnelNode.name} (${tunnelNode.type}, ${tunnelNode.server})`)
-        } else {
-          log.warn(`[startTun] no usable tunnel node found in ${nodes.length} nodes, falling back to single proxy`)
-          singBoxManager.setTunnelOutbound(undefined)
-        }
-      } catch (tunnelErr) {
-        log.error(`[startTun] tunnel subscription failed, falling back to single proxy:`, (tunnelErr as Error).message)
+  log.info(`[startTun] url: ${proxyUrl?.replace(/:\/\/.*@/, '://***@').replace(/:\/\/([^/]+)/, '://***.***:***')}`)
+  if (tunnelUrl) log.info(`[startTun] tunnelUrl: ${tunnelUrl.slice(0, 50)}...`)
+
+  // Resolve tunnel subscription → pick best node → set outbound
+  if (tunnelUrl && typeof tunnelUrl === 'string' && tunnelUrl.length > 5) {
+    try {
+      log.info(`[startTun] fetching tunnel subscription...`)
+      const nodes = await fetchSubscription(tunnelUrl)
+      // Pick best tunnel node: prefer hysteria2 (QUIC, best anti-packet-loss), then vless (UDP), then trojan, then ss
+      const tunnelNode = nodes.find(n => n.type === 'hysteria2')
+        || nodes.find(n => n.type === 'vless')
+        || nodes.find(n => n.type === 'trojan')
+        || nodes.find(n => n.type === 'ss')
+      if (tunnelNode) {
+        const tunnelOutbound = parseProxyUrl(tunnelNode.raw || tunnelNode.url)
+        singBoxManager.setTunnelOutbound(tunnelOutbound)
+        log.info(`[startTun] tunnel node: ${tunnelNode.name} (${tunnelNode.type}, ${tunnelNode.server})`)
+      } else {
+        log.warn(`[startTun] no usable tunnel node found in ${nodes.length} nodes, falling back to single proxy`)
         singBoxManager.setTunnelOutbound(undefined)
       }
-    } else {
+    } catch (tunnelErr) {
+      log.error(`[startTun] tunnel subscription failed, falling back to single proxy:`, (tunnelErr as Error).message)
       singBoxManager.setTunnelOutbound(undefined)
     }
+  } else {
+    singBoxManager.setTunnelOutbound(undefined)
+  }
 
-    await singBoxManager.startTun(proxyUrl)
-    log.info(`[startTun] success`)
-    statsCollector.logEvent('tun:start')
+  await singBoxManager.startTun(proxyUrl)
+  log.info(`[startTun] success`)
+  statsCollector.logEvent('tun:start')
 
-    // Start interface monitor — alert renderer if external VPN detected
-    singBoxManager.startInterfaceMonitor((newInterfaces) => {
-      log.warn(`[startTun] external TUN detected: ${newInterfaces.join(', ')}`)
-      safeSend('tun:interfaceAlert', { interfaces: newInterfaces })
-    })
+  // Start interface monitor — alert renderer if external VPN detected
+  singBoxManager.startInterfaceMonitor((newInterfaces) => {
+    log.warn(`[startTun] external TUN detected: ${newInterfaces.join(', ')}`)
+    safeSend('tun:interfaceAlert', { interfaces: newInterfaces })
+  })
+}
 
+ipcMain.handle('tun:startTun', async (_event, proxyUrl: string, tunnelUrl?: string) => {
+  proxyUrl = typeof proxyUrl === 'string' ? proxyUrl.trim() : proxyUrl
+  try {
+    await startTunInternal(proxyUrl, tunnelUrl)
     return { success: true }
   } catch (err) {
     log.error(`[startTun] error:`, err)
@@ -454,6 +470,35 @@ ipcMain.handle('tun:startTun', async (_event, proxyUrl: string, tunnelUrl?: stri
       username: subscriptionManager.getUsername() || undefined,
       deviceId: getDeviceId(),
       proxyUrl: proxyUrl?.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@'),
+      singboxLog: singBoxManager.readRecentLog(),
+    })
+    return { success: false, error }
+  }
+})
+
+ipcMain.handle('tun:reconnect', async () => {
+  // Manual user-triggered reconnect: stop the running tunnel, then restart
+  // from the current subscription session. Reuses startTunInternal so
+  // tunnel subscriptions are re-fetched (picks up any node changes) and
+  // the interface monitor is re-armed.
+  const session = subscriptionManager.getSession()
+  if (!session?.proxyUrl) {
+    return { success: false, error: 'No active subscription session' }
+  }
+  log.info('[reconnect] manual reconnect requested')
+  try {
+    // stop(false) = skip DNS restore; we're about to re-hijack immediately
+    await singBoxManager.stop(false)
+    await startTunInternal(session.proxyUrl, session.tunnelUrl)
+    log.info('[reconnect] success')
+    return { success: true }
+  } catch (err) {
+    log.error('[reconnect] failed:', err)
+    const error = (err as Error).message
+    errorReporter.reportBizError('tun_start', `reconnect: ${error}`, {
+      username: subscriptionManager.getUsername() || undefined,
+      deviceId: getDeviceId(),
+      proxyUrl: session.proxyUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:***@'),
       singboxLog: singBoxManager.readRecentLog(),
     })
     return { success: false, error }
