@@ -499,8 +499,22 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
 
   /**
    * Test connectivity through TUN by verifying exit IP.
-   * Fetches ip.oxylabs.io/location and compares with expected exit IP.
-   * If exitIp is empty, only checks that the request succeeds (proxy is working).
+   *
+   * Uses Cloudflare's `/cdn-cgi/trace` endpoint — a public, non-account,
+   * globally-distributed marketing/debug URL that returns plain-text
+   * key=value fields including `ip=` and `loc=` (ISO country). Chosen
+   * because:
+   *
+   *   - The previous endpoint `ip.oxylabs.io/location` is a marketing
+   *     demo page for oxylabs's commercial proxy product; they appear
+   *     to soft-block specific IPs / account histories (TCP accepts
+   *     but HTTP silently drops, producing 15–40 second timeouts).
+   *   - Cloudflare's trace endpoint is served by their edge network
+   *     everywhere, doesn't reject connections, and parses trivially.
+   *   - No `timezone` field — we map `loc` → timezone via a hardcoded
+   *     table (`countryCodeToTimezone` below).
+   *
+   * If exitIp is empty, only checks that the request succeeds.
    */
   async testConnectivity(exitIp?: string): Promise<{ success: boolean; latency?: number; error?: string; actualIp?: string }> {
     this.reconcileStatus()
@@ -514,19 +528,17 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     try {
       const start = Date.now()
       log.info(`[testConnectivity] verifying exit IP (expected: ${exitIp || 'any'})...`)
-
-      // Use fetch from Electron main process — in TUN mode with auto_route+strict_route,
-      // all system traffic goes through sing-box TUN including Electron's fetch.
-      // curl subprocess had 10s+ latency issues; fetch is faster and more reliable.
-      log.info(`[testConnectivity] fetching https://ip.oxylabs.io/location ...`)
-      const res = await fetchWithTimeout('https://ip.oxylabs.io/location', {}, 15000)
+      log.info(`[testConnectivity] fetching https://www.cloudflare.com/cdn-cgi/trace ...`)
+      const res = await fetchWithTimeout('https://www.cloudflare.com/cdn-cgi/trace', {}, 15000)
       log.info(`[testConnectivity] HTTP ${res.status} (${Date.now() - start}ms)`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      const actualIp = data.ip as string
+      const text = await res.text()
+      const fields = parseCloudflareTrace(text)
+      const actualIp = fields.ip
+      if (!actualIp) throw new Error('cloudflare trace response missing ip= field')
 
       const latency = Date.now() - start
-      log.info(`[testConnectivity] exit IP: ${actualIp}, latency: ${latency}ms`)
+      log.info(`[testConnectivity] exit IP: ${actualIp} (loc=${fields.loc ?? '?'}), latency: ${latency}ms`)
 
       if (exitIp && actualIp !== exitIp) {
         log.error(`[testConnectivity] exit IP mismatch: got ${actualIp}, expected ${exitIp}`)
@@ -574,12 +586,13 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       results.proxyForeign = { ms: Date.now() - start, status: res.status }
     } catch (e) { results.proxyForeign = { ms: -1, error: (e as Error).message } }
 
-    // 4. Exit IP check (through proxy)
+    // 4. Exit IP check (through proxy) — Cloudflare trace, see testConnectivity.
     try {
       const start = Date.now()
-      const res = await fetchWithTimeout('https://ip.oxylabs.io/location', {}, 15000)
-      const data = await res.json()
-      results.exitIp = { ms: Date.now() - start, ip: data.ip, status: res.status }
+      const res = await fetchWithTimeout('https://www.cloudflare.com/cdn-cgi/trace', {}, 15000)
+      const text = await res.text()
+      const fields = parseCloudflareTrace(text)
+      results.exitIp = { ms: Date.now() - start, ip: fields.ip ?? null, loc: fields.loc ?? null, status: res.status }
     } catch (e) { results.exitIp = { ms: -1, error: (e as Error).message } }
 
     // 5. Google (through proxy)
@@ -928,4 +941,46 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       }
     })
   }
+}
+
+// ---------------------------------------------------------------------------
+// Cloudflare trace parser (connectivity probe helper)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse Cloudflare's `/cdn-cgi/trace` text response.
+ *
+ * Cloudflare returns a plain-text body like:
+ *
+ *   fl=abc123
+ *   h=www.cloudflare.com
+ *   ip=130.255.64.52
+ *   ts=1712876543.123
+ *   visit_scheme=https
+ *   uag=curl/8.6.0
+ *   colo=PRG
+ *   sliver=none
+ *   http=http/2
+ *   loc=CZ
+ *   tls=TLSv1.3
+ *   sni=plaintext
+ *   warp=off
+ *   gateway=off
+ *
+ * We only need `ip=` and `loc=` (ISO 3166 country code). Returns a
+ * partial object so callers can handle missing fields explicitly.
+ */
+function parseCloudflareTrace(body: string): { ip?: string; loc?: string; colo?: string } {
+  const out: { ip?: string; loc?: string; colo?: string } = {}
+  const lines = body.split(/\r?\n/)
+  for (const line of lines) {
+    const eq = line.indexOf('=')
+    if (eq < 0) continue
+    const key = line.slice(0, eq).trim()
+    const value = line.slice(eq + 1).trim()
+    if (key === 'ip') out.ip = value
+    else if (key === 'loc') out.loc = value
+    else if (key === 'colo') out.colo = value
+  }
+  return out
 }
