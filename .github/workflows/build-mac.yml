@@ -1,6 +1,9 @@
 name: Build Mac
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       release_version:
@@ -42,6 +45,7 @@ jobs:
         run: npm ci
 
       - name: Override version for workflow_dispatch
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
@@ -56,6 +60,17 @@ jobs:
               json.dump(pkg, f, ensure_ascii=False, indent=2)
               f.write('\n')
           PY
+
+      - name: Resolve effective version
+        id: version
+        shell: bash
+        run: |
+          # After any overrides, read the canonical version from package.json.
+          # Works both for push:tags (package.json already has the right version)
+          # and workflow_dispatch (override step just wrote it).
+          V=$(jq -r .version package.json)
+          echo "value=$V" >> "$GITHUB_OUTPUT"
+          echo "Effective version: $V"
 
       # ---------------------------------------------------------------
       # Import Developer ID Application cert into a fresh temporary
@@ -160,7 +175,7 @@ jobs:
       - name: Generate latest-mac.yml
         shell: bash
         env:
-          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_VERSION: ${{ steps.version.outputs.value }}
         run: |
           python3 - <<'PY'
           import hashlib, base64, os, glob
@@ -224,14 +239,15 @@ jobs:
           retention-days: 30
 
       - name: Upload to OSS
-        if: always() && github.event_name == 'workflow_dispatch'
+        if: always() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
         shell: bash
         env:
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-          OSS_PREFIX: ${{ inputs.oss_prefix }}
-          UPLOAD_LATEST: ${{ inputs.upload_latest }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
+          # Tag-push → prod defaults. workflow_dispatch → caller-provided inputs.
+          OSS_PREFIX: ${{ github.event_name == 'workflow_dispatch' && inputs.oss_prefix || 'pro-releases' }}
+          UPLOAD_LATEST: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_latest || 'true' }}
+          RELEASE_VERSION: ${{ steps.version.outputs.value }}
         run: |
           # macos-14 runner has a PEP 668 externally-managed Python from
           # Homebrew, so plain `pip3 install` errors out. --break-system-packages
