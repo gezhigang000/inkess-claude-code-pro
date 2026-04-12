@@ -110,10 +110,18 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          CSC_NAME: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # electron-builder rejects CSC_NAME with a "Developer ID Application: "
+          # prefix — it wants the common name only (e.g. "grant ge (3X5DVPNRS7)").
+          # We strip the prefix here rather than storing a stripped version in
+          # the secret, so APPLE_SIGNING_IDENTITY matches what `security
+          # find-identity` prints exactly.
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           CSC_KEYCHAIN: ${{ runner.temp }}/inkess-build.keychain-db
           CSC_IDENTITY_AUTO_DISCOVERY: "true"
-        run: npm run dist:mac
+        run: |
+          export CSC_NAME="${APPLE_SIGNING_IDENTITY#Developer ID Application: }"
+          echo "Using CSC_NAME=$CSC_NAME"
+          npm run dist:mac
 
       # ---------------------------------------------------------------
       # Cleanup: delete the temp keychain so the next job on the same
@@ -148,7 +156,10 @@ jobs:
           UPLOAD_LATEST: ${{ inputs.upload_latest }}
           RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
-          pip3 install oss2
+          # macos-14 runner has a PEP 668 externally-managed Python from
+          # Homebrew, so plain `pip3 install` errors out. --break-system-packages
+          # is safe on a throwaway CI runner.
+          pip3 install --break-system-packages oss2
           python3 - <<'PY'
           import glob, os, oss2
           auth = oss2.Auth(os.environ['OSS_ACCESS_KEY_ID'], os.environ['OSS_ACCESS_KEY_SECRET'])
