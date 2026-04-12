@@ -64,18 +64,19 @@ describe('CliManager', () => {
       expect(info.version).toBeNull()
     })
 
-    it('returns installed with version from marker file', () => {
+    it('returns installed with version from .active file', () => {
+      // Versioned layout: .active file holds the current version string,
+      // {cliDir}/{version}/claude is the binary.
       mockExistsSync.mockReturnValue(true)
-      mockReadFileSync.mockReturnValue('1.0.5|2026-01-01T00:00:00.000Z')
+      mockReadFileSync.mockReturnValue('1.0.5')
       const info = cli.getInfo()
       expect(info.installed).toBe(true)
       expect(info.version).toBe('1.0.5')
     })
 
-    it('returns installed with version from execSync when no marker', () => {
-      // First call: markerPath existsSync → false, second: binaryPath → true
-      mockExistsSync.mockReturnValueOnce(false).mockReturnValue(true)
-      mockExecSync.mockReturnValue('1.0.5\n')
+    it('trims whitespace/newline from .active file', () => {
+      mockExistsSync.mockReturnValue(true)
+      mockReadFileSync.mockReturnValue('1.0.5\n')
       const info = cli.getInfo()
       expect(info.installed).toBe(true)
       expect(info.version).toBe('1.0.5')
