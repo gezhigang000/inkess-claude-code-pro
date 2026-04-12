@@ -1,0 +1,177 @@
+name: Build Mac
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Release version to build
+        required: true
+        type: string
+      release_channel:
+        description: prod or test
+        required: true
+        default: test
+        type: choice
+        options: [prod, test]
+      oss_prefix:
+        description: OSS directory prefix
+        required: true
+        default: pro-releases-test
+        type: string
+      upload_latest:
+        description: Update latest/ copy in OSS
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac:
+    runs-on: macos-14   # Apple Silicon runner; has Xcode + notarytool preinstalled
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Override version for workflow_dispatch
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          path = 'package.json'
+          with open(path, 'r', encoding='utf-8') as f:
+              pkg = json.load(f)
+          pkg['version'] = os.environ['RELEASE_VERSION']
+          with open(path, 'w', encoding='utf-8') as f:
+              json.dump(pkg, f, ensure_ascii=False, indent=2)
+              f.write('\n')
+          PY
+
+      # ---------------------------------------------------------------
+      # Import Developer ID Application cert into a fresh temporary
+      # keychain. We do NOT touch the default login keychain so repeated
+      # runs stay isolated. electron-builder's internal signing step will
+      # discover the identity by name via CSC_NAME.
+      # ---------------------------------------------------------------
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          KC_PATH="$RUNNER_TEMP/inkess-build.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          # Decode base64 cert into a file
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+
+          # Create a fresh keychain just for this run
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KC_PATH"
+          security set-keychain-settings -lut 21600 "$KC_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KC_PATH"
+
+          # Import cert + key (-A = allow any app to use; fine on a
+          # throwaway CI runner)
+          security import "$CERT_PATH" \
+            -k "$KC_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12
+
+          # Prepend our keychain to the search list so codesign finds it
+          security list-keychain -d user -s "$KC_PATH" $(security list-keychains -d user | sed s/\"//g)
+
+          # Verify the Developer ID Application identity is available
+          security find-identity -v -p codesigning "$KC_PATH"
+
+          # Remove the .p12 file from disk (still in keychain)
+          rm -f "$CERT_PATH"
+
+      # ---------------------------------------------------------------
+      # Build + sign + notarize via electron-builder. The notarize config
+      # in package.json has notarize: true, so electron-builder will call
+      # @electron/notarize automatically after signing. Notarization is
+      # authenticated via the App-Specific Password (APPLE_PASSWORD).
+      # ---------------------------------------------------------------
+      - name: Build & Package (sign + notarize)
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_NAME: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          CSC_KEYCHAIN: ${{ runner.temp }}/inkess-build.keychain-db
+          CSC_IDENTITY_AUTO_DISCOVERY: "true"
+        run: npm run dist:mac
+
+      # ---------------------------------------------------------------
+      # Cleanup: delete the temp keychain so the next job on the same
+      # runner (if self-hosted) doesn't inherit stale creds. On
+      # macos-latest this is cosmetic (runner is thrown away).
+      # ---------------------------------------------------------------
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          KC_PATH="$RUNNER_TEMP/inkess-build.keychain-db"
+          security delete-keychain "$KC_PATH" 2>/dev/null || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-arm64
+          path: |
+            release/*.dmg
+            release/*.dmg.blockmap
+            release/*-mac.zip
+            release/*-mac.zip.blockmap
+            release/latest-mac.yml
+          retention-days: 30
+
+      - name: Upload to OSS
+        if: always() && github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_PREFIX: ${{ inputs.oss_prefix }}
+          UPLOAD_LATEST: ${{ inputs.upload_latest }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          pip3 install oss2
+          python3 - <<'PY'
+          import glob, os, oss2
+          auth = oss2.Auth(os.environ['OSS_ACCESS_KEY_ID'], os.environ['OSS_ACCESS_KEY_SECRET'])
+          bucket = oss2.Bucket(auth, 'https://oss-cn-beijing.aliyuncs.com', 'inkess-install-file')
+          prefix = os.environ['OSS_PREFIX']
+          version = os.environ['RELEASE_VERSION']
+          upload_latest = os.environ['UPLOAD_LATEST'].lower() == 'true'
+
+          uploaded_dmg = None
+          patterns = ['release/*.dmg', 'release/*.dmg.blockmap',
+                      'release/*-mac.zip', 'release/*-mac.zip.blockmap',
+                      'release/latest-mac.yml']
+          for pat in patterns:
+              for f in glob.glob(pat):
+                  name = os.path.basename(f)
+                  key = f'{prefix}/{name}'
+                  size_mb = os.path.getsize(f) / 1024 / 1024
+                  print(f'  {name} ({size_mb:.1f} MB)...')
+                  oss2.resumable_upload(bucket, key, f, part_size=10*1024*1024, num_threads=2)
+                  if name.endswith('-arm64.dmg'):
+                      uploaded_dmg = name
+
+          if upload_latest and uploaded_dmg:
+              bucket.copy_object(bucket.bucket_name, f'{prefix}/{uploaded_dmg}', f'{prefix}/latest/macos-arm64.dmg')
+              print(f'  latest/ <- {uploaded_dmg}')
+          PY
