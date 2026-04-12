@@ -146,6 +146,71 @@ jobs:
           KC_PATH="$RUNNER_TEMP/inkess-build.keychain-db"
           security delete-keychain "$KC_PATH" 2>/dev/null || true
 
+      # ---------------------------------------------------------------
+      # electron-builder silently does NOT write release/latest-mac.yml
+      # on the macos-14 runner under any --publish mode (we tried never,
+      # always, and implicit — all produced 4 artifacts, no manifest).
+      # Without latest-mac.yml, electron-updater on installed clients
+      # cannot discover new versions — auto-update would be dead.
+      #
+      # Generate the manifest ourselves from the dmg + zip that
+      # electron-builder already produced. The schema is stable and
+      # well-understood (electron-updater parses it line-by-line).
+      # ---------------------------------------------------------------
+      - name: Generate latest-mac.yml
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, base64, os, glob
+          from datetime import datetime, timezone
+
+          version = os.environ['RELEASE_VERSION']
+
+          def sha512_b64(path):
+              h = hashlib.sha512()
+              with open(path, 'rb') as f:
+                  for chunk in iter(lambda: f.read(65536), b''):
+                      h.update(chunk)
+              return base64.b64encode(h.digest()).decode()
+
+          zip_files = sorted(glob.glob('release/*-arm64-mac.zip'))
+          dmg_files = sorted(glob.glob('release/*-arm64.dmg'))
+          if not zip_files or not dmg_files:
+              raise SystemExit(f'missing zip/dmg: zip={zip_files} dmg={dmg_files}')
+
+          zip_path, dmg_path = zip_files[0], dmg_files[0]
+          zip_name, dmg_name = os.path.basename(zip_path), os.path.basename(dmg_path)
+          zip_sha, dmg_sha = sha512_b64(zip_path), sha512_b64(dmg_path)
+          zip_size, dmg_size = os.path.getsize(zip_path), os.path.getsize(dmg_path)
+          release_date = datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+
+          # electron-updater on Mac prefers the zip for auto-update (faster,
+          # no mount). `path` + top-level `sha512` point to the zip. The DMG
+          # is still listed in `files` so users downloading via website /
+          # homebrew get the DMG.
+          yml = (
+              f"version: {version}\n"
+              f"files:\n"
+              f"  - url: {zip_name}\n"
+              f"    sha512: {zip_sha}\n"
+              f"    size: {zip_size}\n"
+              f"  - url: {dmg_name}\n"
+              f"    sha512: {dmg_sha}\n"
+              f"    size: {dmg_size}\n"
+              f"path: {zip_name}\n"
+              f"sha512: {zip_sha}\n"
+              f"releaseDate: '{release_date}'\n"
+          )
+
+          with open('release/latest-mac.yml', 'w') as f:
+              f.write(yml)
+
+          print('Wrote release/latest-mac.yml:')
+          print(yml)
+          PY
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
