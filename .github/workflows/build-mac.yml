@@ -121,7 +121,15 @@ jobs:
         run: |
           export CSC_NAME="${APPLE_SIGNING_IDENTITY#Developer ID Application: }"
           echo "Using CSC_NAME=$CSC_NAME"
-          npm run dist:mac
+          # Manually expand `npm run dist:mac` so we can pass --publish=never.
+          # Without --publish=never, electron-builder enters "implicit
+          # publishing" mode under CI detection and SKIPS writing
+          # release/latest-mac.yml (it expects the generic publish provider
+          # to take care of the update manifest, but generic can't push).
+          # --publish=never forces generation of all release metadata
+          # (latest-mac.yml + blockmaps) without attempting to upload.
+          npm run build
+          npx electron-builder --mac --arm64 --publish=never
 
       # ---------------------------------------------------------------
       # Cleanup: delete the temp keychain so the next job on the same
