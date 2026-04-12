@@ -191,35 +191,65 @@ export class BrowserSync {
         log.warn('[BrowserSync] localStorage export failed, uploading cookies only:', err)
       }
 
-      const body: SyncDataV2 = {
+      // The inkess-platform API currently only speaks v1 on POST (flat
+      // `cookies`/`localStorage` — no version field, no browser jar). If we
+      // send v2 the server returns 400 "missing required fields". Try v2
+      // first so that once the server is upgraded, clients will transparently
+      // move over without a release. Fall back to v1 on 400 so that the
+      // claude cookies still reach the cloud on the current server.
+      //
+      // The v1 shape cannot carry the general "browser" session jar (proton
+      // cookies etc.) — those are dropped on upload until the server ships
+      // v2. This is a known trade-off; fix is on the server side.
+
+      const doPost = async (payload: SyncDataV2 | SyncDataV1): Promise<Response> =>
+        fetch(`${API_BASE}/api/subscription/browser-data`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
+        })
+
+      const v2Body: SyncDataV2 = {
         version: 2,
-        claude: {
-          cookies: claudeCookies,
-          localStorage: claudeLocalStorage,
-        },
-        browser: {
-          cookies: browserCookies,
-        },
+        claude: { cookies: claudeCookies, localStorage: claudeLocalStorage },
+        browser: { cookies: browserCookies },
         timestamp: new Date().toISOString(),
       }
 
-      const res = await fetch(`${API_BASE}/api/subscription/browser-data`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
-      })
+      let res = await doPost(v2Body)
+      let uploadedVersion: 1 | 2 = 2
+
+      if (res.status === 400) {
+        // Server rejected v2 — retry with the v1 flat shape (claude only)
+        const v1Body: SyncDataV1 = {
+          cookies: claudeCookies,
+          localStorage: claudeLocalStorage,
+          timestamp: new Date().toISOString(),
+        }
+        log.info('[BrowserSync] v2 rejected (400), retrying as v1 (claude-only)')
+        res = await doPost(v1Body)
+        uploadedVersion = 1
+      }
 
       if (res.ok) {
         this.lastHash = hash
-        log.info(
-          `[BrowserSync] uploaded v2: claude=${claudeCookies.length} cookies + ` +
-          `${Object.keys(claudeLocalStorage).length} localStorage keys, ` +
-          `browser=${browserCookies.length} cookies`,
-        )
+        if (uploadedVersion === 2) {
+          log.info(
+            `[BrowserSync] uploaded v2: claude=${claudeCookies.length} cookies + ` +
+            `${Object.keys(claudeLocalStorage).length} localStorage keys, ` +
+            `browser=${browserCookies.length} cookies`,
+          )
+        } else {
+          log.info(
+            `[BrowserSync] uploaded v1: ${claudeCookies.length} claude cookies + ` +
+            `${Object.keys(claudeLocalStorage).length} localStorage keys ` +
+            `(browser jar: ${browserCookies.length} cookies NOT synced — server is v1)`,
+          )
+        }
       } else {
         log.warn(`[BrowserSync] upload failed: HTTP ${res.status}`)
         // Token expired — stop periodic uploads
