@@ -722,18 +722,52 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     }
 
     try {
-      const start = Date.now()
+      // Two-probe strategy:
+      //   Probe #1 (cold) — does DNS + TCP + TLS + HTTP from scratch. Used to
+      //                     verify the exit IP via Cloudflare trace. The time
+      //                     this takes is dominated by the 3-4 RTTs of
+      //                     handshake setup, NOT the network round-trip, so
+      //                     it's misleading as a "latency" number.
+      //   Probe #2 (warm) — runs immediately after on the same undici connection
+      //                     pool, so DNS is cached, TCP is reused, TLS is
+      //                     resumed. The time this takes is 1 RTT, which
+      //                     matches what the user actually feels when browsing
+      //                     (HTTP/2 persistent connections, cached DNS, etc).
+      // We report probe #2 as latencyMs.
       log.info(`[testConnectivity] verifying exit IP (expected: ${exitIp || 'any'})...`)
-      log.info(`[testConnectivity] fetching https://www.cloudflare.com/cdn-cgi/trace ...`)
+      log.info(`[testConnectivity] cold probe https://www.cloudflare.com/cdn-cgi/trace ...`)
+      const coldStart = Date.now()
       const res = await fetchWithTimeout('https://www.cloudflare.com/cdn-cgi/trace', {}, 15000)
-      log.info(`[testConnectivity] HTTP ${res.status} (${Date.now() - start}ms)`)
+      const coldMs = Date.now() - coldStart
+      log.info(`[testConnectivity] cold HTTP ${res.status} (${coldMs}ms — handshake + 1 RTT)`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const text = await res.text()
       const fields = parseCloudflareTrace(text)
       const actualIp = fields.ip
       if (!actualIp) throw new Error('cloudflare trace response missing ip= field')
 
-      const latency = Date.now() - start
+      // Probe #2: warm measurement on reused connection.
+      // Failure here is non-fatal — we still have a valid actualIp from probe
+      // #1, so fall back to the cold number rather than reporting the whole
+      // connectivity test as failed.
+      let latency = coldMs
+      try {
+        // retries=0: we don't want retry back-off to inflate the warm number.
+        // 5000ms timeout is plenty for a 1-RTT request on any reasonable link.
+        const warmStart = Date.now()
+        const res2 = await fetchWithTimeout('https://www.cloudflare.com/cdn-cgi/trace', {}, 5000, 0)
+        await res2.text()
+        const warmMs = Date.now() - warmStart
+        if (res2.ok && warmMs > 0) {
+          latency = warmMs
+          log.info(`[testConnectivity] warm HTTP ${res2.status} (${warmMs}ms — 1 RTT, matches real browsing)`)
+        } else {
+          log.warn(`[testConnectivity] warm probe failed (HTTP ${res2.status}), falling back to cold ${coldMs}ms`)
+        }
+      } catch (warmErr) {
+        log.warn(`[testConnectivity] warm probe error, falling back to cold ${coldMs}ms:`, (warmErr as Error).message)
+      }
+
       log.info(`[testConnectivity] exit IP: ${actualIp} (loc=${fields.loc ?? '?'}), latency: ${latency}ms`)
 
       this._latencyMs = latency
