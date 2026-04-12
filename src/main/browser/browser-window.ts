@@ -596,13 +596,29 @@ function updateTabStrip(): void {
 // ---------------------------------------------------------------------------
 
 function injectRegionMasking(view: WebContentsView, regionEnv: Record<string, string>, lang: string): void {
-  if (regionEnv.LANG) {
-    const safeLang = JSON.stringify(lang)
-    view.webContents.executeJavaScript(`
-      Object.defineProperty(navigator, 'language', { get: () => ${safeLang} });
-      Object.defineProperty(navigator, 'languages', { get: () => [${safeLang}, 'en'] });
-    `).catch(() => {})
-  }
+  // ALWAYS inject navigator.language/languages — do NOT guard on regionEnv.LANG.
+  //
+  // The previous version had `if (regionEnv.LANG)` around the inject block,
+  // which meant when proxyRegion was 'auto' (REGION_ENV['auto'] = {}), we
+  // silently skipped the override and the browser fell back to the user's
+  // real system locale. On a Chinese Mac that's `zh-CN`, which Claude.ai's
+  // country gate uses as a strong "user is in China" signal and blocks the
+  // session outright — even if the exit IP is clean.
+  //
+  // `lang` is always a non-empty string (the caller defaults it to 'en-US'
+  // when regionEnv.LANG is missing), so injecting unconditionally is safe
+  // and consistent with the rest of the browser-window code that also
+  // always runs the fingerprint mask.
+  const safeLang = JSON.stringify(lang)
+  view.webContents.executeJavaScript(`
+    Object.defineProperty(navigator, 'language', { get: () => ${safeLang} });
+    Object.defineProperty(navigator, 'languages', { get: () => [${safeLang}, 'en'] });
+  `).catch(() => {})
+
+  // Intl.DateTimeFormat timezone override. Still guarded on regionEnv.TZ
+  // because with the 'auto' region there's no meaningful timezone to
+  // apply — leaving Intl alone in that case is fine (it'll use the
+  // system default which is a separate leak we're not addressing here).
   if (regionEnv.TZ) {
     const safeTz = JSON.stringify(regionEnv.TZ)
     view.webContents.executeJavaScript(`
