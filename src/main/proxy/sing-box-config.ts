@@ -123,17 +123,32 @@ export function buildTunConfig(opts: TunConfigOptions): SingBoxConfig {
     log: { level: 'info', timestamp: true, ...(logOutput ? { output: logOutput } : {}) },
     dns: {
       servers: [
-        // Remote DNS: DoH — all non-CN domains
+        // Remote DNS: DoH — resolves non-CN domains through proxy
         { address: 'https://dns.google/dns-query', tag: 'remote-dns', detour: dnsDetour, address_resolver: 'local-dns', strategy: 'ipv4_only' },
-        // Local DNS: CN domains + proxy/tunnel server hostname resolution
+        // FakeIP: instant responses for non-CN domains. sing-box returns a
+        // synthetic IP from 198.18.0.0/15 pool, then does real DNS on the
+        // proxy server side when the outbound connection is made. Eliminates
+        // the ~800ms DoH round-trip that was the #1 DNS latency bottleneck
+        // for foreign domains. CN domains use real IPs (see rules below).
+        { address: 'fakeip', tag: 'fakeip-dns' },
+        // Local DNS: CN domains + proxy/tunnel server hostname resolution.
+        // Multiple servers for redundancy (some ISPs throttle 114).
         { address: '114.114.114.114', tag: 'local-dns', detour: 'direct', strategy: 'ipv4_only' },
+        { address: '223.5.5.5', tag: 'local-dns-ali', detour: 'direct', strategy: 'ipv4_only' },
       ],
       rules: [
         // Proxy/tunnel server hostname → local DNS (avoids circular dependency)
         { outbound: 'any', server: 'local-dns' },
-        // CN domains → local DNS (real IP for direct outbound)
+        // CN domains → local DNS (real IP for direct outbound + correct geo-routing)
         ...(hasRuleSet ? [{ rule_set: 'geosite-cn', server: 'local-dns' }] : []),
+        // Everything else → FakeIP (instant response, real resolution on proxy side)
+        { query_type: ['A', 'AAAA'], server: 'fakeip-dns' },
       ],
+      fakeip: {
+        enabled: true,
+        inet4_range: '198.18.0.0/15',
+        inet6_range: 'fc00::/18',
+      },
       final: 'remote-dns',
       independent_cache: true,
     },
@@ -160,6 +175,13 @@ export function buildTunConfig(opts: TunConfigOptions): SingBoxConfig {
       ...(ruleSetDefs.length > 0 ? { rule_set: ruleSetDefs } : {}),
       auto_detect_interface: true,
       final: 'proxy',
+    },
+    // Persist FakeIP mappings to disk so they survive app restarts.
+    // Without this, every restart regenerates the pool and previously
+    // cached domain→fakeIP mappings are lost, causing a brief
+    // re-resolution spike.
+    experimental: {
+      cache_file: { enabled: true, store_fakeip: true },
     },
   }
 }

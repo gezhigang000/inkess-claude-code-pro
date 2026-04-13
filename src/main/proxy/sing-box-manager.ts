@@ -802,12 +802,19 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
   async runDiagnostics(): Promise<Record<string, unknown>> {
     const results: Record<string, unknown> = { timestamp: new Date().toISOString(), tunStatus: this._status }
 
-    // 1. DNS resolution speed (local DNS)
+    // 1. DNS resolution speed (local DNS, 114.114.114.114)
+    // Tests actual DNS by resolving a known CN domain. The previous version
+    // did `fetch('http://114.114.114.114')` which tested HTTP to a DNS server
+    // (always fails — 114 doesn't serve HTTP on port 80).
     try {
       const start = Date.now()
-      const res = await fetchWithTimeout('http://114.114.114.114', {}, 5000).catch(() => null)
-      results.localDns = { ms: Date.now() - start, ok: !!res }
-    } catch { results.localDns = { ms: -1, ok: false } }
+      const { resolve4 } = await import('dns/promises')
+      const addresses = await Promise.race([
+        resolve4('www.baidu.com'),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('dns timeout')), 5000)),
+      ])
+      results.localDns = { ms: Date.now() - start, ok: addresses.length > 0, resolved: addresses[0] }
+    } catch (e) { results.localDns = { ms: -1, ok: false, error: (e as Error).message } }
 
     // 2. Direct connection to domestic site (should NOT go through proxy)
     try {
