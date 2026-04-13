@@ -29,18 +29,8 @@ interface SyncDataV2 {
   timestamp: string
 }
 
-/**
- * v1 legacy payload — single cookie jar (claude-only), flat. Older clients
- * uploaded this; new clients must still be able to restore it. Detected by
- * presence of top-level `cookies` and absence of `version`.
- */
-interface SyncDataV1 {
-  cookies: Electron.Cookie[]
-  localStorage: Record<string, string>
-  timestamp: string
-}
-
-type SyncDataAny = SyncDataV2 | SyncDataV1
+// v1 legacy format (flat { cookies, localStorage }) is no longer supported.
+// Server returns 204 for stale v1 data, and rejects v1 POSTs with 400.
 
 export class BrowserSync {
   private timer: NodeJS.Timeout | null = null
@@ -77,38 +67,24 @@ export class BrowserSync {
         return
       }
 
-      const data = (await res.json()) as SyncDataAny
-      const isV2 = 'version' in data && data.version === 2
-
-      if (isV2) {
-        const v2 = data as SyncDataV2
-        log.info(
-          `[BrowserSync] downloaded v2: claude=${v2.claude?.cookies?.length ?? 0} cookies, ` +
-          `browser=${v2.browser?.cookies?.length ?? 0} cookies, ` +
-          `claudeLocalStorage=${Object.keys(v2.claude?.localStorage || {}).length} keys`,
-        )
-        if (v2.claude?.cookies?.length) {
-          await this.importCookies(this.getClaudeSession(), v2.claude.cookies, 'claude')
-        }
-        if (v2.browser?.cookies?.length) {
-          await this.importCookies(this.getBrowserSession(), v2.browser.cookies, 'browser')
-        }
-        if (v2.claude?.localStorage && Object.keys(v2.claude.localStorage).length > 0) {
-          this.pendingLocalStorage = v2.claude.localStorage
-        }
-      } else {
-        // v1 legacy: cookies are treated as claude-only (matches old client semantics)
-        const v1 = data as SyncDataV1
-        log.info(
-          `[BrowserSync] downloaded v1: ${v1.cookies?.length ?? 0} cookies, ` +
-          `localStorage keys: ${Object.keys(v1.localStorage || {}).length}`,
-        )
-        if (v1.cookies?.length) {
-          await this.importCookies(this.getClaudeSession(), v1.cookies, 'claude')
-        }
-        if (v1.localStorage && Object.keys(v1.localStorage).length > 0) {
-          this.pendingLocalStorage = v1.localStorage
-        }
+      const data = (await res.json()) as SyncDataV2
+      if (data.version !== 2) {
+        log.warn(`[BrowserSync] unexpected data version: ${data.version}, skipping`)
+        return
+      }
+      log.info(
+        `[BrowserSync] downloaded v2: claude=${data.claude?.cookies?.length ?? 0} cookies, ` +
+        `browser=${data.browser?.cookies?.length ?? 0} cookies, ` +
+        `claudeLocalStorage=${Object.keys(data.claude?.localStorage || {}).length} keys`,
+      )
+      if (data.claude?.cookies?.length) {
+        await this.importCookies(this.getClaudeSession(), data.claude.cookies, 'claude')
+      }
+      if (data.browser?.cookies?.length) {
+        await this.importCookies(this.getBrowserSession(), data.browser.cookies, 'browser')
+      }
+      if (data.claude?.localStorage && Object.keys(data.claude.localStorage).length > 0) {
+        this.pendingLocalStorage = data.claude.localStorage
       }
     } catch (err) {
       log.warn('[BrowserSync] download error:', err)
@@ -191,65 +167,30 @@ export class BrowserSync {
         log.warn('[BrowserSync] localStorage export failed, uploading cookies only:', err)
       }
 
-      // The inkess-platform API currently only speaks v1 on POST (flat
-      // `cookies`/`localStorage` — no version field, no browser jar). If we
-      // send v2 the server returns 400 "missing required fields". Try v2
-      // first so that once the server is upgraded, clients will transparently
-      // move over without a release. Fall back to v1 on 400 so that the
-      // claude cookies still reach the cloud on the current server.
-      //
-      // The v1 shape cannot carry the general "browser" session jar (proton
-      // cookies etc.) — those are dropped on upload until the server ships
-      // v2. This is a known trade-off; fix is on the server side.
-
-      const doPost = async (payload: SyncDataV2 | SyncDataV1): Promise<Response> =>
-        fetch(`${API_BASE}/api/subscription/browser-data`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
-        })
-
-      const v2Body: SyncDataV2 = {
+      const body: SyncDataV2 = {
         version: 2,
         claude: { cookies: claudeCookies, localStorage: claudeLocalStorage },
         browser: { cookies: browserCookies },
         timestamp: new Date().toISOString(),
       }
 
-      let res = await doPost(v2Body)
-      let uploadedVersion: 1 | 2 = 2
-
-      if (res.status === 400) {
-        // Server rejected v2 — retry with the v1 flat shape (claude only)
-        const v1Body: SyncDataV1 = {
-          cookies: claudeCookies,
-          localStorage: claudeLocalStorage,
-          timestamp: new Date().toISOString(),
-        }
-        log.info('[BrowserSync] v2 rejected (400), retrying as v1 (claude-only)')
-        res = await doPost(v1Body)
-        uploadedVersion = 1
-      }
+      const res = await fetch(`${API_BASE}/api/subscription/browser-data`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
+      })
 
       if (res.ok) {
         this.lastHash = hash
-        if (uploadedVersion === 2) {
-          log.info(
-            `[BrowserSync] uploaded v2: claude=${claudeCookies.length} cookies + ` +
-            `${Object.keys(claudeLocalStorage).length} localStorage keys, ` +
-            `browser=${browserCookies.length} cookies`,
-          )
-        } else {
-          log.info(
-            `[BrowserSync] uploaded v1: ${claudeCookies.length} claude cookies + ` +
-            `${Object.keys(claudeLocalStorage).length} localStorage keys ` +
-            `(browser jar: ${browserCookies.length} cookies NOT synced — server is v1)`,
-          )
-        }
+        log.info(
+          `[BrowserSync] uploaded v2: claude=${claudeCookies.length} cookies + ` +
+          `${Object.keys(claudeLocalStorage).length} localStorage keys, ` +
+          `browser=${browserCookies.length} cookies`,
+        )
       } else {
         log.warn(`[BrowserSync] upload failed: HTTP ${res.status}`)
         // Token expired — stop periodic uploads
