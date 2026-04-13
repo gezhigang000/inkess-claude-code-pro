@@ -550,6 +550,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       const config = buildTunConfig({
         proxyUrl,
         logOutput,
+        cacheFile: join(this.singboxDir, 'cache.db'),
         tunnelOutbound: this._tunnelOutbound,
         ruleSetDir: existsSync(join(ruleSetDir, 'geosite-cn.srs')) ? ruleSetDir : undefined,
       })

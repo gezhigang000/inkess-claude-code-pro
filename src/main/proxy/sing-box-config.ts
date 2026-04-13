@@ -88,6 +88,7 @@ interface ProxyNode {
 export interface TunConfigOptions {
   proxyUrl: string
   logOutput?: string
+  cacheFile?: string   // path for cache.db (FakeIP persistence) — MUST be writable by root
   tunnelOutbound?: SingBoxOutbound
   ruleSetDir?: string  // directory containing geosite-cn.srs + geoip-cn.srs
 }
@@ -177,12 +178,14 @@ export function buildTunConfig(opts: TunConfigOptions): SingBoxConfig {
       final: 'proxy',
     },
     // Persist FakeIP mappings to disk so they survive app restarts.
-    // Without this, every restart regenerates the pool and previously
-    // cached domain→fakeIP mappings are lost, causing a brief
-    // re-resolution spike.
-    experimental: {
-      cache_file: { enabled: true, store_fakeip: true },
-    },
+    // The path MUST be explicit and writable — sing-box runs as root,
+    // and root's CWD on macOS with SIP is '/' (read-only). Omitting
+    // the path causes "open cache.db: read-only file system" crash.
+    ...(opts.cacheFile ? {
+      experimental: {
+        cache_file: { enabled: true, path: opts.cacheFile, store_fakeip: true },
+      },
+    } : {}),
   }
 }
 
