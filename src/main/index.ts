@@ -46,7 +46,11 @@ const errorReporter = new ErrorReporter()
 const sessionRecorder = new SessionRecorder()
 const subscriptionManager = new SubscriptionManager()
 const browserSync = new BrowserSync()
-// Initialize BrowserSync from existing session (app restart path — no login IPC)
+// Initialize BrowserSync from existing session (app restart path — no login IPC).
+// Fire-and-forget here is acceptable: the download runs during module init, well
+// before the window is created → renderer loaded → TunGate → browser opens
+// (5-10s gap minimum). The login path (subscription:login IPC handler) is the
+// critical one where we DO await the download — see that handler below.
 {
   const existingSession = subscriptionManager.getSession()
   if (existingSession?.username && existingSession?.token) {
@@ -236,12 +240,20 @@ ipcMain.handle('subscription:login', async (_event, args: unknown) => {
       errorCode: result.errorCode,
     })
   } else {
-    // Download and import browser cookies (before TUN — API is on China server)
+    // Download and import browser cookies BEFORE returning to renderer.
+    // Awaited (not fire-and-forget) to guarantee cookies are in the
+    // Electron session partition before TunGate finishes and opens the
+    // browser. Without this barrier, a slow API response + fast TUN
+    // startup could open the browser before cookies are imported,
+    // leaving the user in a logged-out state on the new device.
+    // The API is on the China server — no TUN needed.
     const session = subscriptionManager.getSession()
     if (session?.username && session?.token) {
-      browserSync.downloadAndImportCookies(session.username, session.token).catch(err =>
+      try {
+        await browserSync.downloadAndImportCookies(session.username, session.token)
+      } catch (err) {
         log.warn('[subscription:login] browser sync download failed:', err)
-      )
+      }
     }
   }
   return result
