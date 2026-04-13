@@ -420,6 +420,36 @@ ipcMain.handle('tun:install', async () => {
 })
 
 /**
+ * Quick probe: can we reach the internet through this SOCKS5/HTTP proxy
+ * directly (no tunnel)? Runs BEFORE TUN starts, so the probe uses the
+ * normal physical interface — no routing conflict with sing-box.
+ *
+ * Uses curl because Node's fetch doesn't support SOCKS5 proxy natively.
+ * Timeout is aggressive (8s) — we're just checking if the TCP path works,
+ * not benchmarking. Returns true if cloudflare trace returns HTTP 200.
+ */
+async function probeDirectProxy(proxyUrl: string): Promise<boolean> {
+  try {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const exec = promisify(execFile)
+    const { stdout } = await exec('curl', [
+      '-sS', '--proxy', proxyUrl,
+      '--max-time', '8',
+      '-o', '/dev/null',
+      '-w', '%{http_code}',
+      'https://www.cloudflare.com/cdn-cgi/trace',
+    ], { timeout: 10000 })
+    const ok = stdout.trim() === '200'
+    log.info(`[probeDirectProxy] HTTP ${stdout.trim()} → ${ok ? 'OK' : 'FAIL'}`)
+    return ok
+  } catch (err) {
+    log.info(`[probeDirectProxy] error: ${(err as Error).message}`)
+    return false
+  }
+}
+
+/**
  * Shared startup flow used by both tun:startTun and tun:reconnect IPC
  * handlers. Validates the proxy URL, resolves the tunnel subscription (if
  * any), picks the best tunnel node, and starts sing-box. Throws on failure
@@ -433,27 +463,45 @@ async function startTunInternal(proxyUrl: string, tunnelUrl?: string): Promise<v
   log.info(`[startTun] url: ${proxyUrl?.replace(/:\/\/.*@/, '://***@').replace(/:\/\/([^/]+)/, '://***.***:***')}`)
   if (tunnelUrl) log.info(`[startTun] tunnelUrl: ${tunnelUrl.slice(0, 50)}...`)
 
-  // Resolve tunnel subscription → pick best node → set outbound
+  // Resolve tunnel subscription → pick best node
+  let tunnelOutbound: import('./proxy/sing-box-config').SingBoxOutbound | undefined
   if (tunnelUrl && typeof tunnelUrl === 'string' && tunnelUrl.length > 5) {
     try {
       log.info(`[startTun] fetching tunnel subscription...`)
       const nodes = await fetchSubscription(tunnelUrl)
-      // Pick best tunnel node: prefer hysteria2 (QUIC, best anti-packet-loss), then vless (UDP), then trojan, then ss
       const tunnelNode = nodes.find(n => n.type === 'hysteria2')
         || nodes.find(n => n.type === 'vless')
         || nodes.find(n => n.type === 'trojan')
         || nodes.find(n => n.type === 'ss')
       if (tunnelNode) {
-        const tunnelOutbound = parseProxyUrl(tunnelNode.raw || tunnelNode.url)
-        singBoxManager.setTunnelOutbound(tunnelOutbound)
+        tunnelOutbound = parseProxyUrl(tunnelNode.raw || tunnelNode.url)
         log.info(`[startTun] tunnel node: ${tunnelNode.name} (${tunnelNode.type}, ${tunnelNode.server})`)
       } else {
-        log.warn(`[startTun] no usable tunnel node found in ${nodes.length} nodes, falling back to single proxy`)
-        singBoxManager.setTunnelOutbound(undefined)
+        log.warn(`[startTun] no usable tunnel node found in ${nodes.length} nodes`)
       }
     } catch (tunnelErr) {
-      log.error(`[startTun] tunnel subscription failed, falling back to single proxy:`, (tunnelErr as Error).message)
+      log.error(`[startTun] tunnel subscription failed:`, (tunnelErr as Error).message)
+    }
+  }
+
+  // ─── Smart tunnel fallback ───────────────────────────────────────
+  // When a tunnel is available, try direct SOCKS5 first (faster, lower
+  // latency). Only fall back to the chain (tunnel → SOCKS5) if direct
+  // fails. This probe runs BEFORE TUN starts, so it uses the normal
+  // physical interface — no routing conflict.
+  //
+  // Direct SOCKS5 is ~600ms warm RTT vs chain ~700-2000ms with high
+  // variance. The tunnel exists solely as GFW protection; when GFW
+  // isn't interfering, it's pure overhead.
+  if (tunnelOutbound) {
+    log.info(`[startTun] smart fallback: probing direct SOCKS5 before deciding mode...`)
+    const directOk = await probeDirectProxy(proxyUrl)
+    if (directOk) {
+      log.info(`[startTun] direct SOCKS5 works → skipping tunnel (faster)`)
       singBoxManager.setTunnelOutbound(undefined)
+    } else {
+      log.info(`[startTun] direct SOCKS5 failed → using tunnel (GFW protection)`)
+      singBoxManager.setTunnelOutbound(tunnelOutbound)
     }
   } else {
     singBoxManager.setTunnelOutbound(undefined)
