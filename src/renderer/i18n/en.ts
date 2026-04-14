@@ -200,6 +200,10 @@ export const en = {
   'network.reconnectFailed': 'Reconnect failed',
   'network.cancel': 'Cancel',
   'network.ipMismatch': 'Exit IP changed: expected {expected}, got {actual}',
+  'network.alert.unstable': 'Proxy connection unstable. Retrying...',
+  'network.alert.reconnecting': 'Proxy disconnected. Auto-reconnecting...',
+  'network.alert.reconnectFailed': 'Auto-reconnect failed. Please check your network or log in again.',
+  'network.alert.reconnectNow': 'Reconnect Now',
 
   // TUN Gate
   'tun.title': 'Network Connection',

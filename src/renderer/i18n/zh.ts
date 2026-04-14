@@ -202,6 +202,10 @@ export const zh: Record<TranslationKey, string> = {
   'network.reconnectFailed': '重连失败',
   'network.cancel': '取消',
   'network.ipMismatch': '出口 IP 变化：预期 {expected}，实际 {actual}',
+  'network.alert.unstable': '代理连接不稳定，正在重试...',
+  'network.alert.reconnecting': '代理连接已断开，正在自动重连...',
+  'network.alert.reconnectFailed': '自动重连失败，请检查网络或重新登录。',
+  'network.alert.reconnectNow': '立即重连',
 
   // TUN Gate
   'tun.title': '网络连接',

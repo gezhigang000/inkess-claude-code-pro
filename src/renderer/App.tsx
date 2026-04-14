@@ -58,6 +58,12 @@ export function App() {
   const [showHistory, setShowHistory] = useState(false)
   const [showStats, setShowStats] = useState(false)
   const [previewFile, setPreviewFile] = useState<string | null>(null)
+  // Transient alert shown when connectivity fails mid-session and we're
+  // auto-recovering. Distinct from NetworkIndicator (statusbar) — this is
+  // a foreground toast because users miss the small dot.
+  const [networkAlert, setNetworkAlert] = useState<{
+    type: 'warning' | 'error'; message: string; actionLabel?: string; onAction?: () => void
+  } | null>(null)
   const [tunOk, setTunOk] = useState(false)
   const tunOkRef = useRef(false)
   const tunWasOkRef = useRef(false)
@@ -109,30 +115,131 @@ export function App() {
       }
     }, 5000)
 
-    // Exit IP verification (every 60s) — informational only.
-    // Only triggers reconnect if exit IP CHANGED (route hijacking by another VPN).
-    // Fetch failures (network hiccup, slow proxy) do NOT trigger reconnect.
-    // Skipped during a manual reconnect: the tunnel is briefly down/switching
-    // and any "IP mismatch" observed here would be spurious.
+    // Exit IP verification — adaptive cadence:
+    //   - Healthy: 60s between probes.
+    //   - Failing: probe again in 15s to quickly confirm (vs wait a full minute).
+    //
+    // Outcomes:
+    //   - success → reset counters, clear any alert.
+    //   - IP changed → route hijacked by another VPN, drop PTYs + force TunGate.
+    //   - fetch failed (consecutive):
+    //       1 fail  → silent, wait the short retry
+    //       2 fails → toast "unstable, retrying"
+    //       3 fails → auto tun.reconnect() once; reconnect re-runs Smart
+    //                 Fallback (probeDirectProxy), which will now see the
+    //                 failing direct path and switch to chain mode.
+    //       post-reconnect fail → toast "reconnect failed", stop auto-retry
+    //                             (avoid reconnect loop); user can retry manually
+    //                             via NetworkPopover.
     const exitIp = subscriptionExitIp
-    const ipCheckInterval = exitIp ? setInterval(async () => {
-      if (useNetworkStore.getState().reconnecting) return
+    let consecutiveFailures = 0
+    let autoReconnectAttempted = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let cancelled = false
+
+    const scheduleNextCheck = (delay: number) => {
+      if (cancelled) return
+      if (retryTimer) clearTimeout(retryTimer)
+      retryTimer = setTimeout(runCheck, delay)
+    }
+
+    const runCheck = async () => {
+      if (cancelled || !exitIp) return
+      if (useNetworkStore.getState().reconnecting) {
+        scheduleNextCheck(60 * 1000)
+        return
+      }
       try {
         const result = await window.api.tun.testConnectivity(exitIp)
+        if (cancelled) return
+
         if (result.success) {
-          // IP matches — all good
-        } else if (result.actualIp && result.actualIp !== exitIp) {
-          // Exit IP CHANGED — route may have been hijacked by another VPN
+          consecutiveFailures = 0
+          autoReconnectAttempted = false
+          setNetworkAlert(null)
+          scheduleNextCheck(60 * 1000)
+          return
+        }
+
+        if (result.actualIp && result.actualIp !== exitIp) {
           console.warn(`[App] exit IP changed: expected ${exitIp}, got ${result.actualIp} — reconnecting`)
           window.api.pty.killAll()
           setTunOk(false)
           window.api.browser.closeAll()
-        } else {
-          // Fetch failed or no actualIp — network hiccup, ignore
-          console.warn(`[App] exit IP check failed (ignored): ${result.error}`)
+          return
         }
-      } catch { /* ignore network errors during check */ }
-    }, 60 * 1000) : null
+
+        // Fetch failed / no actualIp.
+        consecutiveFailures++
+        console.warn(`[App] exit IP check failed (${consecutiveFailures}): ${result.error}`)
+
+        if (consecutiveFailures === 2) {
+          setNetworkAlert({
+            type: 'warning',
+            message: t('network.alert.unstable'),
+            actionLabel: t('network.alert.reconnectNow'),
+            // Mark auto-reconnect as done so the next runCheck iteration (already
+            // scheduled) won't race with this manual reconnect and trigger a
+            // second tun.reconnect() once the failure count crosses 3.
+            onAction: () => { autoReconnectAttempted = true; void triggerReconnect() },
+          })
+        }
+
+        if (consecutiveFailures >= 3 && !autoReconnectAttempted) {
+          autoReconnectAttempted = true
+          setNetworkAlert({ type: 'error', message: t('network.alert.reconnecting') })
+          void triggerReconnect()
+          return
+        }
+
+        scheduleNextCheck(15 * 1000)
+      } catch (err) {
+        console.warn('[App] exit IP check error', err)
+        scheduleNextCheck(60 * 1000)
+      }
+    }
+
+    const triggerReconnect = async () => {
+      const store = useNetworkStore.getState()
+      if (store.reconnecting) return
+      store.setReconnecting(true)
+      try {
+        const result = await window.api.tun.reconnect()
+        if (cancelled) return
+        if (result.success) {
+          // Re-verify immediately; on success the probe resets counters.
+          try {
+            const verify = await window.api.tun.testConnectivity(exitIp)
+            if (cancelled) return
+            if (verify.success) {
+              consecutiveFailures = 0
+              autoReconnectAttempted = false
+              setNetworkAlert(null)
+            } else {
+              setNetworkAlert({ type: 'error', message: t('network.alert.reconnectFailed') })
+            }
+          } catch {
+            setNetworkAlert({ type: 'error', message: t('network.alert.reconnectFailed') })
+          }
+        } else {
+          setNetworkAlert({ type: 'error', message: result.error || t('network.alert.reconnectFailed') })
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setNetworkAlert({
+            type: 'error',
+            message: err instanceof Error ? err.message : t('network.alert.reconnectFailed'),
+          })
+        }
+      } finally {
+        useNetworkStore.getState().setReconnecting(false)
+        if (!cancelled) scheduleNextCheck(60 * 1000)
+      }
+    }
+
+    // Kick off the adaptive loop. Uses chained setTimeout rather than setInterval
+    // so cadence can switch between healthy (60s) and failing (15s).
+    if (exitIp) scheduleNextCheck(60 * 1000)
 
     // Interface alert: external VPN detected, immediately verify IP.
     // Skipped during manual reconnect (see ipCheckInterval rationale above).
@@ -153,11 +260,13 @@ export function App() {
     })
 
     return () => {
+      cancelled = true
       clearInterval(processInterval)
-      if (ipCheckInterval) clearInterval(ipCheckInterval)
+      if (retryTimer) clearTimeout(retryTimer)
       unsubscribeAlert?.()
+      setNetworkAlert(null)
     }
-  }, [tunOk, subscriptionLoggedIn, subscriptionExitIp])
+  }, [tunOk, subscriptionLoggedIn, subscriptionExitIp, t])
 
   // Startup: check subscription login, then CLI
   useEffect(() => {
@@ -209,7 +318,10 @@ export function App() {
         if (region) store.setProxyRegion(region)
       }
       setSubscriptionExitIp(status?.exitIp || session.session?.exitIp || '')
-      setSubscriptionTunnelUrl(session.session?.tunnelUrl || '')
+      // Prefer server-returned tunnelUrl (may have been added by admin after first login).
+      // Old sessions from pre-tunnel builds lack this field — without this fallback,
+      // those users would be stuck in single-proxy mode forever.
+      setSubscriptionTunnelUrl(status?.tunnelUrl || session.session?.tunnelUrl || '')
       // Check if subscription already expired before proceeding
       const expiresAt = status?.expiresAt || session.session?.expiresAt
       if (expiresAt) {
@@ -378,6 +490,13 @@ export function App() {
       }
       if (status.exitIp) {
         setSubscriptionExitIp(status.exitIp)
+      }
+      // Propagate admin-side tunnelUrl changes (add/remove) to React state so
+      // the next startTun/reconnect uses the current value. Session.json is
+      // already updated by subscription-manager.checkStatus; this mirrors that
+      // to the in-memory state that feeds TunGate.
+      if (status.tunnelUrl !== undefined) {
+        setSubscriptionTunnelUrl(status.tunnelUrl || '')
       }
     }
 
@@ -888,6 +1007,16 @@ export function App() {
           onDismiss={() => setAppUpdateDismissed(true)}
         />
       )}
+      {networkAlert && (
+        <NetworkAlertToast
+          type={networkAlert.type}
+          message={networkAlert.message}
+          actionLabel={networkAlert.actionLabel}
+          onAction={networkAlert.onAction}
+          onDismiss={() => setNetworkAlert(null)}
+          bottomOffset={appUpdateStatus && !appUpdateDismissed ? 88 : 16}
+        />
+      )}
     </div>
   )
 }
@@ -1344,6 +1473,48 @@ function AppUpdateToast({ status, bottomOffset, onDownload, onInstall, onDismiss
           }} />
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Foreground toast for connectivity issues detected by the ipCheck loop.
+ * Lives above AppUpdateToast (bottomOffset is computed by caller).
+ * Color: warning (yellow) on first notice, error (red) once we've given up.
+ */
+function NetworkAlertToast({ type, message, actionLabel, onAction, onDismiss, bottomOffset }: {
+  type: 'warning' | 'error'
+  message: string
+  actionLabel?: string
+  onAction?: () => void
+  onDismiss: () => void
+  bottomOffset: number
+}) {
+  const accentColor = type === 'error' ? 'var(--error, #ef4444)' : 'var(--warning-text, #f59e0b)'
+  const btnStyle: React.CSSProperties = {
+    padding: '4px 12px', borderRadius: 4, border: 'none',
+    background: accentColor, color: '#fff', cursor: 'pointer', fontSize: 12, whiteSpace: 'nowrap',
+  }
+  return (
+    <div style={{
+      position: 'fixed', bottom: bottomOffset, right: 16,
+      background: 'var(--bg-secondary)',
+      border: `1px solid ${accentColor}`,
+      borderRadius: 8, padding: '12px 16px',
+      display: 'flex', alignItems: 'center', gap: 12,
+      fontSize: 13, color: 'var(--text-primary)',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.3)', zIndex: 1000, minWidth: 260, maxWidth: 360,
+    }}>
+      <span style={{
+        width: 8, height: 8, borderRadius: '50%', background: accentColor,
+        flexShrink: 0,
+        animation: type === 'error' ? 'pulse 1s infinite' : undefined,
+      }} />
+      <span style={{ flex: 1 }}>{message}</span>
+      {actionLabel && onAction && (
+        <button onClick={() => { onAction(); onDismiss() }} style={btnStyle}>{actionLabel}</button>
+      )}
+      <span onClick={onDismiss} style={{ cursor: 'pointer', opacity: 0.5, fontSize: 16, lineHeight: 1 }}>×</span>
     </div>
   )
 }

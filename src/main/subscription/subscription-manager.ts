@@ -29,6 +29,7 @@ export interface SubscriptionStatus {
   daysRemaining: number
   minutesRemaining?: number
   proxyUrl?: string
+  tunnelUrl?: string
   proxyRegion?: string
   exitIp?: string
 }
@@ -208,6 +209,14 @@ export class SubscriptionManager {
       if (status.proxyUrl && status.proxyUrl !== updated.proxyUrl) {
         log.info(`[SubscriptionManager] proxyUrl changed`)
         updated.proxyUrl = status.proxyUrl
+        changed = true
+      }
+      // tunnelUrl: server is authoritative. Sync even when empty → undefined
+      // transitions (admin removed tunnel config). Compare strictly against
+      // undefined so an empty string from server doesn't skip the update.
+      if (status.tunnelUrl !== undefined && (status.tunnelUrl || '') !== (updated.tunnelUrl || '')) {
+        log.info(`[SubscriptionManager] tunnelUrl changed (was=${updated.tunnelUrl ? 'set' : 'empty'}, now=${status.tunnelUrl ? 'set' : 'empty'})`)
+        updated.tunnelUrl = status.tunnelUrl || undefined
         changed = true
       }
       if (status.proxyRegion && status.proxyRegion !== updated.proxyRegion) {
