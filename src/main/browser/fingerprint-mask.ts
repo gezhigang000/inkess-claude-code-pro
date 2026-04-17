@@ -42,6 +42,38 @@ export function buildFingerprintMaskScript(options: {
   Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => ${cpuCores} });
   Object.defineProperty(navigator, 'deviceMemory', { get: () => ${deviceMemory} });
 
+  // navigator.webdriver — hide Electron/automation detection
+  Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true });
+
+  // navigator.userAgentData — modern UA Client Hints API (Chromium 90+)
+  // Returns platform/arch/model consistent with our spoofed environment
+  if (navigator.userAgentData || 'userAgentData' in navigator) {
+    var __uaBrands = [
+      { brand: 'Chromium', version: '136' },
+      { brand: 'Google Chrome', version: '136' },
+      { brand: 'Not.A/Brand', version: '24' }
+    ];
+    Object.defineProperty(navigator, 'userAgentData', { get: () => ({
+      brands: __uaBrands,
+      mobile: false,
+      platform: 'Windows',
+      getHighEntropyValues: function(hints) {
+        return Promise.resolve({
+          brands: __uaBrands,
+          mobile: false,
+          platform: 'Windows',
+          platformVersion: '15.0.0',
+          architecture: 'x86',
+          bitness: '64',
+          model: '',
+          uaFullVersion: '136.0.6778.140',
+          fullVersionList: __uaBrands.map(function(b) { return { brand: b.brand, version: b.brand === 'Not.A/Brand' ? '24.0.0.0' : b.version + '.0.6778.140' }; }),
+        });
+      },
+      toJSON: function() { return { brands: __uaBrands, mobile: false, platform: 'Windows' }; }
+    }), configurable: true });
+  }
+
   // navigator.plugins — return empty but typed correctly
   Object.defineProperty(navigator, 'plugins', { get: () => {
     var p = [];
@@ -244,10 +276,13 @@ export function buildFingerprintMaskScript(options: {
     };
   }
 
-  // === Timezone masking (Critical: getTimezoneOffset + Date.toString) ===
+  // === Timezone masking (Critical: getTimezoneOffset + Date getters + Date.toString) ===
   var __targetOffset = ${timezoneOffset};
   var __targetTz = ${JSON.stringify(timezone)};
   var __targetLocale = ${JSON.stringify(locale)};
+
+  // Save original Intl.DateTimeFormat early — used by timezone getters below
+  var __origDTF = Intl.DateTimeFormat;
 
   // Override getTimezoneOffset — most common timezone detection method
   // Must handle DST: compute correct offset for each date instance (not a fixed value)
@@ -267,12 +302,67 @@ export function buildFingerprintMaskScript(options: {
     return __targetOffset; // fallback
   };
 
-  // Override Date.toString/toTimeString — leaks "China Standard Time"
+  // Override Date local getters (getHours, getMinutes, etc.) — most chat apps
+  // use these directly to build timestamp strings, bypassing toString/Intl.
+  // We use Intl.DateTimeFormat with __targetTz to compute correct local values.
+  var __weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  function __tzParts(d) {
+    var fmt = new __origDTF('en-US', {
+      timeZone: __targetTz, year: 'numeric', month: 'numeric', day: 'numeric',
+      weekday: 'short', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false
+    });
+    var p = fmt.formatToParts(d), r = {};
+    for (var i = 0; i < p.length; i++) r[p[i].type] = p[i].value;
+    return r;
+  }
+  var __origGetFullYear = Date.prototype.getFullYear;
+  Date.prototype.getFullYear = function() { try { return parseInt(__tzParts(this).year); } catch(e) { return __origGetFullYear.call(this); } };
+  var __origGetMonth = Date.prototype.getMonth;
+  Date.prototype.getMonth = function() { try { return parseInt(__tzParts(this).month) - 1; } catch(e) { return __origGetMonth.call(this); } };
+  var __origGetDate = Date.prototype.getDate;
+  Date.prototype.getDate = function() { try { return parseInt(__tzParts(this).day); } catch(e) { return __origGetDate.call(this); } };
+  var __origGetDay = Date.prototype.getDay;
+  Date.prototype.getDay = function() { try { return __weekdayMap[__tzParts(this).weekday] || 0; } catch(e) { return __origGetDay.call(this); } };
+  var __origGetHours = Date.prototype.getHours;
+  Date.prototype.getHours = function() { try { var h = parseInt(__tzParts(this).hour); return h === 24 ? 0 : h; } catch(e) { return __origGetHours.call(this); } };
+  var __origGetMinutes = Date.prototype.getMinutes;
+  Date.prototype.getMinutes = function() { try { return parseInt(__tzParts(this).minute); } catch(e) { return __origGetMinutes.call(this); } };
+  var __origGetSeconds = Date.prototype.getSeconds;
+  Date.prototype.getSeconds = function() { try { return parseInt(__tzParts(this).second); } catch(e) { return __origGetSeconds.call(this); } };
+
+  // Override Date setters — must interpret arguments in target timezone, not system timezone.
+  // Strategy: shift internal UTC time so system-local aligns with target-local, call native
+  // setter, then shift back. Handles DST transitions correctly because native setter resolves
+  // ambiguous/invalid local times the same way the target timezone would.
+  function __shiftToTarget(d) {
+    var sysOff = __origGetTZO.call(d);
+    var tgtOff = d.getTimezoneOffset(); // already overridden → target TZ offset
+    return (sysOff - tgtOff) * 60000;
+  }
+  var __origSetTime = Date.prototype.setTime;
+  function __wrapSetter(name) {
+    var orig = Date.prototype[name];
+    Date.prototype[name] = function() {
+      var shift = __shiftToTarget(this);
+      __origSetTime.call(this, this.getTime() + shift);
+      orig.apply(this, arguments);
+      // Recompute shift after mutation (DST may have changed)
+      var sysOff = __origGetTZO.call(this);
+      var tgtOff = this.getTimezoneOffset();
+      __origSetTime.call(this, this.getTime() - (sysOff - tgtOff) * 60000);
+      return this.getTime();
+    };
+  }
+  __wrapSetter('setFullYear'); __wrapSetter('setMonth'); __wrapSetter('setDate');
+  __wrapSetter('setHours'); __wrapSetter('setMinutes'); __wrapSetter('setSeconds');
+
+  // Override Date.toString/toTimeString/toDateString — leaks "China Standard Time" / local date
   var __origToString = Date.prototype.toString;
   var __origToTimeString = Date.prototype.toTimeString;
+  var __origToDateString = Date.prototype.toDateString;
   function __fakeDateStr(d) {
     try {
-      var fmt = new Intl.DateTimeFormat('en-US', {
+      var fmt = new __origDTF('en-US', {
         timeZone: __targetTz, weekday: 'short', year: 'numeric', month: 'short',
         day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
         hour12: false, timeZoneName: 'long'
@@ -291,6 +381,31 @@ export function buildFingerprintMaskScript(options: {
     var s = __fakeDateStr(this);
     var idx = s.indexOf(' ', s.indexOf(' ', s.indexOf(' ', s.indexOf(' ') + 1) + 1) + 1);
     return idx > 0 ? s.slice(idx + 1) : __origToTimeString.call(this);
+  };
+  Date.prototype.toDateString = function() {
+    try {
+      var p = __tzParts(this);
+      var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return p.weekday + ' ' + months[parseInt(p.month) - 1] + ' ' + String(p.day).padStart(2, '0') + ' ' + p.year;
+    } catch(e) { return __origToDateString.call(this); }
+  };
+
+  // Override toLocaleString family — V8 uses internal C++ path that bypasses JS-level
+  // Intl.DateTimeFormat override, so we must explicitly force target timezone here.
+  var __origToLocaleString = Date.prototype.toLocaleString;
+  Date.prototype.toLocaleString = function(locales, opts) {
+    return __origToLocaleString.call(this, locales || __targetLocale,
+      Object.assign({}, opts, { timeZone: (opts && opts.timeZone) || __targetTz }));
+  };
+  var __origToLocaleDateString = Date.prototype.toLocaleDateString;
+  Date.prototype.toLocaleDateString = function(locales, opts) {
+    return __origToLocaleDateString.call(this, locales || __targetLocale,
+      Object.assign({}, opts, { timeZone: (opts && opts.timeZone) || __targetTz }));
+  };
+  var __origToLocaleTimeString = Date.prototype.toLocaleTimeString;
+  Date.prototype.toLocaleTimeString = function(locales, opts) {
+    return __origToLocaleTimeString.call(this, locales || __targetLocale,
+      Object.assign({}, opts, { timeZone: (opts && opts.timeZone) || __targetTz }));
   };
 
   // === Intl locale masking ===
@@ -311,13 +426,52 @@ export function buildFingerprintMaskScript(options: {
   Intl.Collator.supportedLocalesOf = __origCollator.supportedLocalesOf.bind(__origCollator);
 
   // Intl.DateTimeFormat — force locale + timezone (enhances existing injectRegionMasking)
-  var __origDTF = Intl.DateTimeFormat;
   Intl.DateTimeFormat = function(locales, opts) {
     return new __origDTF(locales || __targetLocale, Object.assign({}, opts, { timeZone: (opts && opts.timeZone) || __targetTz }));
   };
   Intl.DateTimeFormat.prototype = __origDTF.prototype;
   Intl.DateTimeFormat.supportedLocalesOf = __origDTF.supportedLocalesOf.bind(__origDTF);
   Object.defineProperty(Intl.DateTimeFormat, Symbol.hasInstance, { value: function(i) { return i instanceof __origDTF; } });
+
+  // Intl.RelativeTimeFormat — "2 hours ago" format leaks locale
+  if (typeof Intl.RelativeTimeFormat !== 'undefined') {
+    var __origRTF = Intl.RelativeTimeFormat;
+    Intl.RelativeTimeFormat = function(locales, opts) { return new __origRTF(locales || __targetLocale, opts); };
+    Intl.RelativeTimeFormat.prototype = __origRTF.prototype;
+    Intl.RelativeTimeFormat.supportedLocalesOf = __origRTF.supportedLocalesOf.bind(__origRTF);
+  }
+
+  // Intl.ListFormat — "a, b, and c" vs "a、b和c" leaks locale
+  if (typeof Intl.ListFormat !== 'undefined') {
+    var __origLF = Intl.ListFormat;
+    Intl.ListFormat = function(locales, opts) { return new __origLF(locales || __targetLocale, opts); };
+    Intl.ListFormat.prototype = __origLF.prototype;
+    Intl.ListFormat.supportedLocalesOf = __origLF.supportedLocalesOf.bind(__origLF);
+  }
+
+  // Intl.PluralRules — plural category rules differ by language
+  if (typeof Intl.PluralRules !== 'undefined') {
+    var __origPR = Intl.PluralRules;
+    Intl.PluralRules = function(locales, opts) { return new __origPR(locales || __targetLocale, opts); };
+    Intl.PluralRules.prototype = __origPR.prototype;
+    Intl.PluralRules.supportedLocalesOf = __origPR.supportedLocalesOf.bind(__origPR);
+  }
+
+  // Intl.Segmenter — text segmentation (Chinese word-break vs English space-split)
+  if (typeof Intl.Segmenter !== 'undefined') {
+    var __origSeg = Intl.Segmenter;
+    Intl.Segmenter = function(locales, opts) { return new __origSeg(locales || __targetLocale, opts); };
+    Intl.Segmenter.prototype = __origSeg.prototype;
+    Intl.Segmenter.supportedLocalesOf = __origSeg.supportedLocalesOf.bind(__origSeg);
+  }
+
+  // Intl.DisplayNames — region/language display names ("中国" vs "China")
+  if (typeof Intl.DisplayNames !== 'undefined') {
+    var __origDN = Intl.DisplayNames;
+    Intl.DisplayNames = function(locales, opts) { return new __origDN(locales || __targetLocale, opts); };
+    Intl.DisplayNames.prototype = __origDN.prototype;
+    Intl.DisplayNames.supportedLocalesOf = __origDN.supportedLocalesOf.bind(__origDN);
+  }
 })();`
 }
 
