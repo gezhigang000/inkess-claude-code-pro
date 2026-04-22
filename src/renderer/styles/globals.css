@@ -125,3 +125,13 @@ button:not(.xterm *):active, [role="button"]:not(.xterm *):active {
   from { opacity: 0; transform: translateX(20px); }
   to { opacity: 1; transform: translateX(0); }
 }
+
+/* Chat list item — delete button appears on hover */
+.chat-list-item .chat-item-delete { opacity: 0; transition: opacity 120ms; }
+.chat-list-item:hover .chat-item-delete { opacity: 1; }
+
+/* Chat streaming indicator pulse */
+@keyframes chat-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}

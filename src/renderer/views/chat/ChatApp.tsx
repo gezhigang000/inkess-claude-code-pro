@@ -2,6 +2,7 @@ import { useChatStream } from './hooks/useChatStream'
 import { useChatList } from './hooks/useChatList'
 import { useChatStore } from '../../stores/chat'
 import { EmptyState } from './main/EmptyState'
+import { ChatSidebar } from './sidebar/ChatSidebar'
 
 const DRAG_REGION_STYLE: React.CSSProperties = {
   WebkitAppRegion: 'drag',
@@ -33,7 +34,6 @@ export function ChatApp() {
 
       {/* Main split */}
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-        {/* Sidebar placeholder — Task 3 replaces with <ChatSidebar /> */}
         <aside style={{
           width: 260,
           flex: '0 0 260px',
@@ -42,9 +42,7 @@ export function ChatApp() {
           display: 'flex',
           flexDirection: 'column',
         }}>
-          <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 13 }}>
-            Sidebar (Task 3)
-          </div>
+          <ChatSidebar />
         </aside>
 
         {/* Main column */}
