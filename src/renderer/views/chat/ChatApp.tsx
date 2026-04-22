@@ -3,6 +3,7 @@ import { useChatList } from './hooks/useChatList'
 import { useChatStore } from '../../stores/chat'
 import { EmptyState } from './main/EmptyState'
 import { ChatSidebar } from './sidebar/ChatSidebar'
+import { ChatView } from './main/ChatView'
 
 const DRAG_REGION_STYLE: React.CSSProperties = {
   WebkitAppRegion: 'drag',
@@ -47,13 +48,7 @@ export function ChatApp() {
 
         {/* Main column */}
         <main style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          {activeChatId ? (
-            <div style={{ padding: 16, color: 'var(--text-muted)' }}>
-              Chat view (Task 4-5) — active: {activeChatId}
-            </div>
-          ) : (
-            <EmptyState />
-          )}
+          {activeChatId ? <ChatView chatId={activeChatId} /> : <EmptyState />}
         </main>
       </div>
     </div>
