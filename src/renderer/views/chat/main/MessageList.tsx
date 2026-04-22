@@ -6,8 +6,14 @@ import { ThinkingBlock } from './ThinkingBlock'
 
 interface Props { chatId: string }
 
+// Module-level stable fallback. CRITICAL: zustand selectors must return a
+// reference-stable value when the underlying state is missing — otherwise
+// useSyncExternalStore sees "store changed" on every getSnapshot call and
+// triggers an infinite re-render (React error #185).
+const EMPTY_MESSAGES: RenderMessage[] = []
+
 export function MessageList({ chatId }: Props) {
-  const messages = useChatStore((s) => s.messages[chatId] ?? [])
+  const messages = useChatStore((s) => s.messages[chatId] ?? EMPTY_MESSAGES)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
   // Smart auto-scroll: only snap to bottom when the user is already near the
