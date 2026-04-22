@@ -84,9 +84,15 @@ export function registerChatIPC(deps: ChatIpcDeps): void {
     const a = args as { chatId?: unknown; removeFiles?: unknown }
     validateChatId(a?.chatId)
     const removeFiles = a?.removeFiles !== false // default true per spec §2
-    // If a turn is running for this chat, cancel it first so the child doesn't
-    // get orphaned with a deleted cwd.
-    manager.cancel(a.chatId)
+    // Spec §6.5: if a turn is running, cancel AND wait for the child to exit
+    // before wiping files — otherwise the Claude Code subprocess can keep
+    // writing to the soon-to-be-deleted cwd during the SIGTERM→SIGKILL grace
+    // window (3s), leaving orphaned files in a re-created directory.
+    if (removeFiles) {
+      await manager.cancelAndWait(a.chatId)
+    } else {
+      manager.cancel(a.chatId)
+    }
     await store.delete(a.chatId, { removeFiles })
     broadcastListChanged()
   })

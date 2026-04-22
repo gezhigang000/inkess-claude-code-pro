@@ -169,6 +169,22 @@ export class ChatManager {
     this.killChild(rec)
   }
 
+  /**
+   * Cancel + wait for the child to exit (up to CANCEL_GRACE_MS + 500ms slack).
+   * Callers that immediately delete or reuse the chat's cwd must use this
+   * rather than fire-and-forget `cancel()` — otherwise the child can keep
+   * writing to a soon-to-be-deleted directory during the SIGTERM→SIGKILL
+   * grace window (spec §6.5).
+   */
+  async cancelAndWait(chatId: string): Promise<void> {
+    if (!this.inflight.has(chatId)) return
+    const deadline = Date.now() + CANCEL_GRACE_MS + 500
+    this.cancel(chatId)
+    while (this.inflight.has(chatId) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 30))
+    }
+  }
+
   cancelAll(): void {
     for (const id of Array.from(this.inflight.keys())) this.cancel(id)
   }

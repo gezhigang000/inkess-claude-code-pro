@@ -32,6 +32,12 @@ describe('encodeCwd', () => {
   it('handles unicode', () => {
     expect(encodeCwd('/工作/项目')).toBe('-工作-项目')
   })
+  it('normalizes backslashes to forward slashes first (Windows)', () => {
+    expect(encodeCwd('C:\\Users\\alice\\proj')).toBe('C:-Users-alice-proj')
+  })
+  it('handles mixed separators', () => {
+    expect(encodeCwd('C:\\Users/alice\\proj')).toBe('C:-Users-alice-proj')
+  })
 })
 
 describe('loadHistory', () => {

@@ -120,6 +120,30 @@ describe('ChatManager — cancel', () => {
     expect(end.ok).toBe(false)
     expect(end.error).toBe('cancelled')
   })
+
+  it('cancelAndWait resolves only after the child has fully exited', async () => {
+    const { store, mgr } = wireUp(['--scenario=cancel-me'])
+    await store.init()
+    const chat = await store.create()
+
+    await mgr.send(chat.id, 'hi')
+    await new Promise((r) => setTimeout(r, 150))
+    expect(mgr.inflightCount()).toBe(1)
+
+    await mgr.cancelAndWait(chat.id)
+    // Post-return: the inflight record must be gone (child exited + cleaned up)
+    expect(mgr.inflightCount()).toBe(0)
+  })
+
+  it('cancelAndWait on a non-running chat returns immediately', async () => {
+    const { store, mgr } = wireUp()
+    await store.init()
+    const chat = await store.create()
+
+    const start = Date.now()
+    await mgr.cancelAndWait(chat.id)
+    expect(Date.now() - start).toBeLessThan(50)
+  })
 })
 
 describe('ChatManager — crash', () => {

@@ -5,12 +5,17 @@ import { normalize } from './normalizer'
 
 /**
  * Claude Code encodes a project's cwd as the JSONL directory name by
- * replacing every '/' with '-'. Observed at `~/.claude/projects/` and
- * `{CLAUDE_CONFIG_DIR}/projects/`.
- *   /Users/alice/proj  →  -Users-alice-proj
+ * normalizing path separators to '/' and then replacing every '/' with '-'.
+ * Observed at `~/.claude/projects/` and `{CLAUDE_CONFIG_DIR}/projects/`.
+ *   /Users/alice/proj        →  -Users-alice-proj
+ *   C:\Users\alice\proj      →  C:-Users-alice-proj  (Windows)
+ *
+ * On Windows, meta.cwd contains backslashes; without the normalize-first
+ * step, the JSONL path would never match what Claude Code wrote and
+ * history reload would silently return [] on every chat.
  */
 export function encodeCwd(cwd: string): string {
-  return cwd.replace(/\//g, '-')
+  return cwd.replace(/\\/g, '/').replace(/\//g, '-')
 }
 
 /**
