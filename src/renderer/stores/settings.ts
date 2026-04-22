@@ -4,8 +4,10 @@ const STORAGE_KEY = 'inkess-settings'
 
 type ThemeChoice = 'auto' | 'dark' | 'light'
 type LanguageChoice = 'auto' | 'zh' | 'en'
+type AppMode = 'cli' | 'chat'
 const VALID_THEMES: ThemeChoice[] = ['auto', 'dark', 'light']
 const VALID_LANGUAGES: LanguageChoice[] = ['auto', 'zh', 'en']
+const VALID_APP_MODES: AppMode[] = ['cli', 'chat']
 
 interface SettingsState {
   fontSize: number
@@ -17,6 +19,7 @@ interface SettingsState {
   sleepInhibitorEnabled: boolean
   sidebarCollapsed: boolean
   pinnedProjects: string[]
+  appMode: AppMode
 
   proxyEnabled: boolean
   proxyMode: 'direct' | 'subscription' | 'tun' | 'system'
@@ -36,6 +39,7 @@ interface SettingsState {
   setSidebarCollapsed: (v: boolean) => void
   pinProject: (path: string) => void
   unpinProject: (path: string) => void
+  setAppMode: (v: AppMode) => void
   setProxyEnabled: (v: boolean) => void
   setProxyMode: (v: 'direct' | 'subscription' | 'tun' | 'system') => void
   setProxyUrl: (v: string) => void
@@ -68,6 +72,7 @@ function persistSettings(state: SettingsState) {
       sleepInhibitorEnabled: state.sleepInhibitorEnabled,
       sidebarCollapsed: state.sidebarCollapsed,
       pinnedProjects: state.pinnedProjects,
+      appMode: state.appMode,
       proxyEnabled: state.proxyEnabled,
       proxyMode: state.proxyMode,
       proxySelectedNode: state.proxySelectedNode,
@@ -103,6 +108,7 @@ const saved = loadSettings()
 const validatedTheme: ThemeChoice = VALID_THEMES.includes((saved as any).theme) ? (saved as any).theme : 'auto'
 const validatedLanguage: LanguageChoice = VALID_LANGUAGES.includes((saved as any).language) ? (saved as any).language : 'auto'
 const validatedFontSize = typeof saved.fontSize === 'number' && saved.fontSize >= 10 && saved.fontSize <= 24 ? saved.fontSize : 14
+const validatedAppMode: AppMode = VALID_APP_MODES.includes((saved as any).appMode) ? (saved as any).appMode : 'cli'
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   fontSize: validatedFontSize,
@@ -114,6 +120,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   sleepInhibitorEnabled: typeof (saved as any).sleepInhibitorEnabled === 'boolean' ? (saved as any).sleepInhibitorEnabled : true,
   sidebarCollapsed: typeof (saved as any).sidebarCollapsed === 'boolean' ? (saved as any).sidebarCollapsed : false,
   pinnedProjects: Array.isArray((saved as any).pinnedProjects) ? (saved as any).pinnedProjects.filter((p: unknown) => typeof p === 'string').slice(0, 10) : [],
+  appMode: validatedAppMode,
 
   proxyEnabled: typeof (saved as any).proxyEnabled === 'boolean' ? (saved as any).proxyEnabled : true,
   proxyMode: 'tun' as const,  // TUN mode only — not user-configurable
@@ -130,6 +137,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setNotificationsEnabled: (v) => { set({ notificationsEnabled: v }); persistSettings(get()) },
   setNotificationSound: (v) => { set({ notificationSound: v }); persistSettings(get()) },
   setSidebarCollapsed: (v) => { set({ sidebarCollapsed: v }); persistSettings(get()) },
+  setAppMode: (v) => { set({ appMode: v }); persistSettings(get()) },
   pinProject: (path) => {
     const { pinnedProjects } = get()
     if (pinnedProjects.includes(path) || pinnedProjects.length >= 10) return
