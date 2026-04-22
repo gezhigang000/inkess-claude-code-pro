@@ -68,7 +68,11 @@ async function crash() {
 
 async function hang() {
   emit({ type: 'system', subtype: 'init', session_id: session, tools: [] })
-  await new Promise(() => {})
+  // Keep the event loop alive until watchdog kills us — a never-resolving
+  // Promise alone doesn't (microtasks don't hold the loop open).
+  await new Promise((_resolve) => {
+    setTimeout(() => {}, 10 * 60 * 1000)
+  })
 }
 
 async function badLines() {
