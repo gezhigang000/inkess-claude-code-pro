@@ -26,8 +26,15 @@ export function normalize(raw: unknown): ChatEvent[] {
   }
 
   if (r.type === 'user') {
-    const msg = r.message as { content?: unknown[] } | undefined
-    const content = Array.isArray(msg?.content) ? msg!.content : []
+    const msg = r.message as { content?: unknown } | undefined
+    // Claude Code stores user-typed text two ways:
+    //   (a) message.content: string              (short messages)
+    //   (b) message.content: [{ type:'text', text }, ...]   (richer messages)
+    // And tool results come back as message.content: [{ type:'tool_result', ... }, ...]
+    if (typeof msg?.content === 'string') {
+      return msg.content ? [{ kind: 'user_text', text: msg.content }] : []
+    }
+    const content = Array.isArray(msg?.content) ? msg!.content as unknown[] : []
     return content.map(normalizeUserBlock).filter(Boolean) as ChatEvent[]
   }
 
@@ -71,6 +78,15 @@ function normalizeAssistantBlock(block: unknown): ChatEvent | null {
 function normalizeUserBlock(block: unknown): ChatEvent | null {
   if (!block || typeof block !== 'object') return null
   const b = block as Record<string, unknown>
+
+  // User-typed text block (from history replay — spawn-time user input
+  // is shown optimistically by the renderer store and persisted by Claude
+  // Code to the JSONL with the same shape).
+  if (b.type === 'text') {
+    const text = str(b.text)
+    return text ? { kind: 'user_text', text } : null
+  }
+
   if (b.type !== 'tool_result') return null
 
   let content: string

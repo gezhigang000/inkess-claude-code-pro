@@ -182,6 +182,8 @@ function applyEventCopying(messages: RenderMessage[], ev: ChatEvent): RenderMess
   switch (ev.kind) {
     case 'text':
       return mergeTextDelta(messages, ev.delta)
+    case 'user_text':
+      return [...messages, { id: uuid(), role: 'user', parts: [{ kind: 'text', text: ev.text }] }]
     case 'thinking':
       return pushAssistantPart(messages, { kind: 'thinking', text: ev.delta })
     case 'tool_use':

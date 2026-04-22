@@ -39,7 +39,8 @@ export interface ConsentLog {
 
 /** Normalizer output — flattened events for the renderer to consume. */
 export type ChatEvent =
-  | { kind: 'text'; delta: string }
+  | { kind: 'text'; delta: string }                         // assistant text delta (streaming)
+  | { kind: 'user_text'; text: string }                     // user-typed message (full, from history replay)
   | { kind: 'tool_use'; id: string; name: string; input: unknown }
   | { kind: 'tool_result'; toolUseId: string; content: string; isError: boolean }
   | { kind: 'thinking'; delta: string }

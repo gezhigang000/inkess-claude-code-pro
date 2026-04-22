@@ -40,6 +40,39 @@ describe('normalize', () => {
     expect(out).toEqual([{ kind: 'thinking', delta: 'Let me think...' }])
   })
 
+  it('emits user_text when user.message.content is a string', () => {
+    const out = normalize({ type: 'user', message: { content: 'hello claude' } })
+    expect(out).toEqual([{ kind: 'user_text', text: 'hello claude' }])
+  })
+
+  it('emits user_text for user text blocks (history replay)', () => {
+    const out = normalize({
+      type: 'user',
+      message: { content: [{ type: 'text', text: 'what is 2+2?' }] },
+    })
+    expect(out).toEqual([{ kind: 'user_text', text: 'what is 2+2?' }])
+  })
+
+  it('handles mixed user content — text + tool_result', () => {
+    const out = normalize({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'text', text: 'here is context' },
+          { type: 'tool_result', tool_use_id: 't1', content: 'res' },
+        ],
+      },
+    })
+    expect(out).toHaveLength(2)
+    expect(out[0]).toEqual({ kind: 'user_text', text: 'here is context' })
+    expect(out[1]).toMatchObject({ kind: 'tool_result', toolUseId: 't1' })
+  })
+
+  it('drops empty user text (no content)', () => {
+    expect(normalize({ type: 'user', message: { content: '' } })).toEqual([])
+    expect(normalize({ type: 'user', message: { content: [{ type: 'text', text: '' }] } })).toEqual([])
+  })
+
   it('emits tool_result from user message (string content)', () => {
     const out = normalize({
       type: 'user',
