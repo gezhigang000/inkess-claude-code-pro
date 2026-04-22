@@ -27,6 +27,9 @@ import { SingBoxManager } from './proxy/sing-box-manager'
 import { StatsCollector } from './stats/stats-collector'
 import { BrowserInterceptor } from './browser/browser-interceptor'
 import { openBrowserWindow, openBrowserEmpty, closeAllBrowserWindows } from './browser/browser-window'
+import { ChatStore } from './chat/chat-store'
+import { ChatManager } from './chat/chat-manager'
+import { registerChatIPC, unregisterChatIPC } from './chat/chat-ipc'
 
 // Disable IPv6 in Chromium to prevent IPv6 traffic bypassing TUN proxy
 app.commandLine.appendSwitch('disable-ipv6')
@@ -41,6 +44,8 @@ let mainWindow: BrowserWindow | null = null
 const ptyManager = new PtyManager()
 const ptyMonitor = new PtyOutputMonitor()
 const cliManager = new CliManager()
+const chatStore = new ChatStore(app.getPath('userData'), '')  // cliVersion patched after app-ready
+let chatManager: ChatManager | null = null
 const toolsManager = new ToolsManager()
 const analytics = new Analytics()
 const errorReporter = new ErrorReporter()
@@ -1162,7 +1167,7 @@ ipcMain.handle('git:getBranch', async (_event, cwd: string) => {
 })
 
 // App lifecycle
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // CSP — apply in both dev and production
   // Dev mode is slightly looser (allows localhost connections for HMR)
   const isDev = !!process.env.ELECTRON_RENDERER_URL
@@ -1208,6 +1213,50 @@ app.whenReady().then(() => {
   browserInterceptor.start((url) => {
     openBuiltinBrowser(url).catch(err => log.error('[BrowserInterceptor] failed to open URL:', err))
   })
+
+  // --- Chat mode wiring (spec §3) -----------------------------------------
+  try {
+    const claudeConfigDir = join(app.getPath('userData'), 'claude-config')
+    mkdirSync(claudeConfigDir, { recursive: true })
+
+    await chatStore.init()
+    // Patch cliVersion so newly-created chats record which CLI they started with
+    ;(chatStore as unknown as { cliVersion: string }).cliVersion =
+      cliManager.getInfo().version || 'unknown'
+
+    chatManager = new ChatManager({
+      store: chatStore,
+      getCliBinaryPath: () => {
+        const info = cliManager.getInfo()
+        return info.installed ? info.path : ''
+      },
+      regionEnv: () => (proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}),
+      extraEnv: () => {
+        const tunInfo = singBoxManager.getInfo()
+        const proxyEnv = proxySettings.enabled && !tunInfo.tunRunning
+          ? buildProxyEnv(proxySettings.url)
+          : {}
+        return {
+          CLAUDE_CONFIG_DIR: claudeConfigDir,
+          // buildCleanEnv strips PATH by design; reinject so whitelisted Bash
+          // tools (git/python/node/etc.) can resolve.
+          PATH: process.env.PATH || '',
+          ...proxyEnv,
+        }
+      },
+      onEvent: (p) => safeSend('chat:stream', p),
+      onEnd: (p) => safeSend('chat:end', p),
+    })
+
+    registerChatIPC({
+      mainWindow: () => mainWindow,
+      store: chatStore,
+      manager: chatManager,
+      claudeConfigDir,
+    })
+  } catch (err) {
+    log.error('[chat] init failed:', err)
+  }
 
   createWindow()
   setupMenu()
@@ -1257,6 +1306,17 @@ const QUIT_WORK_HARD_TIMEOUT_MS = 30000
 
 async function doQuitWork(): Promise<void> {
   log.info('[before-quit] doQuitWork start')
+
+  // Chat cleanup — synchronous enough to run first (just kills children,
+  // waits <3s for SIGKILL grace). Removes IPC handlers so a second Cmd+Q
+  // doesn't trigger stale paths.
+  try {
+    chatManager?.cancelAll()
+    unregisterChatIPC()
+    log.info('[before-quit] chat cleanup complete')
+  } catch (err) {
+    log.warn('[before-quit] chat cleanup failed:', err)
+  }
 
   const work = (async () => {
     // Upload browser data before TUN stops (5s timeout race — the underlying
