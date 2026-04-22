@@ -10,11 +10,16 @@ export function MessageList({ chatId }: Props) {
   const messages = useChatStore((s) => s.messages[chatId] ?? [])
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
-  // Auto-scroll to bottom when messages change
+  // Smart auto-scroll: only snap to bottom when the user is already near the
+  // bottom. Lets them scroll up to read old context without being yanked down
+  // on every stream event.
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    el.scrollTop = el.scrollHeight
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+    if (nearBottom) {
+      el.scrollTop = el.scrollHeight
+    }
   }, [messages])
 
   return (

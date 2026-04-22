@@ -41,6 +41,18 @@ function uuid(): string {
   return crypto.randomUUID()
 }
 
+function errorMessageFor(code: string | undefined): string {
+  switch (code) {
+    case 'cancelled': return '✋ Cancelled.'
+    case 'timeout':   return '⏱ Response timed out. Try again.'
+    case 'cli_missing': return '⚠️ Claude Code CLI is not installed. Install it first in CLI mode.'
+    case 'busy':      return '⚠️ A turn is already running for this chat.'
+    case 'too_many_concurrent_chats': return '⚠️ Too many concurrent chats running. Cancel one and try again.'
+    case 'spawn_failed': return '⚠️ Failed to start Claude. Check logs.'
+    default: return `⚠️ Error: ${code ?? 'unknown'}`
+  }
+}
+
 function pushAssistantPart(
   messages: RenderMessage[],
   part: RenderMessage['parts'][number],
@@ -139,10 +151,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     })
   },
 
-  markEnded: (chatId, _payload) => {
+  markEnded: (chatId, payload) => {
     set((s) => {
       const { [chatId]: _, ...rest } = s.inflight
-      return { inflight: rest }
+      if (payload.ok) {
+        return { inflight: rest }
+      }
+      // Inject a visible error message so the user knows the turn failed
+      const errorText = errorMessageFor(payload.error)
+      const existing = s.messages[chatId] ?? []
+      const withError: RenderMessage[] = [
+        ...existing,
+        { id: uuid(), role: 'assistant', parts: [{ kind: 'text', text: errorText }] },
+      ]
+      return { inflight: rest, messages: { ...s.messages, [chatId]: withError } }
     })
   },
 
