@@ -303,6 +303,44 @@ const api = {
     getStorageSize: () => ipcRenderer.invoke('stats:getStorageSize') as Promise<number>,
     clear: () => ipcRenderer.invoke('stats:clear') as Promise<{ success: boolean }>,
   },
+
+  chat: {
+    list: () => ipcRenderer.invoke('chat:list') as Promise<Array<{
+      id: string; title: string; createdAt: number; updatedAt: number;
+      cwd: string; mountedDirs: string[]; claudeSessionId: string | null;
+      cliVersion: string; messageCount: number; starred: boolean
+    }>>,
+    create: () => ipcRenderer.invoke('chat:create') as Promise<{
+      id: string; title: string; createdAt: number; updatedAt: number;
+      cwd: string; mountedDirs: string[]; claudeSessionId: string | null;
+      cliVersion: string; messageCount: number; starred: boolean
+    }>,
+    send: (chatId: string, text: string) =>
+      ipcRenderer.invoke('chat:send', { chatId, text }) as Promise<{ requestId: string }>,
+    cancel: (chatId: string) =>
+      ipcRenderer.invoke('chat:cancel', { chatId }) as Promise<void>,
+    loadHistory: (chatId: string) =>
+      ipcRenderer.invoke('chat:loadHistory', { chatId }) as Promise<unknown[]>,
+    rename: (chatId: string, title: string) =>
+      ipcRenderer.invoke('chat:rename', { chatId, title }) as Promise<void>,
+    delete: (chatId: string, removeFiles = true) =>
+      ipcRenderer.invoke('chat:delete', { chatId, removeFiles }) as Promise<void>,
+    onStream: (cb: (p: { requestId: string; event: unknown }) => void) => {
+      const listener = (_: unknown, p: { requestId: string; event: unknown }) => cb(p)
+      ipcRenderer.on('chat:stream', listener)
+      return () => ipcRenderer.removeListener('chat:stream', listener)
+    },
+    onEnd: (cb: (p: { requestId: string; ok: boolean; error?: string; claudeSessionId?: string }) => void) => {
+      const listener = (_: unknown, p: { requestId: string; ok: boolean; error?: string; claudeSessionId?: string }) => cb(p)
+      ipcRenderer.on('chat:end', listener)
+      return () => ipcRenderer.removeListener('chat:end', listener)
+    },
+    onListChanged: (cb: () => void) => {
+      const listener = () => cb()
+      ipcRenderer.on('chat:listChanged', listener)
+      return () => ipcRenderer.removeListener('chat:listChanged', listener)
+    },
+  },
 }
 
 contextBridge.exposeInMainWorld('api', api)
