@@ -28,6 +28,7 @@ describe('buildArgs', () => {
     expect(args).toContain('-p')
     expect(args).toContain('--output-format')
     expect(args).toContain('stream-json')
+    expect(args).toContain('--verbose')
     expect(args).toContain('--dangerously-skip-permissions')
     expect(args).toContain('--mcp-config')
     expect(args[args.indexOf('--mcp-config') + 1]).toMatch(/empty-mcp\.json$/)

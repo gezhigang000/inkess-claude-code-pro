@@ -36,7 +36,8 @@ export interface BuildArgsInput {
  * Pure function — no process spawning, no filesystem access.
  *
  * Sandbox policy (spec §4):
- *   - stream-json output for ChatManager to parse
+ *   - stream-json + verbose output for ChatManager to parse (--verbose required
+ *     by CLI ≥2.1.98 when combining --print with --output-format stream-json)
  *   - --dangerously-skip-permissions silences Claude Code's built-in per-tool
  *     Y/N prompt; the whitelist passed via --allowedTools still applies
  *   - --mcp-config empty-mcp.json + --strict-mcp-config disables MCP entirely
@@ -49,6 +50,7 @@ export function buildArgs(input: BuildArgsInput): string[] {
   const args: string[] = [
     '-p',
     '--output-format', 'stream-json',
+    '--verbose',
     '--dangerously-skip-permissions',
     '--allowedTools', ALLOWED_TOOLS.join(','),
     '--disallowedTools', '',
