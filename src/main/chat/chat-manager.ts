@@ -29,6 +29,7 @@ interface Inflight {
   child: ChildProcess
   requestId: string
   watchdog: NodeJS.Timeout
+  killTimer: NodeJS.Timeout | null
   cancelled: boolean
   timedOut: boolean
 }
@@ -79,8 +80,8 @@ export class ChatManager {
     const parser = new StreamJsonParser()
     let sessionFromInit: string | null = null
 
-    child.stdout!.on('data', (chunk: Buffer) => {
-      for (const raw of parser.feed(chunk)) {
+    const emitParsed = (objects: unknown[]) => {
+      for (const raw of objects) {
         const events = normalize(raw)
         for (const event of events) {
           if (event.kind === 'meta' && event.sessionId) {
@@ -89,17 +90,27 @@ export class ChatManager {
           this.deps.onEvent({ requestId, event })
         }
       }
+    }
+
+    child.stdout!.on('data', (chunk: Buffer) => {
+      emitParsed(parser.feed(chunk))
+    })
+
+    // Flush any incomplete UTF-8 bytes buffered in the StringDecoder
+    child.stdout!.on('end', () => {
+      emitParsed(parser.end())
     })
 
     child.stderr!.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8').trimEnd()
-      if (text) log.warn('[chat] stderr:', text.slice(0, 500))
+      if (text) log.warn('[chat] stderr:', text)
     })
 
     const rec: Inflight = {
       child,
       requestId,
       watchdog: undefined as unknown as NodeJS.Timeout,
+      killTimer: null,
       cancelled: false,
       timedOut: false,
     }
@@ -120,6 +131,7 @@ export class ChatManager {
 
     child.on('exit', (code, signal) => {
       clearTimeout(rec.watchdog)
+      if (rec.killTimer) clearTimeout(rec.killTimer)
       this.inflight.delete(chatId)
 
       const finalSession = sessionFromInit ?? meta.claudeSessionId ?? null
@@ -148,7 +160,7 @@ export class ChatManager {
         // First-turn failure — still persist the session id so retry can resume
         this.deps.store
           .update(chatId, { claudeSessionId: finalSession })
-          .catch(() => void 0)
+          .catch((err) => log.warn('[chat] failed to persist sessionId on first-turn failure:', err))
       }
 
       this.deps.onEnd({
@@ -195,7 +207,8 @@ export class ChatManager {
     } catch {
       // ignore
     }
-    setTimeout(() => {
+    rec.killTimer = setTimeout(() => {
+      rec.killTimer = null
       if (rec.child.exitCode === null && rec.child.signalCode === null) {
         try {
           rec.child.kill('SIGKILL')

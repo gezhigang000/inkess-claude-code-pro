@@ -114,6 +114,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   send: async (chatId, text) => {
     // Optimistically add the user bubble
+    const prevMessages = get().messages[chatId] ?? []
     set((s) => ({
       messages: {
         ...s.messages,
@@ -123,8 +124,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ],
       },
     }))
-    const { requestId } = await window.api.chat.send(chatId, text)
-    set((s) => ({ inflight: { ...s.inflight, [chatId]: { requestId, streaming: true } } }))
+    try {
+      const { requestId } = await window.api.chat.send(chatId, text)
+      set((s) => ({ inflight: { ...s.inflight, [chatId]: { requestId, streaming: true } } }))
+    } catch (err) {
+      // Rollback the optimistic user message on failure
+      set((s) => ({ messages: { ...s.messages, [chatId]: prevMessages } }))
+      throw err
+    }
   },
 
   cancel: async (chatId) => {

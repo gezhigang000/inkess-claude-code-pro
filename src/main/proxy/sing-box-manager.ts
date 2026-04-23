@@ -1061,22 +1061,33 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
           stdio: ['ignore', 'pipe', 'pipe'],
         })
 
-        // Poll for PID file (written after user enters password)
+        // Poll for PID file (written after user enters password).
+        // No timeout while waiting for user to authenticate — the osascript
+        // dialog can stay open indefinitely. Once the PID file appears (user
+        // has authenticated and sing-box is launching), start a 15s timeout
+        // for the process to become alive.
         pidPollInterval = setInterval(() => {
           const pid = this.readPidFile()
           if (pid > 0) {
             if (this.isProcessAlive(pid)) {
               settle(true)
             } else {
-              settle(false, 'sing-box exited immediately after start')
+              // PID appeared but process already dead — give it a moment
+              // (sing-box may still be initializing). Start a short timeout
+              // if we haven't already.
+              if (!timeoutTimer) {
+                timeoutTimer = setTimeout(() => {
+                  const retryPid = this.readPidFile()
+                  if (retryPid > 0 && this.isProcessAlive(retryPid)) {
+                    settle(true)
+                  } else {
+                    settle(false, 'sing-box exited immediately after start')
+                  }
+                }, 15000)
+              }
             }
           }
         }, 300)
-
-        // Timeout: 60s
-        timeoutTimer = setTimeout(() => {
-          settle(false, 'Timed out waiting for sing-box to start (60s)')
-        }, 60000)
 
         this.process.on('exit', (code) => {
           this.process = null
@@ -1153,20 +1164,27 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
           windowsHide: true,
         })
 
+        // No timeout while waiting for UAC prompt — user can take as long as
+        // needed. Once PID file appears, start a 15s timeout for process liveness.
         pidPollInterval = setInterval(() => {
           const pid = this.readPidFile()
           if (pid > 0) {
             if (this.isProcessAlive(pid)) {
               settle(true)
             } else {
-              settle(false, 'sing-box exited immediately after start')
+              if (!timeoutTimer) {
+                timeoutTimer = setTimeout(() => {
+                  const retryPid = this.readPidFile()
+                  if (retryPid > 0 && this.isProcessAlive(retryPid)) {
+                    settle(true)
+                  } else {
+                    settle(false, 'sing-box exited immediately after start')
+                  }
+                }, 15000)
+              }
             }
           }
         }, 300)
-
-        timeoutTimer = setTimeout(() => {
-          settle(false, 'Timed out waiting for sing-box to start (60s)')
-        }, 60000)
 
         this.process.on('exit', (code) => {
           this.process = null

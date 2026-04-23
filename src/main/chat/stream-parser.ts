@@ -16,6 +16,16 @@ export class StreamJsonParser {
 
   feed(chunk: Buffer | string): unknown[] {
     this.buf += typeof chunk === 'string' ? chunk : this.decoder.write(chunk)
+    return this.drain()
+  }
+
+  /** Flush any incomplete multi-byte bytes left in the StringDecoder. Call once when the stream ends. */
+  end(): unknown[] {
+    this.buf += this.decoder.end()
+    return this.drain()
+  }
+
+  private drain(): unknown[] {
     const out: unknown[] = []
     let nl: number
     while ((nl = this.buf.indexOf('\n')) >= 0) {

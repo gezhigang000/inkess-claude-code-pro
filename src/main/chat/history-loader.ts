@@ -1,7 +1,10 @@
-import { readFileSync, existsSync } from 'fs'
+import { readFileSync, existsSync, statSync } from 'fs'
 import { join } from 'path'
 import type { ChatEvent, ChatMeta } from './chat-types'
 import { normalize } from './normalizer'
+
+/** Cap per-session JSONL at 10 MB to avoid blocking the main thread. */
+const MAX_HISTORY_BYTES = 10 * 1024 * 1024
 
 /**
  * Claude Code encodes a project's cwd as the JSONL directory name by
@@ -38,6 +41,16 @@ export async function loadHistory(
     `${meta.claudeSessionId}.jsonl`,
   )
   if (!existsSync(jsonlPath)) return []
+
+  try {
+    const size = statSync(jsonlPath).size
+    if (size > MAX_HISTORY_BYTES) {
+      console.warn(`[chat] history file too large (${(size / 1024 / 1024).toFixed(1)} MB), skipping: ${jsonlPath}`)
+      return []
+    }
+  } catch {
+    return []
+  }
 
   const raw = readFileSync(jsonlPath, 'utf8')
   const events: ChatEvent[] = []

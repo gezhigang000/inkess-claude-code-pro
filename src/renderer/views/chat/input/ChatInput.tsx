@@ -1,14 +1,31 @@
 import { useRef, useState, useEffect } from 'react'
 import { useChatStore } from '../../../stores/chat'
 
-interface Props { chatId: string }
+interface Props {
+  chatId: string
+  /** Text to insert at cursor (set by drag-drop). Cleared after consumption. */
+  pendingInsert?: string
+  onInsertConsumed?: () => void
+}
 
-export function ChatInput({ chatId }: Props) {
+export function ChatInput({ chatId, pendingInsert, onInsertConsumed }: Props) {
   const send = useChatStore((s) => s.send)
   const cancel = useChatStore((s) => s.cancel)
   const streaming = useChatStore((s) => !!s.inflight[chatId]?.streaming)
   const [value, setValue] = useState('')
   const taRef = useRef<HTMLTextAreaElement | null>(null)
+
+  // Consume pending insert from drag-drop
+  useEffect(() => {
+    if (!pendingInsert) return
+    setValue((prev) => {
+      const sep = prev && !prev.endsWith('\n') && !prev.endsWith(' ') ? ' ' : ''
+      return prev + sep + pendingInsert
+    })
+    onInsertConsumed?.()
+    // Focus the textarea so user can continue typing
+    taRef.current?.focus()
+  }, [pendingInsert, onInsertConsumed])
 
   // Auto-grow
   useEffect(() => {

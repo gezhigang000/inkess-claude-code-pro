@@ -76,8 +76,14 @@ export class ChatStore {
 
     // Never allow mutation of id / createdAt / cwd / cliVersion
     const { id: _id, createdAt: _cr, cwd: _cwd, cliVersion: _cv, ...safe } = patch
-    this.chats[i] = { ...this.chats[i], ...safe, updatedAt: Date.now() }
-    await this.writeIndex()
+    const prev = this.chats[i]
+    this.chats[i] = { ...prev, ...safe, updatedAt: Date.now() }
+    try {
+      await this.writeIndex()
+    } catch (err) {
+      this.chats[i] = prev // rollback in-memory on write failure
+      throw err
+    }
   }
 
   async delete(chatId: string, opts: { removeFiles: boolean }): Promise<void> {
