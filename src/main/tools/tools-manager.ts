@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import { join, delimiter, dirname } from 'path'
+import { buildBasePath } from '../utils/clean-env'
 import {
   existsSync,
   mkdirSync,
@@ -405,10 +406,9 @@ export class ToolsManager {
     }
     if (dirs.length === 0 && Object.keys(extraEnv).length === 0) return {}
 
-    const currentPath = process.env.PATH || ''
     return {
       ...extraEnv,
-      PATH: dirs.join(delimiter) + delimiter + currentPath
+      PATH: dirs.join(delimiter) + delimiter + buildBasePath()
     }
   }
 }

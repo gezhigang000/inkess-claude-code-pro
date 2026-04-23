@@ -38,3 +38,40 @@ export async function launchAppAuthenticated(): Promise<{ app: ElectronApplicati
   await waitForReady(page)
   return { app, page }
 }
+
+/**
+ * Launch app in mock mode — subscription/TUN/CLI IPC handlers return
+ * mock data so the app reaches terminal/chat UI without real login,
+ * network proxy, or Claude CLI binary.
+ */
+export async function launchAppMocked(): Promise<{ app: ElectronApplication; page: Page }> {
+  const app = await electron.launch({
+    args: ['.'],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      INKESS_MOCK_MODE: 'true',
+    },
+  })
+  const page = await app.firstWindow()
+  await waitForReady(page)
+  return { app, page }
+}
+
+/**
+ * Wait for the terminal UI to be ready (past login → TUN → CLI check).
+ * In mock mode this should be near-instant.
+ */
+export async function waitForTerminalReady(page: Page): Promise<void> {
+  // The terminal tab bar has a drag region with specific styling.
+  // Wait for any terminal-related element to appear.
+  await page.waitForTimeout(2000) // Allow full init cycle
+}
+
+/**
+ * Wait for chat mode UI to be ready.
+ */
+export async function waitForChatReady(page: Page): Promise<void> {
+  // Chat sidebar has the "+ New chat" button
+  await page.getByText('+ New chat').waitFor({ state: 'visible', timeout: 10000 })
+}

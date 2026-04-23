@@ -1,4 +1,6 @@
 import * as os from 'os'
+import { existsSync } from 'fs'
+import { join, delimiter } from 'path'
 
 /**
  * Environment isolation strategy: BUILD FROM SCRATCH (whitelist approach).
@@ -59,6 +61,86 @@ const PASSTHROUGH_PREFIXES = [
   'DENO_',    // Deno
   'BUN_',     // Bun
 ]
+
+/**
+ * Build a robust base PATH that includes well-known tool directories.
+ *
+ * When Electron launches from Dock/Finder, process.env.PATH is typically
+ * just /usr/bin:/bin:/usr/sbin:/sbin — missing Homebrew, user-local bins,
+ * and other paths that the user's interactive shell would have.
+ *
+ * Non-interactive subprocesses (bash -c, scripts) don't load .zshrc, so
+ * tools like brew, gh, python3, node installed via Homebrew are invisible.
+ *
+ * We append well-known directories that exist on disk to ensure common
+ * developer tools are reachable regardless of how the app was launched.
+ */
+export function buildBasePath(): string {
+  const syspath = process.env.PATH || (process.platform === 'win32'
+    ? 'C:\\Windows\\system32;C:\\Windows;C:\\Windows\\System32\\Wbem'
+    : '/usr/bin:/bin:/usr/sbin:/sbin')
+  const home = process.env.HOME || process.env.USERPROFILE || os.homedir()
+
+  const candidates: string[] = process.platform === 'win32'
+    ? [
+        // Scoop (popular Windows package manager)
+        join(home, 'scoop', 'shims'),
+        // Chocolatey
+        'C:\\ProgramData\\chocolatey\\bin',
+        // WinGet / App Installer
+        join(home, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links'),
+        // Node.js (official installer default)
+        'C:\\Program Files\\nodejs',
+        // Python (MS Store + official installer, enumerate common versions)
+        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python313'),
+        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python312'),
+        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python311'),
+        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python310'),
+        join(home, 'AppData', 'Local', 'Microsoft', 'WindowsApps'), // MS Store python/node
+        // Go (official installer default)
+        'C:\\Program Files\\Go\\bin',
+        join(home, 'go', 'bin'),                               // GOPATH/bin
+        // Rust
+        join(home, '.cargo', 'bin'),
+        // npm / pnpm / yarn global
+        join(home, 'AppData', 'Roaming', 'npm'),
+        join(home, 'AppData', 'Local', 'pnpm'),
+        join(home, 'AppData', 'Local', 'Yarn', 'bin'),
+        // .NET CLI
+        join(home, '.dotnet'),
+        'C:\\Program Files\\dotnet',
+        // Git for Windows
+        'C:\\Program Files\\Git\\cmd',
+        'C:\\Program Files\\Git\\bin',
+        // GitHub CLI
+        join(home, 'AppData', 'Local', 'GitHub CLI'),
+        // VS Code CLI
+        join(home, 'AppData', 'Local', 'Programs', 'Microsoft VS Code', 'bin'),
+        // Deno / Bun
+        join(home, '.deno', 'bin'),
+        join(home, '.bun', 'bin'),
+      ]
+    : [
+        // Homebrew (Apple Silicon + Intel)
+        '/opt/homebrew/bin',
+        '/opt/homebrew/sbin',
+        '/usr/local/bin',
+        '/usr/local/sbin',
+        // User-local bins
+        join(home, '.local', 'bin'),   // pip, pipx, etc.
+        join(home, 'bin'),             // user scripts
+        join(home, '.cargo', 'bin'),   // Rust
+        // Common version managers
+        join(home, '.deno', 'bin'),    // Deno
+        join(home, '.bun', 'bin'),     // Bun
+      ]
+
+  const existing = new Set(syspath.split(delimiter).map(p => p.toLowerCase()))
+  const extra = candidates.filter(d =>
+    !d.includes('*') && !existing.has(d.toLowerCase()) && existsSync(d)
+  )
+  return extra.length ? extra.join(delimiter) + delimiter + syspath : syspath
+}
 
 /**
  * Build a clean PTY/chat environment from scratch.

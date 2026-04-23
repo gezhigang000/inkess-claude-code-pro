@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, statSync } from 'fs'
 import { execSync } from 'child_process'
 import * as os from 'os'
 import { PtyManager } from './pty/pty-manager'
-import { buildCleanEnv, DEFAULT_REGION_ENV } from './utils/clean-env'
+import { buildCleanEnv, buildBasePath, DEFAULT_REGION_ENV } from './utils/clean-env'
 import { PtyOutputMonitor, type PtyActivityEvent } from './pty/pty-output-monitor'
 import { CliManager } from './cli/cli-manager'
 import { ToolsManager } from './tools/tools-manager'
@@ -39,6 +39,16 @@ app.commandLine.appendSwitch('lang', 'en-US')
 
 process.on('uncaughtException', (err) => log.error('Uncaught:', err))
 process.on('unhandledRejection', (reason) => log.error('Unhandled:', reason))
+
+/**
+ * E2E test mock mode. When INKESS_MOCK_MODE=true, subscription/TUN/CLI
+ * IPC handlers return mock responses so Playwright tests can reach the
+ * terminal and chat UI without real login or network proxy.
+ *
+ * NEVER set in production — only via E2E test harness env vars.
+ */
+const MOCK_MODE = process.env.INKESS_MOCK_MODE === 'true'
+if (MOCK_MODE) log.info('[startup] MOCK_MODE enabled — IPC handlers will return mock data')
 
 let mainWindow: BrowserWindow | null = null
 const ptyManager = new PtyManager()
@@ -169,6 +179,7 @@ function createWindow(): void {
 
 // IPC: CLI Manager
 ipcMain.handle('cli:getInfo', () => {
+  if (MOCK_MODE) return { installed: true, path: '/usr/bin/claude', version: '2.1.98' }
   return cliManager.getInfo()
 })
 
@@ -213,6 +224,7 @@ ipcMain.handle('tools:getInfo', () => {
 })
 
 ipcMain.handle('tools:isAllInstalled', () => {
+  if (MOCK_MODE) return true
   return toolsManager.isAllInstalled()
 })
 
@@ -266,10 +278,25 @@ ipcMain.handle('subscription:login', async (_event, args: unknown) => {
 })
 
 ipcMain.handle('subscription:checkStatus', async () => {
+  if (MOCK_MODE) return {
+    status: 'active', plan: 'monthly',
+    expiresAt: new Date(Date.now() + 30 * 24 * 3600_000).toISOString(),
+    daysRemaining: 30, proxyUrl: 'socks5://127.0.0.1:1080',
+    proxyRegion: 'us', exitIp: '1.2.3.4',
+  }
   return subscriptionManager.checkStatus()
 })
 
 ipcMain.handle('subscription:getSession', () => {
+  if (MOCK_MODE) return {
+    isLoggedIn: true, username: 'e2e-test',
+    session: {
+      plan: 'monthly',
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600_000).toISOString(),
+      proxyUrl: 'socks5://127.0.0.1:1080', tunnelUrl: '',
+      proxyRegion: 'us', exitIp: '1.2.3.4',
+    },
+  }
   const s = subscriptionManager.getSession()
   return {
     isLoggedIn: subscriptionManager.isLoggedIn(),
@@ -407,7 +434,13 @@ ipcMain.handle('subscription:autoLoginClaude', async (_event, args: unknown) => 
 })
 
 // IPC: TUN proxy (sing-box)
-ipcMain.handle('tun:getInfo', () => singBoxManager.getInfo())
+ipcMain.handle('tun:getInfo', () => {
+  if (MOCK_MODE) return {
+    mode: 'mock', tunRunning: true, installed: true,
+    lastError: null, internetReachable: true, latencyMs: 42,
+  }
+  return singBoxManager.getInfo()
+})
 
 ipcMain.handle('tun:install', async () => {
   try {
@@ -525,6 +558,7 @@ async function startTunInternal(proxyUrl: string, tunnelUrl?: string): Promise<v
 }
 
 ipcMain.handle('tun:startTun', async (_event, proxyUrl: string, tunnelUrl?: string) => {
+  if (MOCK_MODE) return { success: true }
   proxyUrl = typeof proxyUrl === 'string' ? proxyUrl.trim() : proxyUrl
   try {
     await startTunInternal(proxyUrl, tunnelUrl)
@@ -580,6 +614,7 @@ ipcMain.handle('tun:stop', async () => {
 })
 
 ipcMain.handle('tun:testConnectivity', async (_event, exitIp?: string) => {
+  if (MOCK_MODE) return { success: true, latency: 42, actualIp: '1.2.3.4' }
   const result = await singBoxManager.testConnectivity(exitIp)
   if (!result.success) {
     errorReporter.reportBizError('tun_connectivity', result.error || 'Connectivity test failed', {
@@ -769,7 +804,7 @@ ipcMain.handle('pty:create', (_event, options: {
     // Browser interceptor env (BROWSER, INKESS_BROWSER_SOCK, ZDOTDIR)
     const interceptorEnv = browserInterceptor.getEnv()
     const binDir = browserInterceptor.getBinDir()
-    const existingPath = toolsEnv.PATH || process.env.PATH || ''
+    const existingPath = toolsEnv.PATH || buildBasePath()
 
     // Encode region vars for zdotdir .zshrc to re-apply after user's .zshrc
     const regionEnvStr = Object.entries({ ...DEFAULT_REGION_ENV, ...regionOverrides })
