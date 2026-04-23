@@ -276,6 +276,10 @@ jobs:
                       uploaded_dmg = name
 
           if upload_latest and uploaded_dmg:
-              bucket.copy_object(bucket.bucket_name, f'{prefix}/{uploaded_dmg}', f'{prefix}/latest/macos-arm64.dmg')
-              print(f'  latest/ <- {uploaded_dmg}')
+              # Clean old latest/ files then copy with versioned filename
+              for obj in oss2.ObjectIteratorV2(bucket, prefix=f'{prefix}/latest/'):
+                  bucket.delete_object(obj.key)
+              dst = f'{prefix}/latest/macos-arm64-v{version}.dmg'
+              bucket.copy_object(bucket.bucket_name, f'{prefix}/{uploaded_dmg}', dst)
+              print(f'  latest/ <- {os.path.basename(dst)}')
           PY

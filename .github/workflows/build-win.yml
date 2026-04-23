@@ -93,7 +93,7 @@ jobs:
         run: |
           pip install oss2
           python - <<'PY'
-          import glob, os, oss2
+          import glob, os, re, oss2
           auth = oss2.Auth(os.environ['OSS_ACCESS_KEY_ID'], os.environ['OSS_ACCESS_KEY_SECRET'])
           bucket = oss2.Bucket(auth, 'https://oss-cn-beijing.aliyuncs.com', 'inkess-install-file')
           prefix = os.environ['OSS_PREFIX']
@@ -104,5 +104,12 @@ jobs:
               exe_files = glob.glob('release/*.exe')
               if exe_files:
                   exe_name = os.path.basename(exe_files[0])
-                  bucket.copy_object(bucket.bucket_name, f'{prefix}/{exe_name}', f'{prefix}/latest/windows-x64.exe')
+                  # Extract version from exe filename (e.g. "Inkess Claude Code Pro Setup 1.1.3.exe")
+                  m = re.search(r'(\d+\.\d+\.\d+)', exe_name)
+                  version = m.group(1) if m else 'unknown'
+                  # Clean old latest/ files then copy with versioned filename
+                  for obj in oss2.ObjectIteratorV2(bucket, prefix=f'{prefix}/latest/'):
+                      bucket.delete_object(obj.key)
+                  dst = f'{prefix}/latest/windows-x64-v{version}.exe'
+                  bucket.copy_object(bucket.bucket_name, f'{prefix}/{exe_name}', dst)
           PY
