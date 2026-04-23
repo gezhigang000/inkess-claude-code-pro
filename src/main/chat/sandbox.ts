@@ -3,19 +3,27 @@ import { writeFileSync, existsSync, mkdirSync } from 'fs'
 import type { ChatMeta } from './chat-types'
 import { ALLOWED_TOOLS } from './constants'
 
-/** Path to an empty MCP config file used to disable MCP in chat mode. */
+/**
+ * Path to an empty MCP config file used to disable MCP in chat mode.
+ * Call `initEmptyMcpConfig(userDataDir)` at startup to set the path.
+ */
 let _emptyMcpConfig: string | null = null
-function getEmptyMcpConfig(): string {
-  if (process.platform !== 'win32') return '/dev/null'
-  if (_emptyMcpConfig) return _emptyMcpConfig
-  // Lazy import to avoid pulling Electron into unit tests
-  const { app } = require('electron')
-  const dir = join(app.getPath('userData'), 'chat')
+
+export function initEmptyMcpConfig(userDataDir: string): void {
+  const dir = join(userDataDir, 'chat')
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const p = join(dir, 'empty-mcp.json')
   writeFileSync(p, '{"mcpServers":{}}', 'utf8')
   _emptyMcpConfig = p
-  return p
+}
+
+function getEmptyMcpConfig(): string {
+  if (!_emptyMcpConfig) {
+    // Fallback: lazy init (should not happen if initEmptyMcpConfig was called at startup)
+    const { app } = require('electron')
+    initEmptyMcpConfig(app.getPath('userData'))
+  }
+  return _emptyMcpConfig!
 }
 
 export interface BuildArgsInput {
@@ -31,7 +39,8 @@ export interface BuildArgsInput {
  *   - stream-json output for ChatManager to parse
  *   - --dangerously-skip-permissions silences Claude Code's built-in per-tool
  *     Y/N prompt; the whitelist passed via --allowedTools still applies
- *   - --mcp-config /dev/null disables MCP entirely (Windows: NUL)
+ *   - --mcp-config empty-mcp.json + --strict-mcp-config disables MCP entirely
+ *     (strict prevents CLI from loading ~/.claude.json or .mcp.json servers)
  *   - --add-dir for each user-mounted directory (empty on v0.1)
  *   - --resume <id> only on follow-up turns (first turn starts fresh)
  */
@@ -44,6 +53,7 @@ export function buildArgs(input: BuildArgsInput): string[] {
     '--allowedTools', ALLOWED_TOOLS.join(','),
     '--disallowedTools', '',
     '--mcp-config', getEmptyMcpConfig(),
+    '--strict-mcp-config',
   ]
 
   if (meta.claudeSessionId) {

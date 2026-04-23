@@ -1210,6 +1210,10 @@ async function initChatMode(): Promise<void> {
     const claudeConfigDir = join(app.getPath('userData'), 'claude-config')
     mkdirSync(claudeConfigDir, { recursive: true })
 
+    // Pre-create empty MCP config so buildArgs() never touches electron require()
+    const { initEmptyMcpConfig } = await import('./chat/sandbox')
+    initEmptyMcpConfig(app.getPath('userData'))
+
     await chatStore.init()
     // Patch cliVersion so newly-created chats record which CLI they started with
     ;(chatStore as unknown as { cliVersion: string }).cliVersion =

@@ -1,7 +1,13 @@
-import { describe, it, expect } from 'vitest'
-import { buildArgs } from '../../src/main/chat/sandbox'
+import { describe, it, expect, beforeAll } from 'vitest'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { buildArgs, initEmptyMcpConfig } from '../../src/main/chat/sandbox'
 import { ALLOWED_TOOLS } from '../../src/main/chat/constants'
 import type { ChatMeta } from '../../src/main/chat/chat-types'
+
+beforeAll(() => {
+  initEmptyMcpConfig(join(tmpdir(), 'inkess-test'))
+})
 
 const baseMeta: ChatMeta = {
   id: '00000000-0000-4000-8000-000000000001',
@@ -24,7 +30,8 @@ describe('buildArgs', () => {
     expect(args).toContain('stream-json')
     expect(args).toContain('--dangerously-skip-permissions')
     expect(args).toContain('--mcp-config')
-    expect(args[args.indexOf('--mcp-config') + 1]).toMatch(/null|\/dev\/null|NUL/)
+    expect(args[args.indexOf('--mcp-config') + 1]).toMatch(/empty-mcp\.json$/)
+    expect(args).toContain('--strict-mcp-config')
   })
 
   it('joins the full ALLOWED_TOOLS list with --allowedTools', () => {

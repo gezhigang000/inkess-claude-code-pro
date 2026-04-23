@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeAll } from 'vitest'
 import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
@@ -8,7 +8,12 @@ vi.mock('@main/logger', () => ({
   default: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
 }))
 
+import { initEmptyMcpConfig } from '../../src/main/chat/sandbox'
 import { ChatManager } from '../../src/main/chat/chat-manager'
+
+beforeAll(() => {
+  initEmptyMcpConfig(join(tmpdir(), 'inkess-test'))
+})
 import { ChatStore } from '../../src/main/chat/chat-store'
 import type { ChatStreamPayload, ChatEndPayload } from '../../src/main/chat/chat-types'
 
