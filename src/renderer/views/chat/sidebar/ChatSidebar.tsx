@@ -13,8 +13,15 @@ export function ChatSidebar() {
   const [pendingDelete, setPendingDelete] = useState<ChatMeta | null>(null)
 
   const createNew = async () => {
-    const meta = await window.api.chat.create()
-    selectChat(meta.id)
+    try {
+      const meta = await window.api.chat.create()
+      // Eagerly refresh so the new chat shows in the sidebar immediately
+      // (chat:listChanged broadcast may arrive after selectChat renders).
+      await useChatStore.getState().loadChatList()
+      selectChat(meta.id)
+    } catch (err) {
+      console.warn('[chat] create failed:', err)
+    }
   }
 
   const groups = groupChats(chats)

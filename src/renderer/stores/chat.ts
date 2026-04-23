@@ -91,6 +91,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadChatList: async () => {
     const chats = (await window.api.chat.list()) as ChatMeta[]
+    // Skip update if the list hasn't changed — prevents unnecessary sidebar
+    // re-renders on every chat:listChanged broadcast.
+    const prev = get().chats
+    if (prev.length === chats.length && prev.every((c, i) => c.id === chats[i].id && c.updatedAt === chats[i].updatedAt)) {
+      return
+    }
     set({ chats })
   },
 

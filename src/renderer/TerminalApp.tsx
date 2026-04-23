@@ -19,6 +19,19 @@ import { useI18n } from './i18n'
 const DEFAULT_CWD = window.api?.homedir || '/'
 const isMac = window.api?.platform === 'darwin'
 
+// Module-level cache: survive TerminalApp unmount/remount during mode switches.
+// Without this, every chat→CLI switch re-runs the full subscription+TUN check,
+// causing a 200-500ms TunGate flash (tunOk starts false, waits for IPC roundtrip).
+let _cachedSubscriptionState: {
+  loggedIn: boolean
+  username: string | null
+  expiry: string | null
+  exitIp: string
+  tunnelUrl: string
+  plan: string
+  tunOk: boolean
+} | null = null
+
 /** Shorten absolute path: replace home dir with ~, normalize separators */
 export function shortenPath(p: string): string {
   const home = window.api?.homedir || ''
@@ -64,22 +77,24 @@ export function TerminalApp() {
   const [networkAlert, setNetworkAlert] = useState<{
     type: 'warning' | 'error'; message: string; actionLabel?: string; onAction?: () => void
   } | null>(null)
-  const [tunOk, setTunOk] = useState(false)
-  const tunOkRef = useRef(false)
-  const tunWasOkRef = useRef(false)
+  const [tunOk, setTunOk] = useState(_cachedSubscriptionState?.tunOk ?? false)
+  const tunOkRef = useRef(_cachedSubscriptionState?.tunOk ?? false)
+  const tunWasOkRef = useRef(_cachedSubscriptionState?.tunOk ?? false)
   const handleNewTabRef = useRef<(cwd?: string) => void>(() => {})
   useEffect(() => {
     if (tunOk) tunWasOkRef.current = true
     tunOkRef.current = tunOk
     console.log(`[App] tunOk changed → ${tunOk}`)
+    // Persist to module-level cache so mode switches don't flash TunGate
+    if (_cachedSubscriptionState) _cachedSubscriptionState.tunOk = tunOk
   }, [tunOk])
 
-  const [subscriptionLoggedIn, setSubscriptionLoggedIn] = useState<boolean | null>(null) // null = checking
-  const [subscriptionUsername, setSubscriptionUsername] = useState<string | null>(null)
-  const [subscriptionExpiry, setSubscriptionExpiry] = useState<string | null>(null)
-  const [subscriptionExitIp, setSubscriptionExitIp] = useState<string>('')
-  const [subscriptionTunnelUrl, setSubscriptionTunnelUrl] = useState<string>('')
-  const [subscriptionPlan, setSubscriptionPlan] = useState<string>('monthly')
+  const [subscriptionLoggedIn, setSubscriptionLoggedIn] = useState<boolean | null>(_cachedSubscriptionState?.loggedIn ?? null) // null = checking
+  const [subscriptionUsername, setSubscriptionUsername] = useState<string | null>(_cachedSubscriptionState?.username ?? null)
+  const [subscriptionExpiry, setSubscriptionExpiry] = useState<string | null>(_cachedSubscriptionState?.expiry ?? null)
+  const [subscriptionExitIp, setSubscriptionExitIp] = useState<string>(_cachedSubscriptionState?.exitIp ?? '')
+  const [subscriptionTunnelUrl, setSubscriptionTunnelUrl] = useState<string>(_cachedSubscriptionState?.tunnelUrl ?? '')
+  const [subscriptionPlan, setSubscriptionPlan] = useState<string>(_cachedSubscriptionState?.plan ?? 'monthly')
   const [expiryMinutesRemaining, setExpiryMinutesRemaining] = useState<number | null>(null)
   const expiryAtRef = useRef<string | null>(null)
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -268,10 +283,19 @@ export function TerminalApp() {
     }
   }, [tunOk, subscriptionLoggedIn, subscriptionExitIp, t])
 
-  // Startup: check subscription login, then CLI
+  // Startup: check subscription login, then CLI.
+  // If we already have cached state from a previous mount (mode switch),
+  // skip the full re-init to avoid TunGate flash.
   useEffect(() => {
     if (initRef.current) return
     initRef.current = true
+    if (_cachedSubscriptionState?.loggedIn) {
+      // Already initialized in a previous mount — just ensure phase is ready
+      if (useAppStore.getState().phase !== 'ready') {
+        checkCliAndProceed()
+      }
+      return
+    }
     checkSubscriptionAndProceed()
   }, [])
 
@@ -322,6 +346,16 @@ export function TerminalApp() {
       // Old sessions from pre-tunnel builds lack this field — without this fallback,
       // those users would be stuck in single-proxy mode forever.
       setSubscriptionTunnelUrl(status?.tunnelUrl || session.session?.tunnelUrl || '')
+      // Cache state so mode switches skip the full re-init
+      _cachedSubscriptionState = {
+        loggedIn: true,
+        username: session.username,
+        expiry: status?.expiresAt || session.session?.expiresAt || null,
+        exitIp: status?.exitIp || session.session?.exitIp || '',
+        tunnelUrl: status?.tunnelUrl || session.session?.tunnelUrl || '',
+        plan: session.session?.plan || 'monthly',
+        tunOk: false, // will be set to true by setTunOk callback
+      }
       // Check if subscription already expired before proceeding
       const expiresAt = status?.expiresAt || session.session?.expiresAt
       if (expiresAt) {
@@ -377,6 +411,17 @@ export function TerminalApp() {
     const session = await window.api.subscription.getSession()
     setSubscriptionUsername(session.username)
 
+    // Cache for mode-switch resilience
+    _cachedSubscriptionState = {
+      loggedIn: true,
+      username: session.username,
+      expiry: config.expiresAt,
+      exitIp: config.exitIp || '',
+      tunnelUrl: '', // populated later by TunGate
+      plan: config.plan || 'monthly',
+      tunOk: false, // will be set true by setTunOk callback
+    }
+
     // TunGate will show automatically (tunOk is false)
     // TunGate.onReady → setTunOk(true) + checkCliAndProceed()
   }, [])
@@ -405,6 +450,7 @@ export function TerminalApp() {
     setSubscriptionTunnelUrl('')
     expiryAtRef.current = null
     setExpiryMinutesRemaining(null)
+    _cachedSubscriptionState = null
   }, [])
 
   /** Refresh proxy config from server — re-fetches latest proxyUrl/exitIp without re-login */
@@ -436,6 +482,7 @@ export function TerminalApp() {
     setSubscriptionTunnelUrl('')
     expiryAtRef.current = null
     setExpiryMinutesRemaining(null)
+    _cachedSubscriptionState = null
   }, [])
 
   /** Compute minutes remaining from expiresAt string */

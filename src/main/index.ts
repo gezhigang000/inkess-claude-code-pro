@@ -1166,6 +1166,55 @@ ipcMain.handle('git:getBranch', async (_event, cwd: string) => {
   }
 })
 
+/**
+ * Initialize chat mode subsystem. Isolated from CLI initialization so that
+ * a chat-mode failure cannot break the CLI experience.
+ */
+async function initChatMode(): Promise<void> {
+  try {
+    const claudeConfigDir = join(app.getPath('userData'), 'claude-config')
+    mkdirSync(claudeConfigDir, { recursive: true })
+
+    await chatStore.init()
+    // Patch cliVersion so newly-created chats record which CLI they started with
+    ;(chatStore as unknown as { cliVersion: string }).cliVersion =
+      cliManager.getInfo().version || 'unknown'
+
+    chatManager = new ChatManager({
+      store: chatStore,
+      getCliBinaryPath: () => {
+        const info = cliManager.getInfo()
+        return info.installed ? info.path : ''
+      },
+      regionEnv: () => (proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}),
+      extraEnv: () => {
+        const tunInfo = singBoxManager.getInfo()
+        const proxyEnv = proxySettings.enabled && !tunInfo.tunRunning
+          ? buildProxyEnv(proxySettings.url)
+          : {}
+        return {
+          CLAUDE_CONFIG_DIR: claudeConfigDir,
+          // buildCleanEnv strips PATH by design; reinject so whitelisted Bash
+          // tools (git/python/node/etc.) can resolve.
+          PATH: process.env.PATH || '',
+          ...proxyEnv,
+        }
+      },
+      onEvent: (p) => safeSend('chat:stream', p),
+      onEnd: (p) => safeSend('chat:end', p),
+    })
+
+    registerChatIPC({
+      mainWindow: () => mainWindow,
+      store: chatStore,
+      manager: chatManager,
+      claudeConfigDir,
+    })
+  } catch (err) {
+    log.error('[chat] init failed:', err)
+  }
+}
+
 // App lifecycle
 app.whenReady().then(async () => {
   // CSP — apply in both dev and production
@@ -1215,48 +1264,7 @@ app.whenReady().then(async () => {
   })
 
   // --- Chat mode wiring (spec §3) -----------------------------------------
-  try {
-    const claudeConfigDir = join(app.getPath('userData'), 'claude-config')
-    mkdirSync(claudeConfigDir, { recursive: true })
-
-    await chatStore.init()
-    // Patch cliVersion so newly-created chats record which CLI they started with
-    ;(chatStore as unknown as { cliVersion: string }).cliVersion =
-      cliManager.getInfo().version || 'unknown'
-
-    chatManager = new ChatManager({
-      store: chatStore,
-      getCliBinaryPath: () => {
-        const info = cliManager.getInfo()
-        return info.installed ? info.path : ''
-      },
-      regionEnv: () => (proxySettings.enabled ? (REGION_ENV[proxySettings.region] || {}) : {}),
-      extraEnv: () => {
-        const tunInfo = singBoxManager.getInfo()
-        const proxyEnv = proxySettings.enabled && !tunInfo.tunRunning
-          ? buildProxyEnv(proxySettings.url)
-          : {}
-        return {
-          CLAUDE_CONFIG_DIR: claudeConfigDir,
-          // buildCleanEnv strips PATH by design; reinject so whitelisted Bash
-          // tools (git/python/node/etc.) can resolve.
-          PATH: process.env.PATH || '',
-          ...proxyEnv,
-        }
-      },
-      onEvent: (p) => safeSend('chat:stream', p),
-      onEnd: (p) => safeSend('chat:end', p),
-    })
-
-    registerChatIPC({
-      mainWindow: () => mainWindow,
-      store: chatStore,
-      manager: chatManager,
-      claudeConfigDir,
-    })
-  } catch (err) {
-    log.error('[chat] init failed:', err)
-  }
+  await initChatMode()
 
   createWindow()
   setupMenu()
