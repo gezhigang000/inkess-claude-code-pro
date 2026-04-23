@@ -88,6 +88,13 @@ export function TerminalApp() {
   // Chat mode hooks — always active so events aren't missed when drawer is closed
   useChatStream()
   useChatList()
+
+  // Trigger xterm refit after chat drawer open/close changes flex layout
+  useEffect(() => {
+    const t = setTimeout(() => window.dispatchEvent(new Event('resize')), 250)
+    return () => clearTimeout(t)
+  }, [chatDrawerOpen])
+
   const tunOkRef = useRef(_cachedSubscriptionState?.tunOk ?? false)
   const tunWasOkRef = useRef(_cachedSubscriptionState?.tunOk ?? false)
   const handleNewTabRef = useRef<(cwd?: string) => void>(() => {})

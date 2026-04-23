@@ -126,13 +126,17 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
 
     // Resize observer
     const container = containerRef.current
-    const resizeObserver = new ResizeObserver(() => {
+    const doFit = () => {
       safeFit(container, fitAddon)
       if (ptyId) {
         window.api.pty.resize(ptyId, term.cols, term.rows)
       }
-    })
+    }
+    const resizeObserver = new ResizeObserver(doFit)
     resizeObserver.observe(container)
+    // Also listen for window resize — covers flex layout changes (e.g. chat drawer toggle)
+    // that ResizeObserver may not catch synchronously.
+    window.addEventListener('resize', doFit)
 
     // Copy: Ctrl+C (Win/Linux) or Cmd+C (Mac) when text is selected
     // Paste: Ctrl+V (Win/Linux) or Cmd+V (Mac)
@@ -344,6 +348,7 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
       linkDisposable.dispose()
       try { removeDataListener?.() } catch { /* ignore */ }
       resizeObserver.disconnect()
+      window.removeEventListener('resize', doFit)
       term.dispose()
     }
   }, [ptyId])

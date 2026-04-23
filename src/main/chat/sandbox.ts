@@ -1,5 +1,22 @@
+import { join } from 'path'
+import { writeFileSync, existsSync, mkdirSync } from 'fs'
 import type { ChatMeta } from './chat-types'
 import { ALLOWED_TOOLS } from './constants'
+
+/** Path to an empty MCP config file used to disable MCP in chat mode. */
+let _emptyMcpConfig: string | null = null
+function getEmptyMcpConfig(): string {
+  if (process.platform !== 'win32') return '/dev/null'
+  if (_emptyMcpConfig) return _emptyMcpConfig
+  // Lazy import to avoid pulling Electron into unit tests
+  const { app } = require('electron')
+  const dir = join(app.getPath('userData'), 'chat')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  const p = join(dir, 'empty-mcp.json')
+  writeFileSync(p, '{}', 'utf8')
+  _emptyMcpConfig = p
+  return p
+}
 
 export interface BuildArgsInput {
   meta: ChatMeta
@@ -20,15 +37,13 @@ export interface BuildArgsInput {
  */
 export function buildArgs(input: BuildArgsInput): string[] {
   const { meta, text } = input
-  const mcpNull = process.platform === 'win32' ? 'NUL' : '/dev/null'
-
   const args: string[] = [
     '-p',
     '--output-format', 'stream-json',
     '--dangerously-skip-permissions',
     '--allowedTools', ALLOWED_TOOLS.join(','),
     '--disallowedTools', '',
-    '--mcp-config', mcpNull,
+    '--mcp-config', getEmptyMcpConfig(),
   ]
 
   if (meta.claudeSessionId) {
