@@ -285,13 +285,12 @@ export class SingBoxManager {
   private _hasStaleNetworkState = false
 
   /**
-   * Scan the system for orphan sing-box network state — utun interfaces with
-   * IPs in 198.18.0.0/15 (sing-box's default TUN subnet) and split-default
-   * routes (0.0.0.0/1 + 128.0.0.0/1 via 198.18.0.1). These linger when
-   * sing-box is killed by SIGKILL before its own cleanup handlers run.
+   * Scan the system for orphan sing-box network state.
+   *
+   * macOS: utun interfaces with IPs in 198.18.0.0/15 + split-default routes.
+   * Windows: WinTUN adapter named "sing-tun" left behind by force-killed sing-box.
    *
    * Detection-only: caller decides whether to attempt a cleanup.
-   * macOS only — Windows uses WFP rules (different failure mode).
    */
   private detectStaleNetworkState(): {
     hasResiduals: boolean
@@ -299,6 +298,30 @@ export class SingBoxManager {
     routeDestinations: string[]
   } {
     const empty = { hasResiduals: false, interfaces: [] as string[], routeDestinations: [] as string[] }
+
+    if (os.platform() === 'win32') {
+      // Detect orphan WinTUN adapter. sing-box names it "sing-tun" or sometimes
+      // the system shows it as "tun0" / "wintun". Check for any of these when
+      // no sing-box process is running (if it's running, the adapter is expected).
+      const pid = this.readPidFile()
+      if (pid > 0 && this.isProcessAlive(pid)) return empty // process alive = normal
+      try {
+        const out = execSync('netsh interface show interface', {
+          timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+        }).toString()
+        // Match sing-box WinTUN adapter names (sing-tun, tun0, wintun)
+        const tunLine = out.split('\n').find(line =>
+          /\b(sing-tun|tun\d+|wintun)\b/i.test(line)
+        )
+        if (tunLine) {
+          const match = tunLine.match(/\b(sing-tun|tun\d+|wintun)\b/i)
+          const ifName = match ? match[1] : 'tun0'
+          return { hasResiduals: true, interfaces: [ifName], routeDestinations: [] }
+        }
+      } catch { /* ignore */ }
+      return empty
+    }
+
     if (os.platform() !== 'darwin') return empty
 
     let ifconfigOut = ''
@@ -333,7 +356,6 @@ export class SingBoxManager {
    * the user sees exactly one password prompt.
    */
   private async cleanupStaleNetworkState(): Promise<void> {
-    if (os.platform() !== 'darwin') return
     const stale = this.detectStaleNetworkState()
     if (!stale.hasResiduals) {
       this._hasStaleNetworkState = false
@@ -345,6 +367,35 @@ export class SingBoxManager {
       `interfaces=${JSON.stringify(stale.interfaces)} ` +
       `routes=${JSON.stringify(stale.routeDestinations)}`,
     )
+
+    if (os.platform() === 'win32') {
+      // Windows: remove orphan WinTUN adapter and stale firewall rules.
+      // Removing/disabling the adapter also drops its routes automatically.
+      // Requires elevation — use PowerShell -Verb RunAs like startWithAdmin.
+      const ifNames = stale.interfaces.filter(n => /^[\w-]+$/.test(n)) // sanitize
+      try {
+        const cmds = [
+          // Disable orphan WinTUN adapter(s)
+          ...ifNames.map(n => `netsh interface set interface '${n}' admin=disable 2>$null`),
+          // Remove persistent Windows Firewall rules left by sing-box
+          `Remove-NetFirewallRule -DisplayName 'sing-tun*' -ErrorAction SilentlyContinue`,
+          // Flush DNS cache (stale sing-box DNS entries)
+          `ipconfig /flushdns 2>$null`,
+        ]
+        const script = cmds.join('; ')
+        execSync(
+          `powershell -NoProfile -Command "Start-Process powershell -ArgumentList '-NoProfile','-Command','${script.replace(/'/g, "''")}' -Verb RunAs -WindowStyle Hidden -Wait"`,
+          { timeout: 15000, stdio: 'pipe' },
+        )
+        log.info('[sing-box] Windows stale network state cleanup complete')
+        this._hasStaleNetworkState = false
+      } catch (err) {
+        log.error(`[sing-box] Windows stale cleanup failed: ${(err as Error).message}`)
+      }
+      return
+    }
+
+    if (os.platform() !== 'darwin') return
 
     // Validate route destinations before interpolating into shell — the
     // parser already constrains format, but defense in depth. Allowed
@@ -889,7 +940,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       renameSync(tmpPath, zipPath)
       try {
         execSync(
-          `powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Expand-Archive -Force -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${this.singboxDir.replace(/'/g, "''")}'"`
+          `powershell -NoProfile -Command "try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{}; Expand-Archive -Force -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${this.singboxDir.replace(/'/g, "''")}'"`
           , { timeout: 120000 }
         )
       } finally {
@@ -1130,7 +1181,8 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       // so sing-box logging is configured via log.output in the JSON config instead.
       const parentPid = process.pid
       // Force UTF-8 output so Chinese Windows (GBK/CP936) error messages don't garble in logs
-      const utf8Prefix = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; '
+      // Force UTF-8 output; try/catch for Constrained Language Mode (AppLocker/WDAC)
+      const utf8Prefix = 'try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{}; '
       const wrapper = `${utf8Prefix}$p = Start-Process -FilePath '${safeBin}' -ArgumentList 'run','-c','${safeCfg}' -Verb RunAs -WindowStyle Hidden -PassThru; $p.Id | Out-File -Encoding ascii '${pidFile}'; while ((Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) -and (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) { Start-Sleep -Seconds 2 }; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue`
 
       let settled = false
