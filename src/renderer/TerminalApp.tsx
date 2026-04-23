@@ -14,6 +14,10 @@ import { StatsView } from './views/stats/StatsView'
 import { FilePreview } from './views/preview/FilePreview'
 import { LoginPage } from './views/subscription/LoginPage'
 import { TunGate } from './views/tun/TunGate'
+import { ChatDrawer } from './views/chat/ChatDrawer'
+import { ChatErrorBoundary } from './views/chat/ChatErrorBoundary'
+import { useChatStream } from './views/chat/hooks/useChatStream'
+import { useChatList } from './views/chat/hooks/useChatList'
 import { useI18n } from './i18n'
 
 const DEFAULT_CWD = window.api?.homedir || '/'
@@ -78,6 +82,12 @@ export function TerminalApp() {
     type: 'warning' | 'error'; message: string; actionLabel?: string; onAction?: () => void
   } | null>(null)
   const [tunOk, setTunOk] = useState(_cachedSubscriptionState?.tunOk ?? false)
+  const chatDrawerOpen = useSettingsStore(s => s.chatDrawerOpen)
+  const setChatDrawerOpen = useSettingsStore(s => s.setChatDrawerOpen)
+
+  // Chat mode hooks — always active so events aren't missed when drawer is closed
+  useChatStream()
+  useChatList()
   const tunOkRef = useRef(_cachedSubscriptionState?.tunOk ?? false)
   const tunWasOkRef = useRef(_cachedSubscriptionState?.tunOk ?? false)
   const handleNewTabRef = useRef<(cwd?: string) => void>(() => {})
@@ -761,6 +771,11 @@ export function TerminalApp() {
         e.preventDefault()
         setShowStats(prev => !prev)
       }
+      // Cmd+Shift+L: toggle chat drawer
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'l') {
+        e.preventDefault()
+        useSettingsStore.getState().toggleChatDrawer()
+      }
       // Cmd+Shift+1~5: open pinned project
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key >= '1' && e.key <= '5') {
         e.preventDefault()
@@ -952,6 +967,8 @@ export function TerminalApp() {
         onNew={handleSelectDirectory}
         onCommandPalette={() => setShowCommandPalette(true)}
         onSettings={() => { setShowSettings(true); window.api.analytics?.track('settings_open') }}
+        onToggleChat={() => useSettingsStore.getState().toggleChatDrawer()}
+        chatDrawerOpen={chatDrawerOpen}
       />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
@@ -1002,6 +1019,11 @@ export function TerminalApp() {
             </>
           )}
         </div>
+        {chatDrawerOpen && (
+          <ChatErrorBoundary onFallbackToCliMode={() => setChatDrawerOpen(false)}>
+            <ChatDrawer onClose={() => setChatDrawerOpen(false)} />
+          </ChatErrorBoundary>
+        )}
       </div>
       </>
       )}
@@ -1094,10 +1116,11 @@ export function getRecentProjects(): string[] {
 
 import type { TerminalTab } from './stores/terminal'
 
-function TitleTabBar({ tabs, activeTabId, onSelect, onClose, onNew, pendingCloseTabId, onCommandPalette, onSettings }: {
+function TitleTabBar({ tabs, activeTabId, onSelect, onClose, onNew, pendingCloseTabId, onCommandPalette, onSettings, onToggleChat, chatDrawerOpen }: {
   tabs: TerminalTab[]; activeTabId: string | null; pendingCloseTabId: string | null
   onSelect: (id: string) => void; onClose: (id: string) => void; onNew: () => void
   onCommandPalette?: () => void; onSettings?: () => void
+  onToggleChat?: () => void; chatDrawerOpen?: boolean
 }) {
   const [hoveredTab, setHoveredTab] = useState<string | null>(null)
   const [hoveredBtn, setHoveredBtn] = useState<string | null>(null)
@@ -1220,6 +1243,24 @@ function TitleTabBar({ tabs, activeTabId, onSelect, onClose, onNew, pendingClose
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.32 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" />
+          </svg>
+        </div>
+        <div
+          onClick={onToggleChat}
+          onMouseEnter={() => setHoveredBtn('chat')}
+          onMouseLeave={() => setHoveredBtn(null)}
+          title={`Chat (${isMac ? '⌘' : 'Ctrl+'}⇧L)`}
+          className="titlebar-no-drag"
+          style={{
+            width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            borderRadius: 6, cursor: 'pointer',
+            color: chatDrawerOpen ? 'var(--accent)' : 'var(--text-muted)',
+            background: chatDrawerOpen ? 'var(--accent-subtle)' : hoveredBtn === 'chat' ? 'var(--bg-hover)' : 'transparent',
+            transition: 'background 0.12s, color 0.12s',
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
           </svg>
         </div>
         {!isMac && <>

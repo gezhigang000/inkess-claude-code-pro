@@ -47,10 +47,11 @@ export class ChatStore {
     return this.chats.find((c) => c.id === chatId)
   }
 
-  async create(): Promise<ChatMeta> {
+  async create(customCwd?: string): Promise<ChatMeta> {
     const id = randomUUID()
-    const cwd = join(this.workspaceDir, id)
-    mkdirSync(cwd, { recursive: true })
+    const dataDir = join(this.workspaceDir, id)
+    mkdirSync(dataDir, { recursive: true })
+    const cwd = customCwd || dataDir
 
     const now = Date.now()
     const meta: ChatMeta = {

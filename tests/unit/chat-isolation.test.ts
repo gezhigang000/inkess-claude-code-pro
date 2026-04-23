@@ -61,24 +61,26 @@ describe('ChatErrorBoundary', () => {
   })
 })
 
-describe('App.tsx chat isolation', () => {
-  const appTsx = read('src/renderer/App.tsx')
+describe('TerminalApp.tsx chat drawer isolation', () => {
+  // Chat was moved from App.tsx (full mode switch) to TerminalApp.tsx (right drawer).
+  // ChatErrorBoundary now wraps ChatDrawer inside TerminalApp.
+  const terminalAppTsx = read('src/renderer/TerminalApp.tsx')
 
   it('imports ChatErrorBoundary', () => {
-    expect(appTsx).toMatch(/import.*ChatErrorBoundary.*from/)
+    expect(terminalAppTsx).toMatch(/import.*ChatErrorBoundary.*from/)
   })
 
-  it('wraps ChatApp in ChatErrorBoundary', () => {
-    expect(appTsx).toMatch(/<ChatErrorBoundary/)
-    expect(appTsx).toMatch(/<ChatApp\s*\/>/)
+  it('wraps ChatDrawer in ChatErrorBoundary', () => {
+    expect(terminalAppTsx).toMatch(/<ChatErrorBoundary/)
+    expect(terminalAppTsx).toMatch(/<ChatDrawer/)
   })
 
   it('provides onFallbackToCliMode callback', () => {
-    expect(appTsx).toMatch(/onFallbackToCliMode/)
+    expect(terminalAppTsx).toMatch(/onFallbackToCliMode/)
   })
 
-  it('does NOT directly reference useChatStore', () => {
-    // Cleanup logic was moved to ChatApp — App.tsx should not touch chat store
+  it('App.tsx does NOT directly reference useChatStore', () => {
+    const appTsx = read('src/renderer/App.tsx')
     expect(appTsx).not.toMatch(/useChatStore/)
   })
 })

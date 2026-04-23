@@ -41,7 +41,7 @@ interface SettingsPanelProps {
 }
 
 export function SettingsPanel({ onClose, onLogout, onTunStatusChange }: SettingsPanelProps) {
-  const [activeSection, setActiveSection] = useState<'account' | 'network' | 'mode' | 'appearance' | 'language' | 'about'>('account')
+  const [activeSection, setActiveSection] = useState<'account' | 'network' | 'appearance' | 'language' | 'about'>('account')
   const { fontSize, language, theme, setFontSize, setLanguage, setTheme } = useSettingsStore()
   const { t } = useI18n()
 
@@ -57,7 +57,6 @@ export function SettingsPanel({ onClose, onLogout, onTunStatusChange }: Settings
   const sections = [
     { id: 'account' as const, label: t('settings.account'), icon: 'M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 3a4 4 0 100 8 4 4 0 000-8z' },
     { id: 'network' as const, label: t('settings.network'), icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z' },
-    { id: 'mode' as const, label: 'Mode', icon: 'M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z' },
     { id: 'appearance' as const, label: t('settings.appearance'), icon: 'M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z' },
     { id: 'language' as const, label: t('settings.language'), icon: 'M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129' },
     { id: 'about' as const, label: t('settings.about'), icon: 'M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
@@ -105,9 +104,6 @@ export function SettingsPanel({ onClose, onLogout, onTunStatusChange }: Settings
           )}
           {activeSection === 'network' && (
             <NetworkSection onTunStatusChange={onTunStatusChange} />
-          )}
-          {activeSection === 'mode' && (
-            <ModeSection />
           )}
           {activeSection === 'appearance' && (
             <AppearanceSection
@@ -276,49 +272,6 @@ function AppearanceSection({ fontSize, onFontSizeChange, theme, onThemeChange }:
           checked={sleepInhibitorEnabled}
           onChange={setSleepInhibitorEnabled}
         />
-      </SettingsGroup>
-    </div>
-  )
-}
-
-function ModeSection() {
-  const appMode = useSettingsStore((s) => s.appMode)
-  const setAppMode = useSettingsStore((s) => s.setAppMode)
-
-  const options: { id: 'cli' | 'chat'; label: string; hint: string }[] = [
-    { id: 'cli',  label: 'CLI (developer)', hint: 'Terminal + Claude Code TUI. The original experience.' },
-    { id: 'chat', label: 'Chat (guided)',   hint: 'Conversational UI. No terminal required.' },
-  ]
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <SettingsGroup title="App mode">
-        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
-          Switch instantly without restart. In-flight chat turns cancel when leaving chat mode.
-        </div>
-        {options.map((opt) => (
-          <div
-            key={opt.id}
-            onClick={() => setAppMode(opt.id)}
-            style={{
-              display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px',
-              borderRadius: 6, cursor: 'pointer',
-              background: appMode === opt.id ? 'var(--accent-subtle)' : 'transparent',
-              marginBottom: 4,
-            }}
-          >
-            <input
-              type="radio"
-              checked={appMode === opt.id}
-              onChange={() => setAppMode(opt.id)}
-              style={{ marginTop: 3 }}
-            />
-            <div>
-              <div style={{ fontSize: 13, color: 'var(--text-primary)' }}>{opt.label}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{opt.hint}</div>
-            </div>
-          </div>
-        ))}
       </SettingsGroup>
     </div>
   )

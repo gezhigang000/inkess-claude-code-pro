@@ -310,7 +310,7 @@ const api = {
       cwd: string; mountedDirs: string[]; claudeSessionId: string | null;
       cliVersion: string; messageCount: number; starred: boolean
     }>>,
-    create: () => ipcRenderer.invoke('chat:create') as Promise<{
+    create: (cwd?: string) => ipcRenderer.invoke('chat:create', cwd ? { cwd } : undefined) as Promise<{
       id: string; title: string; createdAt: number; updatedAt: number;
       cwd: string; mountedDirs: string[]; claudeSessionId: string | null;
       cliVersion: string; messageCount: number; starred: boolean

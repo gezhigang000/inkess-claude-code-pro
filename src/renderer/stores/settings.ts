@@ -20,6 +20,7 @@ interface SettingsState {
   sidebarCollapsed: boolean
   pinnedProjects: string[]
   appMode: AppMode
+  chatDrawerOpen: boolean
 
   proxyEnabled: boolean
   proxyMode: 'direct' | 'subscription' | 'tun' | 'system'
@@ -40,6 +41,8 @@ interface SettingsState {
   pinProject: (path: string) => void
   unpinProject: (path: string) => void
   setAppMode: (v: AppMode) => void
+  setChatDrawerOpen: (v: boolean) => void
+  toggleChatDrawer: () => void
   setProxyEnabled: (v: boolean) => void
   setProxyMode: (v: 'direct' | 'subscription' | 'tun' | 'system') => void
   setProxyUrl: (v: string) => void
@@ -73,6 +76,7 @@ function persistSettings(state: SettingsState) {
       sidebarCollapsed: state.sidebarCollapsed,
       pinnedProjects: state.pinnedProjects,
       appMode: state.appMode,
+      chatDrawerOpen: state.chatDrawerOpen,
       proxyEnabled: state.proxyEnabled,
       proxyMode: state.proxyMode,
       proxySelectedNode: state.proxySelectedNode,
@@ -121,6 +125,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   sidebarCollapsed: typeof (saved as any).sidebarCollapsed === 'boolean' ? (saved as any).sidebarCollapsed : false,
   pinnedProjects: Array.isArray((saved as any).pinnedProjects) ? (saved as any).pinnedProjects.filter((p: unknown) => typeof p === 'string').slice(0, 10) : [],
   appMode: validatedAppMode,
+  chatDrawerOpen: typeof (saved as any).chatDrawerOpen === 'boolean' ? (saved as any).chatDrawerOpen : false,
 
   proxyEnabled: typeof (saved as any).proxyEnabled === 'boolean' ? (saved as any).proxyEnabled : true,
   proxyMode: 'tun' as const,  // TUN mode only — not user-configurable
@@ -138,6 +143,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setNotificationSound: (v) => { set({ notificationSound: v }); persistSettings(get()) },
   setSidebarCollapsed: (v) => { set({ sidebarCollapsed: v }); persistSettings(get()) },
   setAppMode: (v) => { set({ appMode: v }); persistSettings(get()) },
+  setChatDrawerOpen: (v) => { set({ chatDrawerOpen: v }); persistSettings(get()) },
+  toggleChatDrawer: () => { set({ chatDrawerOpen: !get().chatDrawerOpen }); persistSettings(get()) },
   pinProject: (path) => {
     const { pinnedProjects } = get()
     if (pinnedProjects.includes(path) || pinnedProjects.length >= 10) return
