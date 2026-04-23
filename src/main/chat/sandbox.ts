@@ -13,7 +13,7 @@ function getEmptyMcpConfig(): string {
   const dir = join(app.getPath('userData'), 'chat')
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const p = join(dir, 'empty-mcp.json')
-  writeFileSync(p, '{}', 'utf8')
+  writeFileSync(p, '{"mcpServers":{}}', 'utf8')
   _emptyMcpConfig = p
   return p
 }
