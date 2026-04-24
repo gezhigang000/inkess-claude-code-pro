@@ -430,6 +430,7 @@ export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPale
           isPinned={pinnedProjects.includes(contextMenu.cwd)}
           onPin={() => { pinProject(contextMenu.cwd); setContextMenu(null) }}
           onUnpin={() => { unpinProject(contextMenu.cwd); setContextMenu(null) }}
+          onReveal={() => { window.api.shell.openPath(contextMenu.cwd); setContextMenu(null) }}
           onDismiss={() => setContextMenu(null)}
         />
       )}
@@ -437,11 +438,12 @@ export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPale
   )
 }
 
-function ProjectContextMenu({ cwd, x, y, isPinned, onPin, onUnpin, onDismiss }: {
+function ProjectContextMenu({ cwd, x, y, isPinned, onPin, onUnpin, onReveal, onDismiss }: {
   cwd: string; x: number; y: number; isPinned: boolean
-  onPin: () => void; onUnpin: () => void; onDismiss: () => void
+  onPin: () => void; onUnpin: () => void; onReveal: () => void; onDismiss: () => void
 }) {
   const [hovered, setHovered] = useState<string | null>(null)
+  const isMac = window.api.platform === 'darwin'
 
   useEffect(() => {
     const handler = () => onDismiss()
@@ -459,6 +461,18 @@ function ProjectContextMenu({ cwd, x, y, isPinned, onPin, onUnpin, onDismiss }: 
       }}
       onClick={(e) => e.stopPropagation()}
     >
+      <div
+        onClick={onReveal}
+        onMouseEnter={() => setHovered('reveal')}
+        onMouseLeave={() => setHovered(null)}
+        style={{
+          padding: '6px 16px', cursor: 'pointer',
+          color: 'var(--text-primary)',
+          background: hovered === 'reveal' ? 'var(--bg-hover)' : 'transparent',
+        }}
+      >
+        {isMac ? 'Reveal in Finder' : 'Open in Explorer'}
+      </div>
       <div
         onClick={isPinned ? onUnpin : onPin}
         onMouseEnter={() => setHovered('pin')}
