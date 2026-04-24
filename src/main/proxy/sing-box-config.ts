@@ -32,6 +32,32 @@ export interface SingBoxConfig {
  * Whitelist: only these domains go through proxy, everything else is direct.
  * Keeps proxy load minimal and domestic traffic fast.
  */
+/**
+ * CN apps that must always go direct, bypassing FakeIP and proxy entirely.
+ * Without this, some CDN domains used by these apps (e.g., WeChat image upload)
+ * may not be in geosite-cn → get FakeIP → route to proxy → intermittent failures.
+ *
+ * Process names: macOS uses the executable name, Windows uses .exe suffix.
+ */
+const CN_DIRECT_PROCESSES = [
+  // WeChat
+  'WeChat', 'wechat', 'WeChatAppEx', 'WeChatAppEx.exe', 'WeChat.exe',
+  // QQ
+  'QQ', 'QQ.exe', 'QQProtect', 'QQProtect.exe',
+  // DingTalk
+  'DingTalk', 'DingTalk.exe', 'DingTalkHelper',
+  // Feishu / Lark
+  'Lark', 'Lark.exe', 'LarkHelper', 'Feishu', 'Feishu.exe',
+  // WeCom (企业微信)
+  'WeCom', 'WeCom.exe', 'wxwork', 'WXWork.exe',
+  // AliWangWang
+  'AliWangWang', 'AliIM.exe',
+  // Tencent Meeting
+  'TencentMeeting', 'wemeet', 'WeMeetApp.exe',
+  // NetEase (网易云音乐 / 邮箱)
+  'NeteaseMusic', 'cloudmusic.exe',
+]
+
 const PROXY_DOMAINS = [
   // Anthropic / Claude
   'anthropic.com', 'claude.ai', 'claudeusercontent.com',
@@ -140,6 +166,8 @@ export function buildTunConfig(opts: TunConfigOptions): SingBoxConfig {
       rules: [
         // Proxy/tunnel server hostname → local DNS (avoids circular dependency)
         { outbound: 'any', server: 'local-dns' },
+        // CN IM apps → local DNS (real IPs, not FakeIP — these apps route direct)
+        { process_name: CN_DIRECT_PROCESSES, server: 'local-dns' },
         // CN domains → local DNS (real IP for direct outbound + correct geo-routing)
         ...(hasRuleSet ? [{ rule_set: 'geosite-cn', server: 'local-dns' }] : []),
         // Everything else → FakeIP (instant response, real resolution on proxy side)
@@ -169,6 +197,8 @@ export function buildTunConfig(opts: TunConfigOptions): SingBoxConfig {
         { action: 'sniff' },
         { protocol: 'dns', action: 'hijack-dns' },
         { ip_version: 6, action: 'reject' },
+        // CN IM apps → direct (bypass FakeIP/proxy entirely, fixes WeChat image upload etc.)
+        { process_name: CN_DIRECT_PROCESSES, action: 'route', outbound: 'direct' },
         { ip_is_private: true, action: 'route', outbound: 'direct' },
         // CN traffic → direct (domain match + IP match)
         ...(hasRuleSet ? [{ rule_set: ['geosite-cn', 'geoip-cn'], action: 'route', outbound: 'direct' }] : []),
