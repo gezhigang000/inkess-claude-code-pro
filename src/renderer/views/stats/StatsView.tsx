@@ -174,10 +174,12 @@ export function StatsView({ onClose }: StatsViewProps) {
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
     }}>
-      {/* Header */}
+      {/* Header — extra left padding on macOS to avoid traffic-light overlap */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '12px 20px', borderBottom: '1px solid var(--border)',
+        padding: '12px 20px',
+        paddingLeft: window.api?.platform === 'darwin' ? 80 : 20,
+        borderBottom: '1px solid var(--border)',
         background: 'var(--bg-secondary)', flexShrink: 0,
       }}>
         <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
