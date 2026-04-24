@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 // Platform info passed via additionalArguments from main process (avoids requiring sandbox: false)
 const args = process.argv
@@ -252,6 +252,8 @@ const api = {
     }>>,
     clearAll: () => ipcRenderer.invoke('session:clearAll'),
   },
+
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
 
   fs: {
     isDirectory: (path: string) => ipcRenderer.invoke('fs:isDirectory', path) as Promise<boolean>,

@@ -861,7 +861,7 @@ export function TerminalApp() {
     if (files.length === 0) return
 
     for (const file of files) {
-      const filePath = (file as any).path as string
+      const filePath = window.api.getPathForFile(file)
       if (!filePath) continue
 
       const isDir = await window.api.fs.isDirectory(filePath)
