@@ -257,6 +257,7 @@ const api = {
     isDirectory: (path: string) => ipcRenderer.invoke('fs:isDirectory', path) as Promise<boolean>,
     exists: (path: string) => ipcRenderer.invoke('fs:exists', path) as Promise<boolean>,
     readFile: (path: string, maxSize?: number) => ipcRenderer.invoke('fs:readFile', path, maxSize) as Promise<string | null>,
+    listDir: (path: string) => ipcRenderer.invoke('fs:listDir', path) as Promise<{ name: string; path: string; isDirectory: boolean }[]>,
   },
 
   git: {

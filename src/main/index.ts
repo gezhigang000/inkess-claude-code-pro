@@ -984,6 +984,44 @@ ipcMain.handle('fs:readFile', (_event, filePath: string, maxSize?: number) => {
   }
 })
 
+ipcMain.handle('fs:listDir', (_event, dirPath: string) => {
+  try {
+    if (typeof dirPath !== 'string') return []
+    const resolved = resolve(normalize(dirPath))
+    const home = os.homedir()
+    const homePrefix = home + sep
+    if (!resolved.startsWith(homePrefix) && resolved !== home) return []
+    // Resolve symlinks to prevent symlink escape
+    const { realpathSync, readdirSync } = require('fs') as typeof import('fs')
+    let real: string
+    try { real = realpathSync(resolved) } catch { return [] }
+    if (!real.startsWith(homePrefix) && real !== home) {
+      log.warn(`fs:listDir blocked path outside home: ${real}`)
+      return []
+    }
+    if (!existsSync(real)) return []
+    const MAX_ENTRIES = 2000
+    const entries = readdirSync(real, { withFileTypes: true })
+    const result: { name: string; path: string; isDirectory: boolean }[] = []
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue
+      result.push({
+        name: entry.name,
+        path: join(resolved, entry.name),
+        isDirectory: entry.isDirectory(),
+      })
+      if (result.length >= MAX_ENTRIES) break
+    }
+    result.sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    })
+    return result
+  } catch {
+    return []
+  }
+})
+
 // IPC: Renderer error reporting
 ipcMain.on('log:error', (_event, { message, stack }: { message: string; stack?: string }) => {
   log.error(`[Renderer] ${message}`, stack || '')

@@ -3,6 +3,7 @@ import { useTerminalStore } from '../../stores/terminal'
 import { useSettingsStore } from '../../stores/settings'
 import { getRecentProjects, shortenPath } from '../../App'
 import { useI18n } from '../../i18n'
+import { FileTree } from './FileTree'
 
 const SESSION_HISTORY_KEY = 'inkess-session-history'
 const MAX_HISTORY = 20
@@ -16,12 +17,13 @@ export interface SessionRecord {
   status: 'active' | 'closed'
 }
 
-export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPalette, onStats }: {
+export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPalette, onStats, onFileClick }: {
   onSettings?: () => void
   onOpenProject?: (cwd: string) => void
   onNewSession?: () => void
   onCommandPalette?: () => void
   onStats?: () => void
+  onFileClick?: (path: string) => void
 }) {
   const { tabs } = useTerminalStore()
   const { sidebarCollapsed, setSidebarCollapsed, pinnedProjects, pinProject, unpinProject } = useSettingsStore()
@@ -30,8 +32,18 @@ export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPale
   const [hoveredAction, setHoveredAction] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
   const editRef = useRef<HTMLInputElement>(null)
   const { t } = useI18n()
+
+  const toggleDir = useCallback((dir: string) => {
+    setExpandedDirs((prev) => {
+      const next = new Set(prev)
+      if (next.has(dir)) next.delete(dir)
+      else next.add(dir)
+      return next
+    })
+  }, [])
 
   const tabCreatedAtRef = useRef<Map<string, number>>(new Map())
   const activeSessions: SessionRecord[] = useMemo(() => tabs.map(tab => {
@@ -280,6 +292,7 @@ export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPale
             {pinnedProjects.map((dir, idx) => {
               const name = dir.replace(/\\/g, '/').split('/').pop() || 'terminal'
               const hasActiveTab = tabs.some(t => t.cwd === dir)
+              const isExpanded = expandedDirs.has('pin:' + dir)
               return (
                 <div key={'pin:' + dir} style={{ marginBottom: 2 }}>
                   <div
@@ -292,19 +305,27 @@ export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPale
                     onMouseEnter={() => setHoveredDir('pin:' + dir)}
                     onMouseLeave={() => setHoveredDir(null)}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+                      display: 'flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
                       color: hoveredDir === 'pin:' + dir ? 'var(--text-primary)' : 'var(--text-secondary)',
                       background: hoveredDir === 'pin:' + dir ? 'var(--bg-hover)' : 'transparent',
                       transition: 'background 0.12s, color 0.12s',
                     }}
                   >
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5">
+                    <svg
+                      width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                      onClick={(e) => { e.stopPropagation(); toggleDir('pin:' + dir) }}
+                      style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.12s', flexShrink: 0, opacity: 0.5 }}
+                    >
+                      <polyline points="9 18 15 12 9 6" />
+                    </svg>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" style={{ flexShrink: 0 }}>
                       <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
                     </svg>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{name}</span>
                     {idx < 5 && <span style={{ fontSize: 10, color: 'var(--text-muted)', opacity: 0.5, flexShrink: 0 }}>⌘⇧{idx + 1}</span>}
                     {hasActiveTab && <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--success)', flexShrink: 0 }} />}
                   </div>
+                  {isExpanded && <FileTree rootPath={dir} onFileClick={(p) => onFileClick?.(p)} />}
                 </div>
               )
             })}
@@ -320,6 +341,7 @@ export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPale
           const hasActive = sessions.some(s => s.status === 'active')
           const primarySession = sessions.find(s => s.status === 'active') || sessions[0]
           const displayName = primarySession.name || cwd.replace(/\\/g, '/').split('/').pop() || 'terminal'
+          const isExpanded = expandedDirs.has(cwd)
 
           return (
             <div key={cwd} style={{ marginBottom: 2 }}>
@@ -337,13 +359,20 @@ export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPale
                 onMouseLeave={() => setHoveredDir(null)}
                 onDoubleClick={() => handleRename(primarySession)}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+                  display: 'flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
                   color: hoveredDir === cwd ? 'var(--text-primary)' : 'var(--text-secondary)',
                   background: hoveredDir === cwd ? 'var(--bg-hover)' : 'transparent',
                   transition: 'background 0.12s, color 0.12s',
                 }}
               >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <svg
+                  width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                  onClick={(e) => { e.stopPropagation(); toggleDir(cwd) }}
+                  style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.12s', flexShrink: 0, opacity: 0.5 }}
+                >
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ flexShrink: 0 }}>
                   <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
                 </svg>
                 {editingId === primarySession.id ? (
@@ -362,6 +391,7 @@ export function Sidebar({ onSettings, onOpenProject, onNewSession, onCommandPale
                   <span style={{ fontSize: 10, color: 'var(--text-muted)', flexShrink: 0 }}>{formatTimeAgo(primarySession.closedAt)}</span>
                 )}
               </div>
+              {isExpanded && <FileTree rootPath={cwd} onFileClick={(p) => onFileClick?.(p)} />}
             </div>
           )
         })}

@@ -983,6 +983,7 @@ export function TerminalApp() {
           onNewSession={handleSelectDirectory}
           onCommandPalette={() => setShowCommandPalette(true)}
           onStats={() => setShowStats(true)}
+          onFileClick={(path) => setPreviewFile(path)}
           onOpenProject={(cwd) => {
             const existing = tabs.find(t => t.cwd === cwd)
             if (existing) {
