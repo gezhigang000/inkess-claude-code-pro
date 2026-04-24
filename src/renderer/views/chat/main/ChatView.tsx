@@ -32,7 +32,7 @@ export function ChatView({ chatId }: Props) {
     if (!files.length) return
     const paths: string[] = []
     for (let i = 0; i < files.length; i++) {
-      const p = (files[i] as File & { path?: string }).path
+      const p = window.api.getPathForFile(files[i])
       if (p) paths.push(p.includes(' ') ? `"${p}"` : p)
     }
     if (paths.length) {
