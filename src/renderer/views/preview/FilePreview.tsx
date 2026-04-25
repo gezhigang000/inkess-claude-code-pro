@@ -173,13 +173,39 @@ export function FilePreview({ filePath, cwd, onClose }: FilePreviewProps) {
           />
         </div>
       ) : isBinary ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--text-muted)' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--text-muted)' }}>
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
             <polyline points="14 2 14 8 20 8" />
           </svg>
           <span style={{ fontSize: 13 }}>Binary file — cannot preview</span>
-          <span style={{ fontSize: 11 }}>Open in external app to view</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => window.api.shell.openPath(absolutePath)}
+              onMouseEnter={() => setHovered('openDefault')}
+              onMouseLeave={() => setHovered(null)}
+              style={{
+                padding: '6px 16px', fontSize: 12, borderRadius: 6,
+                background: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer',
+                opacity: hovered === 'openDefault' ? 0.85 : 1,
+              }}
+            >
+              Open with Default App
+            </button>
+            <button
+              onClick={() => window.api.shell.showItemInFolder(absolutePath)}
+              onMouseEnter={() => setHovered('reveal')}
+              onMouseLeave={() => setHovered(null)}
+              style={{
+                padding: '6px 16px', fontSize: 12, borderRadius: 6,
+                background: 'var(--bg-tertiary)', color: 'var(--text-primary)',
+                border: '1px solid var(--border)', cursor: 'pointer',
+                opacity: hovered === 'reveal' ? 0.85 : 1,
+              }}
+            >
+              {window.api.platform === 'win32' ? 'Show in Explorer' : 'Reveal in Finder'}
+            </button>
+          </div>
         </div>
       ) : (
         <div

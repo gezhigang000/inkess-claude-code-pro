@@ -96,6 +96,7 @@ const api = {
   shell: {
     openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
     openPath: (path: string) => ipcRenderer.invoke('shell:openPath', path),
+    showItemInFolder: (path: string) => ipcRenderer.invoke('shell:showItemInFolder', path),
     selectDirectory: () => ipcRenderer.invoke('shell:selectDirectory') as Promise<string | null>
   },
 

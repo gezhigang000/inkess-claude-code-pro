@@ -905,6 +905,17 @@ ipcMain.handle('shell:openPath', (_event, path: string) => {
   return shell.openPath(normalized)
 })
 
+ipcMain.handle('shell:showItemInFolder', (_event, path: string) => {
+  const normalized = normalize(resolve(path))
+  const home = os.homedir()
+  const homePrefixed = home + sep
+  if (!normalized.startsWith(homePrefixed) && normalized !== home) {
+    log.warn(`Blocked showItemInFolder outside home: ${normalized}`)
+    return
+  }
+  shell.showItemInFolder(normalized)
+})
+
 ipcMain.handle('shell:selectDirectory', async () => {
   if (!mainWindow) return null
   const result = await dialog.showOpenDialog(mainWindow, {
