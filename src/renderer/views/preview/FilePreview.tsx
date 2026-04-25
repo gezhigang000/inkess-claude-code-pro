@@ -14,6 +14,8 @@ const EXT_TO_LANG: Record<string, string> = {
   vue: 'vue', svelte: 'svelte', php: 'php',
 }
 
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg'])
+
 interface FilePreviewProps {
   filePath: string
   cwd: string
@@ -22,6 +24,8 @@ interface FilePreviewProps {
 
 export function FilePreview({ filePath, cwd, onClose }: FilePreviewProps) {
   const [content, setContent] = useState<string | null>(null)
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null)
+  const [isBinary, setIsBinary] = useState(false)
   const [htmlContent, setHtmlContent] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -45,12 +49,28 @@ export function FilePreview({ filePath, cwd, onClose }: FilePreviewProps) {
     setError(null)
     setHtmlContent('')
 
-    window.api.fs.readFile(absolutePath).then(async (raw) => {
+    setImageDataUrl(null)
+    setIsBinary(false)
+
+    window.api.fs.readFile(absolutePath, IMAGE_EXTS.has(ext) ? 10 * 1024 * 1024 : undefined).then(async (raw) => {
       if (raw === null) {
         setError(t('preview.notFound'))
         setLoading(false)
         return
       }
+
+      if (raw.startsWith('__IMAGE__:')) {
+        setImageDataUrl(raw.slice('__IMAGE__:'.length))
+        setLoading(false)
+        return
+      }
+
+      if (raw === '__BINARY__') {
+        setIsBinary(true)
+        setLoading(false)
+        return
+      }
+
       setContent(raw)
 
       try {
@@ -115,7 +135,7 @@ export function FilePreview({ filePath, cwd, onClose }: FilePreviewProps) {
         <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {fileName}
         </span>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{lang}</span>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{IMAGE_EXTS.has(ext) ? 'image' : ext.toUpperCase() || lang}</span>
         <span
           onClick={onClose}
           onMouseEnter={() => setHovered('close')}
@@ -137,6 +157,29 @@ export function FilePreview({ filePath, cwd, onClose }: FilePreviewProps) {
       ) : error ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--error-text)', fontSize: 13 }}>
           {error}
+        </div>
+      ) : imageDataUrl ? (
+        <div
+          ref={contentRef}
+          style={{
+            flex: 1, overflow: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 16, background: 'var(--bg-secondary)',
+          }}
+        >
+          <img
+            src={imageDataUrl}
+            alt={fileName}
+            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 4 }}
+          />
+        </div>
+      ) : isBinary ? (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--text-muted)' }}>
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+          </svg>
+          <span style={{ fontSize: 13 }}>Binary file — cannot preview</span>
+          <span style={{ fontSize: 11 }}>Open in external app to view</span>
         </div>
       ) : (
         <div

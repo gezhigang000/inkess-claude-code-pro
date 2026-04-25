@@ -978,6 +978,23 @@ ipcMain.handle('fs:readFile', (_event, filePath: string, maxSize?: number) => {
     const limit = maxSize || 1024 * 1024
     if (stat.size > limit) return null
     const { readFileSync } = require('fs') as typeof import('fs')
+    const extLower = real.split('.').pop()?.toLowerCase() || ''
+    const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg'])
+    const BINARY_EXTS = new Set(['docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'pdf', 'zip', 'tar', 'gz', 'rar', '7z', 'dmg', 'exe', 'dll', 'so', 'dylib', 'woff', 'woff2', 'ttf', 'otf', 'eot', 'mp3', 'mp4', 'wav', 'avi', 'mov', 'mkv'])
+    if (IMAGE_EXTS.has(extLower)) {
+      const mime = extLower === 'svg' ? 'image/svg+xml'
+        : extLower === 'png' ? 'image/png'
+        : extLower === 'gif' ? 'image/gif'
+        : extLower === 'webp' ? 'image/webp'
+        : extLower === 'bmp' ? 'image/bmp'
+        : extLower === 'ico' ? 'image/x-icon'
+        : 'image/jpeg'
+      const b64 = readFileSync(real).toString('base64')
+      return `__IMAGE__:data:${mime};base64,${b64}`
+    }
+    if (BINARY_EXTS.has(extLower)) {
+      return '__BINARY__'
+    }
     return readFileSync(real, 'utf-8')
   } catch {
     return null
