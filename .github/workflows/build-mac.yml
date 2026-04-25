@@ -256,7 +256,7 @@ jobs:
           python3 - <<'PY'
           import glob, os, oss2
           auth = oss2.Auth(os.environ['OSS_ACCESS_KEY_ID'], os.environ['OSS_ACCESS_KEY_SECRET'])
-          bucket = oss2.Bucket(auth, 'https://oss-cn-beijing.aliyuncs.com', 'inkess-install-file')
+          bucket = oss2.Bucket(auth, 'https://oss-ap-northeast-1.aliyuncs.com', 'inkess-app')
           prefix = os.environ['OSS_PREFIX']
           version = os.environ['RELEASE_VERSION']
           upload_latest = os.environ['UPLOAD_LATEST'].lower() == 'true'

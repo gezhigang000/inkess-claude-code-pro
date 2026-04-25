@@ -95,7 +95,7 @@ jobs:
           python - <<'PY'
           import glob, os, re, oss2
           auth = oss2.Auth(os.environ['OSS_ACCESS_KEY_ID'], os.environ['OSS_ACCESS_KEY_SECRET'])
-          bucket = oss2.Bucket(auth, 'https://oss-cn-beijing.aliyuncs.com', 'inkess-install-file')
+          bucket = oss2.Bucket(auth, 'https://oss-ap-northeast-1.aliyuncs.com', 'inkess-app')
           prefix = os.environ['OSS_PREFIX']
           for f in glob.glob('release/*.exe') + glob.glob('release/*.exe.blockmap') + glob.glob('release/latest.yml'):
               name = os.path.basename(f)
