@@ -209,6 +209,7 @@ export function TerminalView({ ptyId, isActive, cwd, onFileClick }: TerminalView
             if (ptyId && text) window.api.pty.write(ptyId, text)
           })
         })
+        event.preventDefault()
         return false
       }
 
