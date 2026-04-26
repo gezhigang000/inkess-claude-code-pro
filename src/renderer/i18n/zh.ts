@@ -165,6 +165,11 @@ export const zh: Record<TranslationKey, string> = {
   'subscription.deviceBound': '此设备已绑定其他账号',
   'subscription.accountBound': '此账号已绑定其他设备，请联系管理员解绑',
   'subscription.contactAdmin': '请联系管理员获取账号密码',
+  'subscription.serverLabel': '服务器地址',
+  'subscription.serverEdit': '修改',
+  'subscription.serverPlaceholder': 'https://llm.inkessai.com',
+  'subscription.serverInvalid': '服务器地址必须以 http:// 或 https:// 开头',
+  'subscription.serverReset': '恢复默认',
 
   // File Preview
   'preview.notFound': '文件不存在或太大无法预览',

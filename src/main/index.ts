@@ -18,6 +18,7 @@ import { Analytics } from './analytics'
 import { ErrorReporter } from './error-reporter'
 import { SessionRecorder } from './session/session-recorder'
 import { SubscriptionManager } from './subscription/subscription-manager'
+import { getSubscriptionApiBase, setSubscriptionApiBase } from './subscription/api-url'
 import { BrowserSync } from './subscription/browser-sync'
 import { getDeviceId } from './subscription/device-id'
 import { fetchSubscription, detectRegion } from './proxy/subscription'
@@ -242,6 +243,23 @@ ipcMain.handle('tools:install', async () => {
 })
 
 // IPC: Subscription
+ipcMain.handle('subscription:getApiBase', () => getSubscriptionApiBase())
+
+ipcMain.handle('subscription:setApiBase', (_event, base: unknown) => {
+  if (base !== null && base !== undefined && typeof base !== 'string') {
+    return { success: false, error: 'Invalid input' }
+  }
+  if (typeof base === 'string' && base.length > 200) {
+    return { success: false, error: 'Server URL too long' }
+  }
+  try {
+    setSubscriptionApiBase(typeof base === 'string' ? base : null)
+    return { success: true, base: getSubscriptionApiBase() }
+  } catch (err) {
+    return { success: false, error: (err as Error).message }
+  }
+})
+
 ipcMain.handle('subscription:login', async (_event, args: unknown) => {
   const { username, password } = (args || {}) as Record<string, unknown>
   if (typeof username !== 'string' || typeof password !== 'string') {

@@ -211,6 +211,11 @@ const api = {
   },
 
   subscription: {
+    getApiBase: () => ipcRenderer.invoke('subscription:getApiBase') as Promise<string>,
+    setApiBase: (base: string | null) =>
+      ipcRenderer.invoke('subscription:setApiBase', base) as Promise<{
+        success: boolean; base?: string; error?: string
+      }>,
     login: (username: string, password: string) =>
       ipcRenderer.invoke('subscription:login', { username, password }) as Promise<{
         success: boolean; config?: { claudeEmail: string; claudePassword: string; proxyUrl: string; proxyRegion: string; expiresAt: string; status: string; plan?: string; minutesRemaining?: number }

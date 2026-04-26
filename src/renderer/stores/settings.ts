@@ -30,6 +30,8 @@ interface SettingsState {
   proxySelectedNode: string              // selected node name (subscription mode)
   proxyRegion: string
 
+  serverUrl: string                      // subscription API base override (empty = default)
+
   setFontSize: (v: number) => void
   setIdeChoice: (v: string) => void
   setLanguage: (v: LanguageChoice) => void
@@ -50,6 +52,7 @@ interface SettingsState {
   setProxySubNodeUrl: (v: string) => void
   setProxySelectedNode: (v: string) => void
   setProxyRegion: (v: string) => void
+  setServerUrl: (v: string) => void
 }
 
 function loadSettings(): Partial<SettingsState> {
@@ -81,6 +84,7 @@ function persistSettings(state: SettingsState) {
       proxyMode: state.proxyMode,
       proxySelectedNode: state.proxySelectedNode,
       proxyRegion: state.proxyRegion,
+      serverUrl: state.serverUrl,
     }))
   } catch { /* ignore */ }
 }
@@ -135,6 +139,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   proxySelectedNode: typeof (saved as any).proxySelectedNode === 'string' ? (saved as any).proxySelectedNode : '',
   proxyRegion: typeof (saved as any).proxyRegion === 'string' ? (saved as any).proxyRegion : 'us',
 
+  serverUrl: typeof (saved as any).serverUrl === 'string' ? (saved as any).serverUrl : '',
+
   setFontSize: (v) => { set({ fontSize: v }); persistSettings(get()) },
   setIdeChoice: (v) => { set({ ideChoice: v }); persistSettings(get()) },
   setLanguage: (v) => { set({ language: v }); persistSettings(get()) },
@@ -182,9 +188,23 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ proxyRegion: v })
     const s = get(); persistSettings(s); syncProxyToMain(s)
   },
+  setServerUrl: (v) => {
+    set({ serverUrl: v })
+    persistSettings(get())
+    window.api?.subscription?.setApiBase(v || null)
+  },
 }))
 
 applyTheme(validatedTheme)
 
 // Sync initial proxy settings to main process
 setTimeout(() => syncProxyToMain(useSettingsStore.getState()), 0)
+
+// Sync persisted server URL override to main process so subscription API
+// calls hit the user-configured host before the first login attempt.
+setTimeout(() => {
+  const { serverUrl } = useSettingsStore.getState()
+  if (serverUrl) {
+    window.api?.subscription?.setApiBase(serverUrl)
+  }
+}, 0)
