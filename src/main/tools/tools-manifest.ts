@@ -7,7 +7,7 @@
  */
 
 export const TOOLS_MIRROR_BASE_URL =
-  'https://inkess-install-file.oss-cn-beijing.aliyuncs.com/dev-tools'
+  'https://inkess-app.oss-ap-northeast-1.aliyuncs.com/dev-tools'
 
 export type ToolName = 'python' | 'git' | 'node'
 

@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import log from './logger'
 
-const API_BASE = 'https://llm.starapp.net'
+const API_BASE = 'https://llm.inkessai.com'
 const FLUSH_INTERVAL = 60_000
 const QUEUE_LIMIT = 20
 

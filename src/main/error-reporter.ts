@@ -3,7 +3,7 @@ import { platform, release, arch } from 'os'
 import log from './logger'
 import { readFileSync } from 'fs'
 
-const API_BASE = 'https://llm.starapp.net'
+const API_BASE = 'https://llm.inkessai.com'
 const FLUSH_INTERVAL = 60_000
 const QUEUE_LIMIT = 10
 const MAX_QUEUE_SIZE = 200

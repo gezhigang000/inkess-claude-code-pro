@@ -1347,8 +1347,8 @@ app.whenReady().then(async () => {
     // Dev mode needs 'unsafe-inline' + 'unsafe-eval' for Vite HMR/React preamble
     const scriptSrc = isDev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'" : "script-src 'self'"
     const connectSrc = isDev
-      ? "connect-src 'self' ws://localhost:* http://localhost:* https://llm.starapp.net https://inkess-install-file.oss-cn-beijing.aliyuncs.com"
-      : "connect-src https://llm.starapp.net https://inkess-install-file.oss-cn-beijing.aliyuncs.com"
+      ? "connect-src 'self' ws://localhost:* http://localhost:* https://llm.inkessai.com https://inkess-app.oss-ap-northeast-1.aliyuncs.com"
+      : "connect-src https://llm.inkessai.com https://inkess-app.oss-ap-northeast-1.aliyuncs.com"
     callback({
       responseHeaders: {
         ...details.responseHeaders,

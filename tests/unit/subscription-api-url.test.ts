@@ -39,4 +39,34 @@ describe('subscription API URL', () => {
     expect(() => setSubscriptionApiBase('ftp://example.com')).toThrow()
     expect(buildSubscriptionApiUrl('/api/subscription/login')).toBe('https://llm.inkessai.com/api/subscription/login')
   })
+
+  it('strips path, query string, and fragment from override URL', () => {
+    setSubscriptionApiBase('https://inkess.cc/api')
+    expect(buildSubscriptionApiUrl('/api/subscription/login')).toBe('https://inkess.cc/api/subscription/login')
+
+    setSubscriptionApiBase('https://inkess.cc?foo=bar')
+    expect(buildSubscriptionApiUrl('/api/subscription/login')).toBe('https://inkess.cc/api/subscription/login')
+
+    setSubscriptionApiBase('https://inkess.cc#anchor')
+    expect(buildSubscriptionApiUrl('/api/subscription/login')).toBe('https://inkess.cc/api/subscription/login')
+
+    setSubscriptionApiBase('https://inkess.cc/some/path?q=1#hash')
+    expect(buildSubscriptionApiUrl('/api/subscription/login')).toBe('https://inkess.cc/api/subscription/login')
+  })
+
+  it('preserves port in override URL', () => {
+    setSubscriptionApiBase('https://inkess.cc:8443/path')
+    expect(getSubscriptionApiBase()).toBe('https://inkess.cc:8443')
+    expect(buildSubscriptionApiUrl('/api/subscription/login')).toBe('https://inkess.cc:8443/api/subscription/login')
+  })
+
+  it('falls back to default for empty string and undefined', () => {
+    setSubscriptionApiBase('https://inkess.cc')
+    setSubscriptionApiBase('')
+    expect(getSubscriptionApiBase()).toBe(DEFAULT_SUBSCRIPTION_API_BASE)
+
+    setSubscriptionApiBase('https://inkess.cc')
+    setSubscriptionApiBase(undefined)
+    expect(getSubscriptionApiBase()).toBe(DEFAULT_SUBSCRIPTION_API_BASE)
+  })
 })

@@ -20,7 +20,7 @@ import log from '../logger'
 import { fetchWithTimeout, sha256File } from '../utils/fetch'
 
 const MIRROR_BASE_URL =
-  'https://inkess-install-file.oss-cn-beijing.aliyuncs.com/cli-mirror'
+  'https://inkess-app.oss-ap-northeast-1.aliyuncs.com/cli-mirror'
 
 /** Strict semver-like version pattern to prevent path traversal */
 const VERSION_RE = /^\d+\.\d+\.\d+$/

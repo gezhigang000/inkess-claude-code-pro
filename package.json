@@ -91,7 +91,7 @@
     },
     "publish": {
       "provider": "generic",
-      "url": "https://download.starapp.net/pro-releases"
+      "url": "https://download.inkessai.com/pro-releases"
     }
   },
   "devDependencies": {
