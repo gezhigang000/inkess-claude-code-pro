@@ -5,8 +5,7 @@ import { platform, release, arch } from 'os'
 import log from '../logger'
 import { getDeviceId } from './device-id'
 import { encrypt, decrypt } from '../utils/crypto'
-
-const API_BASE = 'https://llm.starapp.net'
+import { buildSubscriptionApiUrl } from './api-url'
 
 export interface SubscriptionConfig {
   claudeEmail: string
@@ -125,7 +124,7 @@ export class SubscriptionManager {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 15000)
 
-      const res = await fetch(`${API_BASE}/api/subscription/login`, {
+      const res = await fetch(buildSubscriptionApiUrl('/api/subscription/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -187,7 +186,7 @@ export class SubscriptionManager {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 10000)
 
-      const res = await fetch(`${API_BASE}/api/subscription/status`, {
+      const res = await fetch(buildSubscriptionApiUrl('/api/subscription/status'), {
         headers: { 'Authorization': `Bearer ${this.session.token}` },
         signal: controller.signal,
       }).finally(() => clearTimeout(timer))

@@ -163,6 +163,11 @@ export const en = {
   'subscription.deviceBound': 'This device is already bound to another account',
   'subscription.accountBound': 'This account is bound to another device. Contact admin to unbind.',
   'subscription.contactAdmin': 'Contact your administrator for account credentials',
+  'subscription.serverLabel': 'Server URL',
+  'subscription.serverEdit': 'Edit',
+  'subscription.serverPlaceholder': 'https://llm.inkessai.com',
+  'subscription.serverInvalid': 'Server URL must start with http:// or https://',
+  'subscription.serverReset': 'Use default',
 
   // File Preview
   'preview.notFound': 'File not found or too large to preview',

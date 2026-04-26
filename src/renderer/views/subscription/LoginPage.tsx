@@ -1,5 +1,8 @@
 import { useState } from 'react'
 import { useI18n } from '../../i18n'
+import { useSettingsStore } from '../../stores/settings'
+
+const DEFAULT_SERVER_URL = 'https://llm.inkessai.com'
 
 interface LoginPageProps {
   onLoginSuccess: (config: {
@@ -9,12 +12,22 @@ interface LoginPageProps {
   }) => void
 }
 
+function isValidServerUrl(value: string): boolean {
+  return /^https?:\/\/[^\s]+$/.test(value.trim())
+}
+
 export function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { t } = useI18n()
+  const serverUrl = useSettingsStore(s => s.serverUrl)
+  const setServerUrl = useSettingsStore(s => s.setServerUrl)
+  const [serverEditing, setServerEditing] = useState(false)
+  const [serverDraft, setServerDraft] = useState(serverUrl || DEFAULT_SERVER_URL)
+  const [serverError, setServerError] = useState<string | null>(null)
+  const effectiveServerUrl = serverUrl || DEFAULT_SERVER_URL
 
   const handleLogin = async () => {
     if (!username || !password) return
@@ -35,6 +48,23 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
         setError(result.error || t('subscription.loginFailed'))
       }
     }
+  }
+
+  const commitServerUrl = () => {
+    const trimmed = serverDraft.trim()
+    if (trimmed && trimmed !== DEFAULT_SERVER_URL && !isValidServerUrl(trimmed)) {
+      setServerError(t('subscription.serverInvalid'))
+      return
+    }
+    setServerError(null)
+    setServerUrl(trimmed === DEFAULT_SERVER_URL ? '' : trimmed)
+    setServerEditing(false)
+  }
+
+  const resetServerUrl = () => {
+    setServerError(null)
+    setServerDraft(DEFAULT_SERVER_URL)
+    setServerUrl('')
   }
 
   return (
@@ -60,6 +90,87 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
         <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 32 }}>
           {t('subscription.loginHint')}
         </p>
+
+        {/* Server URL — collapsible */}
+        <div style={{ textAlign: 'left', marginBottom: 16 }}>
+          {!serverEditing ? (
+            <div
+              style={{
+                fontSize: 12, color: 'var(--text-muted)',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                gap: 8, padding: '6px 2px',
+              }}
+            >
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {t('subscription.serverLabel')}: {effectiveServerUrl}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setServerDraft(serverUrl || DEFAULT_SERVER_URL)
+                  setServerEditing(true)
+                  setServerError(null)
+                }}
+                style={{
+                  fontSize: 12, color: 'var(--accent)', background: 'transparent',
+                  border: 'none', cursor: 'pointer', padding: 0,
+                }}
+              >
+                {t('subscription.serverEdit')}
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {t('subscription.serverLabel')}
+              </label>
+              <input
+                value={serverDraft}
+                onChange={e => setServerDraft(e.target.value)}
+                placeholder={t('subscription.serverPlaceholder')}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') commitServerUrl()
+                  else if (e.key === 'Escape') {
+                    setServerEditing(false)
+                    setServerError(null)
+                  }
+                }}
+                style={{
+                  width: '100%', padding: '8px 12px', fontSize: 13, boxSizing: 'border-box',
+                  background: 'var(--bg-tertiary)', border: '1px solid var(--border)',
+                  borderRadius: 8, color: 'var(--text-primary)', outline: 'none',
+                }}
+                onFocus={e => e.currentTarget.style.borderColor = 'var(--accent)'}
+                onBlur={e => e.currentTarget.style.borderColor = 'var(--border)'}
+              />
+              {serverError && (
+                <div style={{ fontSize: 12, color: 'var(--error-text)' }}>{serverError}</div>
+              )}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  onClick={resetServerUrl}
+                  style={{
+                    fontSize: 12, color: 'var(--text-muted)', background: 'transparent',
+                    border: 'none', cursor: 'pointer', padding: 0,
+                  }}
+                >
+                  {t('subscription.serverReset')}
+                </button>
+                <button
+                  type="button"
+                  onClick={commitServerUrl}
+                  style={{
+                    fontSize: 12, color: 'var(--accent)', background: 'transparent',
+                    border: 'none', cursor: 'pointer', padding: 0, fontWeight: 600,
+                  }}
+                >
+                  OK
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* Form */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, textAlign: 'left' }}>

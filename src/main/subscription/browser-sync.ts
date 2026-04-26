@@ -1,8 +1,8 @@
 import { session as electronSession, BrowserWindow } from 'electron'
 import { createHash } from 'crypto'
 import log from '../logger'
+import { buildSubscriptionApiUrl } from './api-url'
 
-const API_BASE = 'https://llm.starapp.net'
 const SYNC_INTERVAL = 10 * 60 * 1000 // 10 minutes
 const UPLOAD_TIMEOUT = 15000
 const LOCALSTORAGE_TIMEOUT = 30000 // 30s — must exceed Cloudflare JS challenge time
@@ -53,7 +53,7 @@ export class BrowserSync {
     log.info(`[BrowserSync] downloadAndImportCookies start for ${username}`)
 
     try {
-      const res = await fetch(`${API_BASE}/api/subscription/browser-data`, {
+      const res = await fetch(buildSubscriptionApiUrl('/api/subscription/browser-data'), {
         headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
       })
@@ -174,7 +174,7 @@ export class BrowserSync {
         timestamp: new Date().toISOString(),
       }
 
-      const res = await fetch(`${API_BASE}/api/subscription/browser-data`, {
+      const res = await fetch(buildSubscriptionApiUrl('/api/subscription/browser-data'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.token}`,
