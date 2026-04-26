@@ -1,6 +1,6 @@
 {
   "name": "inkess-claude-code-pro",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "description": "Inkess Claude Code Pro — Zero-config Claude Code terminal for Inkess users",
   "author": "Inkess",
   "main": "./out/main/index.js",
