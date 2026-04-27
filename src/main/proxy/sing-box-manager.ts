@@ -61,6 +61,11 @@ export class SingBoxManager {
   private _baselineTimer: ReturnType<typeof setTimeout> | null = null
   private _statusListeners: Array<(update: TunStatusUpdate) => void> = []
   private _lastActualIp: string | null = null
+  /** Timestamp of last macOS authorization denial. Used to avoid rapid-fire
+   *  osascript prompts when macOS caches a "deny" result. */
+  private _authDeniedAt = 0
+  /** Cooldown period after auth denial — don't retry osascript for 5 minutes */
+  private static AUTH_DENY_COOLDOWN_MS = 5 * 60 * 1000
 
   constructor() {
     this.singboxDir = join(app.getPath('userData'), 'sing-box')
@@ -71,6 +76,12 @@ export class SingBoxManager {
   get mode(): SingBoxMode { return this._mode }
   get status(): string { return this._status }
   get lastError(): string | null { return this._lastError }
+
+  /** Clear auth denial cooldown — allows the next startTun to prompt for password.
+   *  Called when user explicitly clicks "Retry" in TunGate (intentional action). */
+  clearAuthDenyCooldown(): void {
+    this._authDeniedAt = 0
+  }
 
   /**
    * Subscribe to tunnel status updates. Called whenever a material change
@@ -162,15 +173,14 @@ export class SingBoxManager {
     return !this.isProcessAlive(pid)
   }
 
-  /** Kill a process. If sudo=true, uses osascript/UAC (requires GUI interaction). */
+  /** Kill a process. If sudo=true, uses osascript/UAC (requires GUI interaction).
+   *  On macOS, tries non-sudo kill first — if the process was started by the same
+   *  user (or we have permission), this avoids an unnecessary sudo prompt. */
   private killProcess(pid: number, signal: 'TERM' | 'KILL', sudo = true): void {
     const sig = signal === 'KILL' ? '-9' : '-TERM'
     try {
       if (os.platform() === 'win32') {
         if (sudo) {
-          // Elevated kill via PowerShell — required for elevated sing-box process
-          // Always use /F: taskkill without /F only sends WM_CLOSE which doesn't work
-          // for headless processes (-WindowStyle Hidden). sing-box has no console window.
           execSync(
             `powershell -NoProfile -Command "Start-Process -FilePath 'taskkill' -ArgumentList '/F','/PID','${pid}' -Verb RunAs -WindowStyle Hidden -Wait"`,
             { timeout: 15000, stdio: 'pipe' }
@@ -179,10 +189,27 @@ export class SingBoxManager {
           execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, stdio: 'pipe' })
         }
       } else if (sudo) {
-        execSync(
-          `osascript -e 'do shell script "kill ${sig} ${pid}" with administrator privileges'`,
-          { timeout: 15000, stdio: 'pipe' }
-        )
+        // Try non-sudo first — avoids osascript dialog if we have permission
+        try {
+          execSync(`kill ${sig} ${pid}`, { timeout: 3000, stdio: 'pipe' })
+          log.info(`[sing-box] killed pid=${pid} signal=${signal} (non-sudo)`)
+          return
+        } catch {
+          // Expected: "Operation not permitted" for root-owned process — fall through to sudo
+        }
+        try {
+          execSync(
+            `osascript -e 'do shell script "kill ${sig} ${pid}" with administrator privileges'`,
+            { timeout: 15000, stdio: 'pipe' }
+          )
+        } catch (sudoErr) {
+          const msg = (sudoErr as Error).message
+          if (msg.includes('-60005') || msg.includes('密码不正确') || msg.includes('User canceled')) {
+            this._authDeniedAt = Date.now()
+            log.warn(`[sing-box] kill pid=${pid}: macOS auth denied — cooldown activated`)
+          }
+          throw sudoErr
+        }
       } else {
         execSync(`kill ${sig} ${pid}`, { timeout: 3000, stdio: 'pipe' })
       }
@@ -484,8 +511,13 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       )
       log.info('[sing-box] system DNS restored (sudo)')
     } catch (err) {
+      const msg = (err as Error).message
+      if (msg.includes('-60005') || msg.includes('密码不正确') || msg.includes('User canceled')) {
+        this._authDeniedAt = Date.now()
+        log.warn(`[sing-box] DNS restore: macOS auth denied — cooldown activated`)
+      }
       // May fail if watchdog already cleaned up, or user canceled — that's OK
-      log.warn(`[sing-box] failed to restore system DNS: ${(err as Error).message}`)
+      log.warn(`[sing-box] failed to restore system DNS: ${msg}`)
     }
   }
 
@@ -574,6 +606,22 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
 
   private async _startTunImpl(proxyUrl: string): Promise<{ success?: boolean; error?: string }> {
     try {
+      // Check auth denial cooldown — if macOS recently denied our osascript
+      // request (user cancelled or system cached a deny), don't retry immediately.
+      // This prevents the "rapid-fire sudo dialog" loop where macOS auto-rejects
+      // without showing a dialog, and the app keeps retrying every few seconds.
+      if (os.platform() === 'darwin' && this._authDeniedAt > 0) {
+        const elapsed = Date.now() - this._authDeniedAt
+        if (elapsed < SingBoxManager.AUTH_DENY_COOLDOWN_MS) {
+          const remainSec = Math.ceil((SingBoxManager.AUTH_DENY_COOLDOWN_MS - elapsed) / 1000)
+          const error = `AUTH_DENIED: Admin authorization was denied. Retry in ${remainSec}s, or click Retry to authorize now.`
+          log.info(`[sing-box] startTun blocked — auth denied ${Math.round(elapsed / 1000)}s ago, cooldown ${remainSec}s remaining`)
+          return { error }
+        }
+        // Cooldown expired — clear the flag and allow retry
+        this._authDeniedAt = 0
+      }
+
       this.reconcileStatus()
 
       await this.ensureInstalled()
@@ -1156,10 +1204,14 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
         this.process.stderr?.on('data', (data: Buffer) => {
           const msg = data.toString().trim()
           if (msg) log.warn(`[sing-box sudo] ${msg}`)
-          if (msg.includes('User canceled')) {
+          // Detect macOS authorization denial:
+          // -60005: "管理员用户名或密码不正确" — auth denied (also when macOS caches deny)
+          // "User canceled" — user explicitly clicked Cancel
+          if (msg.includes('-60005') || msg.includes('密码不正确') || msg.includes('User canceled')) {
+            this._authDeniedAt = Date.now()
             this._status = 'stopped'
-            this._lastError = 'User canceled admin authorization'
-            settle(false, 'User canceled')
+            this._lastError = 'AUTH_DENIED: Admin authorization was denied'
+            settle(false, 'AUTH_DENIED: Admin authorization was denied. Click Retry and enter your Mac password.')
           }
         })
 

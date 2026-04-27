@@ -631,6 +631,10 @@ ipcMain.handle('tun:stop', async () => {
   return { success: true }
 })
 
+ipcMain.handle('tun:clearAuthCooldown', () => {
+  singBoxManager.clearAuthDenyCooldown()
+})
+
 ipcMain.handle('tun:testConnectivity', async (_event, exitIp?: string) => {
   if (MOCK_MODE) return { success: true, latency: 42, actualIp: '1.2.3.4' }
   const result = await singBoxManager.testConnectivity(exitIp)

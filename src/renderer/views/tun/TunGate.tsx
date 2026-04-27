@@ -26,11 +26,19 @@ export function TunGate({ proxyUrl, tunnelUrl, exitIp, onReady, isReconnect, onR
   useEffect(() => { proxyUrlRef.current = proxyUrl }, [proxyUrl])
   useEffect(() => { tunnelUrlRef.current = tunnelUrl }, [tunnelUrl])
 
-  const connect = async () => {
+  const [isAuthDenied, setIsAuthDenied] = useState(false)
+
+  const connect = async (manualRetry = false) => {
     if (connectingRef.current) return
     connectingRef.current = true
     setPhase('idle')
     setError(null)
+    setIsAuthDenied(false)
+    // If user explicitly clicked Retry, clear the auth cooldown so the
+    // next startTun will actually prompt for password instead of being blocked.
+    if (manualRetry) {
+      await window.api.tun.clearAuthCooldown().catch(() => {})
+    }
     try { await _connect() } finally { connectingRef.current = false }
   }
 
@@ -107,7 +115,11 @@ export function TunGate({ proxyUrl, tunnelUrl, exitIp, onReady, isReconnect, onR
       console.log(`[TunGate:${id}] startTun result: success=${startResult.success}, error=${startResult.error}`)
       if (!startResult.success) {
         setPhase('failed')
-        setError(startResult.error ?? 'Failed to start TUN')
+        const isAuth = startResult.error?.includes('AUTH_DENIED')
+        setIsAuthDenied(!!isAuth)
+        setError(isAuth
+          ? 'macOS requires administrator password to start the secure tunnel. Click Retry and enter your Mac login password when prompted.'
+          : (startResult.error ?? 'Failed to start TUN'))
         return
       }
 
@@ -255,14 +267,14 @@ export function TunGate({ proxyUrl, tunnelUrl, exitIp, onReady, isReconnect, onR
           {/* Retry button */}
           {isFailed && (
             <button
-              onClick={connect}
+              onClick={() => connect(true)}
               style={{
                 padding: '9px 24px', fontSize: 14, fontWeight: 600,
                 background: 'var(--accent)', color: '#fff',
                 border: 'none', borderRadius: 8, cursor: 'pointer',
               }}
             >
-              {t('tun.retry')}
+              {isAuthDenied ? (t('tun.authorize') || 'Authorize & Retry') : t('tun.retry')}
             </button>
           )}
 

@@ -222,6 +222,7 @@ export const zh: Record<TranslationKey, string> = {
   'tun.connected': '已连接',
   'tun.failed': '连接失败',
   'tun.retry': '重试',
+  'tun.authorize': '授权并重试',
   'tun.cancel': '取消',
   'tun.refreshConfig': '刷新配置',
   'tun.switchAccount': '切换账号',

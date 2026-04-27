@@ -220,6 +220,7 @@ export const en = {
   'tun.connected': 'Connected',
   'tun.failed': 'Connection failed',
   'tun.retry': 'Retry',
+  'tun.authorize': 'Authorize & Retry',
   'tun.cancel': 'Cancel',
   'tun.refreshConfig': 'Refresh Config',
   'tun.switchAccount': 'Switch Account',

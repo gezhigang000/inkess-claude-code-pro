@@ -254,7 +254,15 @@ export function TerminalApp() {
             setNetworkAlert({ type: 'error', message: t('network.alert.reconnectFailed') })
           }
         } else {
-          setNetworkAlert({ type: 'error', message: result.error || t('network.alert.reconnectFailed') })
+          // If reconnect failed due to auth denial, don't show confusing network
+          // error — the user will see TunGate with a clear auth message instead.
+          const isAuthDenied = result.error?.includes('AUTH_DENIED')
+          if (isAuthDenied) {
+            // Force TunGate overlay to appear — user needs to authorize manually
+            setTunOk(false)
+          } else {
+            setNetworkAlert({ type: 'error', message: result.error || t('network.alert.reconnectFailed') })
+          }
         }
       } catch (err) {
         if (!cancelled) {
@@ -1080,6 +1088,7 @@ export function TerminalApp() {
           status={appUpdateStatus}
           bottomOffset={16}
           onDownload={() => window.api.appUpdate.download()}
+          onRetry={() => window.api.appUpdate.check()}
           onInstall={() => window.api.appUpdate.install()}
           onDismiss={() => setAppUpdateDismissed(true)}
         />
@@ -1531,10 +1540,10 @@ const kbdStyle: React.CSSProperties = {
   fontFamily: 'inherit', fontSize: 10, lineHeight: '16px',
 }
 
-function AppUpdateToast({ status, bottomOffset, onDownload, onInstall, onDismiss }: {
+function AppUpdateToast({ status, bottomOffset, onDownload, onRetry, onInstall, onDismiss }: {
   status: { type: string; version?: string; percent?: number; message?: string }
   bottomOffset?: number
-  onDownload?: () => void; onInstall?: () => void; onDismiss: () => void
+  onDownload?: () => void; onRetry?: () => void; onInstall?: () => void; onDismiss: () => void
 }) {
   const { t } = useI18n()
   const version = status.version || ''
@@ -1558,7 +1567,7 @@ function AppUpdateToast({ status, bottomOffset, onDownload, onInstall, onDismiss
         </span>
         {status.type === 'available' && <button onClick={onDownload} style={btnStyle}>{t('appUpdate.download')}</button>}
         {status.type === 'downloaded' && <button onClick={onInstall} style={btnStyle}>{t('appUpdate.restartUpdate')}</button>}
-        {status.type === 'error' && <button onClick={onDownload} style={btnStyle}>{t('appUpdate.retry')}</button>}
+        {status.type === 'error' && <button onClick={onRetry ?? onDownload} style={btnStyle}>{t('appUpdate.retry')}</button>}
         <span onClick={onDismiss} style={{ cursor: 'pointer', opacity: 0.5, fontSize: 16, lineHeight: 1 }}>×</span>
       </div>
       {status.type === 'downloading' && (

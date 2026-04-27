@@ -161,6 +161,7 @@ const api = {
     startTun: (proxyUrl: string, tunnelUrl?: string) => ipcRenderer.invoke('tun:startTun', proxyUrl, tunnelUrl) as Promise<{ success: boolean; error?: string }>,
     reconnect: () => ipcRenderer.invoke('tun:reconnect') as Promise<{ success: boolean; error?: string }>,
     stop: () => ipcRenderer.invoke('tun:stop') as Promise<{ success: boolean }>,
+    clearAuthCooldown: () => ipcRenderer.invoke('tun:clearAuthCooldown') as Promise<void>,
     testConnectivity: (exitIp?: string) => ipcRenderer.invoke('tun:testConnectivity', exitIp) as Promise<{ success: boolean; latency?: number; error?: string; actualIp?: string }>,
     diagnostics: () => ipcRenderer.invoke('tun:diagnostics') as Promise<Record<string, unknown>>,
     onInstallProgress: (callback: (event: { step: string; pct: number }) => void) => {
