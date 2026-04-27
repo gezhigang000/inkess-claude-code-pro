@@ -1083,13 +1083,15 @@ export function TerminalApp() {
           }}
         />
       )}
-      {appUpdateStatus && !appUpdateDismissed && (appUpdateStatus.type === 'available' || appUpdateStatus.type === 'downloading' || appUpdateStatus.type === 'downloaded' || appUpdateStatus.type === 'error') && (
+      {appUpdateStatus && !appUpdateDismissed && appUpdateStatus.type === 'available' && (
         <AppUpdateToast
           status={appUpdateStatus}
           bottomOffset={16}
-          onDownload={() => window.api.appUpdate.download()}
-          onRetry={() => window.api.appUpdate.check()}
-          onInstall={() => window.api.appUpdate.install()}
+          onDownload={() => {
+            const v = appUpdateStatus.version || ''
+            const url = `https://download.inkessai.com/pro-releases/latest/macos-arm64-v${v}.dmg`
+            window.api.shell.openExternal(url)
+          }}
           onDismiss={() => setAppUpdateDismissed(true)}
         />
       )}
@@ -1540,10 +1542,10 @@ const kbdStyle: React.CSSProperties = {
   fontFamily: 'inherit', fontSize: 10, lineHeight: '16px',
 }
 
-function AppUpdateToast({ status, bottomOffset, onDownload, onRetry, onInstall, onDismiss }: {
-  status: { type: string; version?: string; percent?: number; message?: string }
+function AppUpdateToast({ status, bottomOffset, onDownload, onDismiss }: {
+  status: { type: string; version?: string }
   bottomOffset?: number
-  onDownload?: () => void; onRetry?: () => void; onInstall?: () => void; onDismiss: () => void
+  onDownload?: () => void; onDismiss: () => void
 }) {
   const { t } = useI18n()
   const version = status.version || ''
@@ -1559,25 +1561,10 @@ function AppUpdateToast({ status, bottomOffset, onDownload, onRetry, onInstall, 
       boxShadow: '0 4px 12px rgba(0,0,0,0.3)', zIndex: 1000, minWidth: 260, maxWidth: 340,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <span style={{ flex: 1 }}>
-          {status.type === 'available' && t('appUpdate.available', { version })}
-          {status.type === 'downloading' && t('appUpdate.downloading', { percent: String(Math.round(status.percent ?? 0)) })}
-          {status.type === 'downloaded' && t('appUpdate.ready', { version })}
-          {status.type === 'error' && t('appUpdate.error', { message: status.message || 'Unknown' })}
-        </span>
-        {status.type === 'available' && <button onClick={onDownload} style={btnStyle}>{t('appUpdate.download')}</button>}
-        {status.type === 'downloaded' && <button onClick={onInstall} style={btnStyle}>{t('appUpdate.restartUpdate')}</button>}
-        {status.type === 'error' && <button onClick={onRetry ?? onDownload} style={btnStyle}>{t('appUpdate.retry')}</button>}
+        <span style={{ flex: 1 }}>{t('appUpdate.available', { version })}</span>
+        <button onClick={onDownload} style={btnStyle}>{t('appUpdate.download')}</button>
         <span onClick={onDismiss} style={{ cursor: 'pointer', opacity: 0.5, fontSize: 16, lineHeight: 1 }}>×</span>
       </div>
-      {status.type === 'downloading' && (
-        <div style={{ height: 3, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
-          <div style={{
-            height: '100%', borderRadius: 2, background: 'var(--accent)',
-            width: `${Math.min(status.percent ?? 0, 100)}%`, transition: 'width 0.3s ease',
-          }} />
-        </div>
-      )}
     </div>
   )
 }
