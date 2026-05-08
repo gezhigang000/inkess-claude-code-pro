@@ -201,6 +201,22 @@ export function TerminalApp() {
           return
         }
 
+        // Probe failed without an IP mismatch. Before counting this as a
+        // failure, ask sing-box whether it's actually moving traffic. If yes,
+        // the user is online but a probe target was throttled — don't punish
+        // them with an unnecessary reconnect (which interrupts active claude
+        // sessions and may trigger a sudo prompt).
+        try {
+          const activity = await window.api.tun.recentActivity(30000)
+          if (activity.successes >= 3) {
+            console.log(`[App] probe failed but sing-box has ${activity.successes} successful outbounds in last 30s — keeping connection`)
+            consecutiveFailures = 0
+            setNetworkAlert(null)
+            scheduleNextCheck(60 * 1000)
+            return
+          }
+        } catch { /* ignore — fall through to normal failure path */ }
+
         // Fetch failed / no actualIp.
         consecutiveFailures++
         console.warn(`[App] exit IP check failed (${consecutiveFailures}): ${result.error}`)

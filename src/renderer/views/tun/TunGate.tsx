@@ -75,8 +75,33 @@ export function TunGate({ proxyUrl, tunnelUrl, exitIp, onReady, isReconnect, onR
           setTimeout(() => onReady(), 300)
           return
         }
-        // Connectivity test failed even though running — fall through to restart
-        console.log(`[TunGate:${id}] connectivity failed, restarting TUN`)
+        // Probe failed. Before tearing down a possibly-working tunnel, check
+        // whether sing-box itself has been moving real traffic recently — if
+        // so, our probe targets just happened to be blocked / throttled and
+        // the tunnel is in fact fine. Restarting in that case interrupts
+        // active conversations and triggers another sudo prompt.
+        //
+        // Exception: if the failure is an exit-IP MISMATCH, that's a real
+        // route hijack — we DO want to restart. testConnectivity returns
+        // actualIp on mismatch, so we can distinguish.
+        const isMismatch = !!result.actualIp && !!exitIp && result.actualIp !== exitIp
+        if (!isMismatch) {
+          try {
+            const activity = await window.api.tun.recentActivity(30000)
+            console.log(`[TunGate:${id}] recent sing-box activity: ${activity.successes} successes / ${activity.failures} failures`)
+            if (activity.successes >= 3) {
+              console.log(`[TunGate:${id}] tunnel is moving real traffic — accepting as connected despite probe failure`)
+              setLatency(null)
+              setPhase('connected')
+              setTimeout(() => onReady(), 300)
+              return
+            }
+          } catch (err) {
+            console.warn(`[TunGate:${id}] recentActivity check failed:`, err)
+          }
+        }
+        // Connectivity test failed AND no real traffic — fall through to restart
+        console.log(`[TunGate:${id}] connectivity failed and no recent activity, restarting TUN`)
         await window.api.tun.stop()
       }
 
@@ -127,15 +152,37 @@ export function TunGate({ proxyUrl, tunnelUrl, exitIp, onReady, isReconnect, onR
         return
       }
 
-      // Test connectivity with retries (routes may take a moment to take effect)
+      // Test connectivity with retries (routes may take a moment to take effect).
+      // Backoff between attempts so the user isn't staring at a 60s wall when
+      // probe targets are slow.
       setPhase('testing')
       console.log(`[TunGate:${id}] testing connectivity (up to 3 attempts)...`)
       let connectResult: { success: boolean; latency?: number; error?: string; actualIp?: string } = { success: false }
+      const delays = [500, 2000, 4000]
       for (let attempt = 1; attempt <= 3; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        await new Promise(resolve => setTimeout(resolve, delays[attempt - 1]))
         connectResult = await window.api.tun.testConnectivity(exitIp)
         console.log(`[TunGate:${id}] attempt ${attempt}: success=${connectResult.success}, latency=${connectResult.latency}, actualIp=${connectResult.actualIp}`)
         if (connectResult.success) break
+      }
+
+      // If all probe attempts failed but sing-box has been moving real traffic
+      // (e.g. claude.com was hit during the probe window), accept the tunnel
+      // as connected — see the same logic above for tunRunning case.
+      if (!connectResult.success) {
+        const isMismatch = !!connectResult.actualIp && !!exitIp && connectResult.actualIp !== exitIp
+        if (!isMismatch) {
+          try {
+            const activity = await window.api.tun.recentActivity(30000)
+            console.log(`[TunGate:${id}] post-start activity: ${activity.successes} successes / ${activity.failures} failures`)
+            if (activity.successes >= 3) {
+              console.log(`[TunGate:${id}] tunnel is moving real traffic — accepting as connected despite probe failure`)
+              connectResult = { success: true }
+            }
+          } catch (err) {
+            console.warn(`[TunGate:${id}] recentActivity check failed:`, err)
+          }
+        }
       }
 
       if (connectResult.success) {

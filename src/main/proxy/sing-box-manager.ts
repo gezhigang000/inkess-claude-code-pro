@@ -61,6 +61,11 @@ export class SingBoxManager {
   private _baselineTimer: ReturnType<typeof setTimeout> | null = null
   private _statusListeners: Array<(update: TunStatusUpdate) => void> = []
   private _lastActualIp: string | null = null
+  /** Wall-clock time (ms) of the last successful connectivity probe OR the last
+   *  observed sing-box outbound success. Used to suppress restart-thrashing when
+   *  a single probe target (e.g. cloudflare) is being blocked but real traffic
+   *  is still flowing. */
+  private _lastSeenHealthyAt = 0
   /** Timestamp of last macOS authorization denial. Used to avoid rapid-fire
    *  osascript prompts when macOS caches a "deny" result. */
   private _authDeniedAt = 0
@@ -205,6 +210,17 @@ export class SingBoxManager {
         } catch (sudoErr) {
           const msg = (sudoErr as Error).message
           if (msg.includes('-60005') || msg.includes('密码不正确') || msg.includes('User canceled')) {
+            // Before activating cooldown, check whether the target process is
+            // actually still alive — sometimes the non-sudo kill above did
+            // succeed via SIGTERM signal-out propagation but threw an EPERM-
+            // shaped error first, OR the process was already dying. Locking
+            // ourselves into a 5-minute auth-deny cooldown when the process
+            // is gone is the bug behind the "ORPHAN_PROCESS" deadlock users
+            // hit when they fat-finger the sudo password.
+            if (!this.isProcessAlive(pid)) {
+              log.info(`[sing-box] kill pid=${pid}: sudo denied but process is already dead — no cooldown needed`)
+              return
+            }
             this._authDeniedAt = Date.now()
             log.warn(`[sing-box] kill pid=${pid}: macOS auth denied — cooldown activated`)
           }
@@ -589,6 +605,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     this._internetReachable = null
     this._latencyMs = null
     this._lastActualIp = null
+    this._lastSeenHealthyAt = 0
     this.emitStatus(null, null)
   }
 
@@ -857,79 +874,141 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       return { success: false, error }
     }
 
-    try {
-      // Two-probe strategy:
-      //   Probe #1 (cold) — does DNS + TCP + TLS + HTTP from scratch. Used to
-      //                     verify the exit IP via Cloudflare trace. The time
-      //                     this takes is dominated by the 3-4 RTTs of
-      //                     handshake setup, NOT the network round-trip, so
-      //                     it's misleading as a "latency" number.
-      //   Probe #2 (warm) — runs immediately after on the same undici connection
-      //                     pool, so DNS is cached, TCP is reused, TLS is
-      //                     resumed. The time this takes is 1 RTT, which
-      //                     matches what the user actually feels when browsing
-      //                     (HTTP/2 persistent connections, cached DNS, etc).
-      // We report probe #2 as latencyMs.
-      log.info(`[testConnectivity] verifying exit IP (expected: ${exitIp || 'any'})...`)
-      log.info(`[testConnectivity] cold probe https://www.cloudflare.com/cdn-cgi/trace ...`)
-      const coldStart = Date.now()
-      const res = await fetchWithTimeout('https://www.cloudflare.com/cdn-cgi/trace', {}, 15000)
-      const coldMs = Date.now() - coldStart
-      log.info(`[testConnectivity] cold HTTP ${res.status} (${coldMs}ms — handshake + 1 RTT)`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const text = await res.text()
-      const fields = parseCloudflareTrace(text)
-      const actualIp = fields.ip
-      if (!actualIp) throw new Error('cloudflare trace response missing ip= field')
+    // Multi-target race: probe several endpoints in parallel; any 200 means
+    // "network is healthy". This makes the check robust to a single target
+    // (notably cloudflare) being throttled or blocked — which has historically
+    // caused the app to spuriously declare the tunnel dead and tear it down
+    // even while api.anthropic.com / claude.com were happily serving traffic.
+    //
+    // Cloudflare's `/cdn-cgi/trace` remains the source of truth for "what is
+    // my exit IP" — we wait for it to land if any target succeeds, but only
+    // briefly, so a slow/blocked cloudflare doesn't stretch the whole probe.
+    const PROBE_TIMEOUT_MS = 8000
+    const probes: Array<Promise<{ url: string; status: number; ms: number; trace?: string }>> = [
+      probeOne('https://www.cloudflare.com/cdn-cgi/trace', PROBE_TIMEOUT_MS, true),
+      probeOne('https://api.anthropic.com/', PROBE_TIMEOUT_MS, false),
+      probeOne('https://claude.com/', PROBE_TIMEOUT_MS, false),
+    ]
+    log.info(`[testConnectivity] race ${probes.length} targets (timeout ${PROBE_TIMEOUT_MS}ms, expected exit ${exitIp || 'any'})...`)
 
-      // Probe #2: warm measurement on reused connection.
-      // Failure here is non-fatal — we still have a valid actualIp from probe
-      // #1, so fall back to the cold number rather than reporting the whole
-      // connectivity test as failed.
-      let latency = coldMs
-      try {
-        // retries=0: we don't want retry back-off to inflate the warm number.
-        // 5000ms timeout is plenty for a 1-RTT request on any reasonable link.
-        const warmStart = Date.now()
-        const res2 = await fetchWithTimeout('https://www.cloudflare.com/cdn-cgi/trace', {}, 5000, 0)
-        await res2.text()
-        const warmMs = Date.now() - warmStart
-        if (res2.ok && warmMs > 0) {
-          latency = warmMs
-          log.info(`[testConnectivity] warm HTTP ${res2.status} (${warmMs}ms — 1 RTT, matches real browsing)`)
-        } else {
-          log.warn(`[testConnectivity] warm probe failed (HTTP ${res2.status}), falling back to cold ${coldMs}ms`)
-        }
-      } catch (warmErr) {
-        log.warn(`[testConnectivity] warm probe error, falling back to cold ${coldMs}ms:`, (warmErr as Error).message)
+    const settled = await Promise.allSettled(probes)
+    const winners = settled
+      .map((s, i) => ({ s, i }))
+      .filter(({ s }) => s.status === 'fulfilled' && (s as PromiseFulfilledResult<{ status: number }>).value.status >= 200 && (s as PromiseFulfilledResult<{ status: number }>).value.status < 400)
+      .map(({ s, i }) => ({ ...((s as PromiseFulfilledResult<{ url: string; status: number; ms: number; trace?: string }>).value), idx: i }))
+
+    if (winners.length === 0) {
+      // Everyone failed. Before declaring failure, check whether sing-box
+      // itself has been moving real bytes recently — if yes, the user is
+      // online but our probes happen to all be blocked. Don't lie that
+      // they're disconnected.
+      const recent = this.recentOutboundActivity(30000)
+      if (recent.successes >= 3) {
+        log.warn(`[testConnectivity] all probes failed but sing-box has ${recent.successes} successful outbounds in last 30s — treating as healthy (single-probe outage)`)
+        this._internetReachable = true
+        this._lastSeenHealthyAt = Date.now()
+        // Keep last known IP / latency; don't pretend we measured them now.
+        this.emitStatus(exitIp || null, null)
+        return { success: true, latency: this._latencyMs ?? undefined, actualIp: this._lastActualIp ?? undefined }
       }
-
-      log.info(`[testConnectivity] exit IP: ${actualIp} (loc=${fields.loc ?? '?'}), latency: ${latency}ms`)
-
-      this._latencyMs = latency
-      this._lastActualIp = actualIp
-
-      if (exitIp && actualIp !== exitIp) {
-        log.error(`[testConnectivity] exit IP mismatch: got ${actualIp}, expected ${exitIp}`)
-        this._internetReachable = false
-        const error = `Exit IP mismatch: got ${actualIp}, expected ${exitIp}`
-        this.emitStatus(exitIp || null, error)
-        return { success: false, latency, actualIp, error }
-      }
-
-      this._internetReachable = true
-      this.emitStatus(exitIp || null, null)
-      return { success: true, latency, actualIp }
-    } catch (err) {
-      const error = (err as Error).message
-      log.error('[testConnectivity] failed:', error)
+      const firstError = settled.map(s => s.status === 'rejected' ? (s.reason as Error)?.message : `HTTP ${(s as PromiseFulfilledResult<{ status: number }>).value.status}`).join('; ')
+      log.error('[testConnectivity] all probes failed:', firstError)
       this._internetReachable = false
       this._latencyMs = null
       this._lastActualIp = null
-      this.emitStatus(exitIp || null, error)
-      return { success: false, error }
+      this.emitStatus(exitIp || null, firstError)
+      return { success: false, error: firstError }
+    }
+
+    // Pick best (lowest ms) for latency reporting.
+    const best = winners.reduce((a, b) => (a.ms <= b.ms ? a : b))
+    const latency = best.ms
+    log.info(`[testConnectivity] healthy via ${best.url} HTTP ${best.status} (${best.ms}ms); ${winners.length}/${probes.length} probes ok`)
+
+    // Try to extract exit IP from cloudflare trace. If cloudflare didn't
+    // win (slow/blocked), the IP stays as last-known. Mismatch is
+    // surfaced but no longer hard-fails the probe — we already know the
+    // tunnel is moving traffic.
+    const traceWinner = winners.find(w => w.trace)
+    let actualIp: string | undefined
+    let mismatchError: string | undefined
+    if (traceWinner?.trace) {
+      const fields = parseCloudflareTrace(traceWinner.trace)
+      actualIp = fields.ip
+      if (actualIp) {
+        log.info(`[testConnectivity] exit IP: ${actualIp} (loc=${fields.loc ?? '?'})`)
+        if (exitIp && actualIp !== exitIp) {
+          mismatchError = `Exit IP mismatch: got ${actualIp}, expected ${exitIp}`
+          log.error(`[testConnectivity] ${mismatchError}`)
+        }
+      }
+    }
+
+    this._latencyMs = latency
+    if (actualIp) this._lastActualIp = actualIp
+    this._lastSeenHealthyAt = Date.now()
+
+    // IP mismatch IS still a hard failure — it indicates the route is
+    // hijacked by another VPN or the proxy is wrong. Other probes succeeding
+    // doesn't override this signal.
+    if (mismatchError) {
+      this._internetReachable = false
+      this.emitStatus(exitIp || null, mismatchError)
+      return { success: false, latency, actualIp, error: mismatchError }
+    }
+
+    this._internetReachable = true
+    this.emitStatus(exitIp || null, null)
+    return { success: true, latency, actualIp }
+  }
+
+  /**
+   * Parse the sing-box log to gauge real outbound activity in the last
+   * `windowMs` ms. Used as a sanity check against probe-target outages — if
+   * the log shows actual connections succeeding we should NOT tear down the
+   * tunnel just because cloudflare/etc. timed out.
+   *
+   * Returns counts of `outbound connection to` (success) and various error
+   * lines (timeout / rejected / refused).
+   */
+  recentOutboundActivity(windowMs = 30000): { successes: number; failures: number } {
+    try {
+      const logPath = join(this.singboxDir, 'sing-box.log')
+      if (!existsSync(logPath)) return { successes: 0, failures: 0 }
+      const content = readFileSync(logPath, 'utf-8')
+      const lines = content.split('\n')
+      // Sing-box log lines look like:
+      //   -0700 2026-05-08 15:55:35 INFO [...] outbound/socks[proxy]: outbound connection to host:443
+      //   -0700 2026-05-08 15:55:38 ERROR [...] connection: open outbound connection: dial tcp ...
+      // The leading TZ offset and "YYYY-MM-DD HH:MM:SS" portion can be parsed.
+      const cutoff = Date.now() - windowMs
+      let successes = 0
+      let failures = 0
+      // Walk from the tail — older lines won't be in window.
+      for (let i = lines.length - 1; i >= 0 && i > lines.length - 5000; i--) {
+        const line = lines[i]
+        if (!line) continue
+        const m = line.match(/(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})/)
+        if (!m) continue
+        const ts = Date.parse(`${m[1]}T${m[2]}`)
+        if (Number.isNaN(ts)) continue
+        if (ts < cutoff) break
+        if (line.includes('outbound connection to') && !line.includes('open outbound connection')) {
+          successes++
+        } else if (line.includes('open outbound connection')) {
+          failures++
+        }
+      }
+      return { successes, failures }
+    } catch {
+      return { successes: 0, failures: 0 }
     }
   }
+
+  /** Last time we saw evidence of healthy traffic (probe success or recent
+   *  sing-box outbound activity). Used by callers to avoid restarting a tunnel
+   *  that's actually working. */
+  get lastSeenHealthyAt(): number { return this._lastSeenHealthyAt }
 
   /**
    * Run network diagnostics — tests each hop to identify where latency comes from.
@@ -1356,6 +1435,41 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
 // ---------------------------------------------------------------------------
 // Cloudflare trace parser (connectivity probe helper)
 // ---------------------------------------------------------------------------
+
+/**
+ * Single connectivity probe. Resolves with status code on completion,
+ * rejects on network/timeout error. Doesn't retry — callers race multiple
+ * probes via Promise.allSettled and decide based on the aggregate.
+ *
+ * `wantBody=true` reads the response text (used for cloudflare trace);
+ * otherwise we close the body immediately to free the socket.
+ */
+async function probeOne(
+  url: string,
+  timeoutMs: number,
+  wantBody: boolean
+): Promise<{ url: string; status: number; ms: number; trace?: string }> {
+  const start = Date.now()
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, {
+      method: wantBody ? 'GET' : 'HEAD',
+      signal: controller.signal,
+      redirect: 'follow',
+    })
+    let trace: string | undefined
+    if (wantBody) {
+      try { trace = await res.text() } catch { /* body read failed but status is what matters */ }
+    } else {
+      // Drain & discard so the socket can be reused.
+      try { await res.arrayBuffer() } catch { /* ignore */ }
+    }
+    return { url, status: res.status, ms: Date.now() - start, trace }
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 /**
  * Parse Cloudflare's `/cdn-cgi/trace` text response.

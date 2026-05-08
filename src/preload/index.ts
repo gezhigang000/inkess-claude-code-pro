@@ -163,6 +163,7 @@ const api = {
     stop: () => ipcRenderer.invoke('tun:stop') as Promise<{ success: boolean }>,
     clearAuthCooldown: () => ipcRenderer.invoke('tun:clearAuthCooldown') as Promise<void>,
     testConnectivity: (exitIp?: string) => ipcRenderer.invoke('tun:testConnectivity', exitIp) as Promise<{ success: boolean; latency?: number; error?: string; actualIp?: string }>,
+    recentActivity: (windowMs?: number) => ipcRenderer.invoke('tun:recentActivity', windowMs) as Promise<{ successes: number; failures: number }>,
     diagnostics: () => ipcRenderer.invoke('tun:diagnostics') as Promise<Record<string, unknown>>,
     onInstallProgress: (callback: (event: { step: string; pct: number }) => void) => {
       const listener = (_: unknown, event: { step: string; pct: number }) => callback(event)

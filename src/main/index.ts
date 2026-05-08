@@ -665,6 +665,17 @@ ipcMain.handle('tun:diagnostics', async () => {
   return singBoxManager.runDiagnostics()
 })
 
+/**
+ * Lightweight liveness check: returns true if sing-box has moved real bytes
+ * recently (parsed from its own log). Used by the renderer to avoid restarting
+ * a tunnel that's actually working when external probes (cloudflare etc.) are
+ * being throttled.
+ */
+ipcMain.handle('tun:recentActivity', (_event, windowMs?: number) => {
+  if (MOCK_MODE) return { successes: 99, failures: 0 }
+  return singBoxManager.recentOutboundActivity(typeof windowMs === 'number' ? windowMs : 30000)
+})
+
 // IPC: Proxy settings (stored in main process, applied to PTY env on create)
 interface ProxySettings {
   enabled: boolean
