@@ -1110,7 +1110,7 @@ export function TerminalApp() {
           bottomOffset={16}
           onDownload={() => {
             const v = appUpdateStatus.version || ''
-            const url = `https://download.inkessai.com/code-releases/latest/macos-arm64-v${v}.dmg`
+            const url = `https://download.inkessai.com/pro-releases/latest/macos-arm64-v${v}.dmg`
             window.api.shell.openExternal(url)
           }}
           onDismiss={() => setAppUpdateDismissed(true)}
