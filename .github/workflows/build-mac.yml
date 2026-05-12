@@ -238,25 +238,31 @@ jobs:
             release/latest-mac.yml
           retention-days: 30
 
-      - name: Upload to OSS
+      - name: Upload to R2
         if: always() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
         shell: bash
         env:
-          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
-          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-          # Tag-push → prod defaults. workflow_dispatch → caller-provided inputs.
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: inkess-downloads
           OSS_PREFIX: ${{ github.event_name == 'workflow_dispatch' && inputs.oss_prefix || 'pro-releases' }}
           UPLOAD_LATEST: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_latest || 'true' }}
           RELEASE_VERSION: ${{ steps.version.outputs.value }}
         run: |
-          # macos-14 runner has a PEP 668 externally-managed Python from
-          # Homebrew, so plain `pip3 install` errors out. --break-system-packages
-          # is safe on a throwaway CI runner.
-          pip3 install --break-system-packages oss2
+          pip3 install --break-system-packages boto3
           python3 - <<'PY'
-          import glob, os, oss2
-          auth = oss2.Auth(os.environ['OSS_ACCESS_KEY_ID'], os.environ['OSS_ACCESS_KEY_SECRET'])
-          bucket = oss2.Bucket(auth, 'https://oss-ap-northeast-1.aliyuncs.com', 'inkess-app')
+          import glob, os, boto3
+          from botocore.config import Config
+
+          s3 = boto3.client('s3',
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+              region_name='auto',
+              config=Config(s3={'addressing_style': 'path'}),
+          )
+          bucket_name = os.environ['R2_BUCKET']
           prefix = os.environ['OSS_PREFIX']
           version = os.environ['RELEASE_VERSION']
           upload_latest = os.environ['UPLOAD_LATEST'].lower() == 'true'
@@ -271,13 +277,13 @@ jobs:
                   key = f'{prefix}/{name}'
                   size_mb = os.path.getsize(f) / 1024 / 1024
                   print(f'  {name} ({size_mb:.1f} MB)...')
-                  oss2.resumable_upload(bucket, key, f, part_size=10*1024*1024, num_threads=2)
+                  s3.upload_file(f, bucket_name, key)
                   if name.endswith('-arm64.dmg'):
                       uploaded_dmg = name
 
           if upload_latest and uploaded_dmg:
               src = f'{prefix}/{uploaded_dmg}'
               for dst in [f'{prefix}/latest/macos-arm64-v{version}.dmg', f'{prefix}/latest/macos-arm64.dmg']:
-                  bucket.copy_object(bucket.bucket_name, src, dst)
+                  s3.copy_object(Bucket=bucket_name, CopySource={'Bucket': bucket_name, 'Key': src}, Key=dst)
                   print(f'  latest/ <- {os.path.basename(dst)}')
           PY
