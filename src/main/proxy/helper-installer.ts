@@ -8,7 +8,7 @@
  * over a Unix socket — no more per-operation sudo prompts.
  */
 
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import log from '../logger'
@@ -18,6 +18,7 @@ const HELPER_LABEL = 'com.inkess.code.helper'
 const HELPER_INSTALL_DIR = '/Library/PrivilegedHelperTools'
 const HELPER_BINARY_DEST = `${HELPER_INSTALL_DIR}/inkess-ccp-helper`
 const PLIST_DEST = `/Library/LaunchDaemons/${HELPER_LABEL}.plist`
+const SOCKET_PATH = '/var/run/inkess-ccp-helper.sock'
 
 /** Expected helper version — bump when updating the bundled binary. */
 const HELPER_VERSION = '0.1.0'
@@ -88,6 +89,9 @@ export class HelperInstaller {
       // bootout may fail if not loaded — ignore error
       `launchctl bootout system/${HELPER_LABEL} 2>/dev/null || true`,
       `launchctl bootstrap system '${PLIST_DEST}'`,
+      // Wait for daemon to create socket, then make it world-accessible
+      `for i in 1 2 3 4 5; do [ -e '${SOCKET_PATH}' ] && break; sleep 1; done`,
+      `chmod 666 '${SOCKET_PATH}' 2>/dev/null || true`,
     ].join('; ')
 
     log.info('[helper-installer] installing helper daemon (one-time admin prompt)...')
@@ -155,12 +159,35 @@ export class HelperInstaller {
   }
 
   /**
+   * Fix socket permissions so non-root users can connect.
+   * Needed for existing installs without the Umask plist key.
+   * Uses osascript since the socket is root-owned.
+   */
+  /**
+   * Try to fix socket permissions without sudo.
+   * Works when plist has Umask=0; otherwise install/reload scripts handle it.
+   */
+  private fixSocketPermissionsSync(): void {
+    if (!existsSync(SOCKET_PATH)) return
+    try {
+      chmodSync(SOCKET_PATH, 0o666)
+      log.info('[helper-installer] socket permissions fixed (chmod 666)')
+    } catch {
+      // Root-owned socket — can't chmod without sudo; install/reload scripts handle this
+    }
+  }
+
+  /**
    * Wait for the helper to become available after installation/reload.
    */
   async waitForHelper(timeoutMs: number): Promise<void> {
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
       if (await this.client.isAvailable()) return
+      // Socket may exist but have wrong permissions — try fixing (no sudo)
+      if (existsSync(SOCKET_PATH)) {
+        this.fixSocketPermissionsSync()
+      }
       await new Promise(r => setTimeout(r, 300))
     }
     throw new Error(`Helper did not become available within ${timeoutMs}ms`)
@@ -184,8 +211,14 @@ export class HelperInstaller {
     if (this.isInstalled()) {
       log.info('[helper-installer] helper files exist but daemon not responding, trying reload...')
       try {
+        const reloadScript = [
+          `launchctl bootout system/${HELPER_LABEL} 2>/dev/null || true`,
+          `launchctl bootstrap system \\"${PLIST_DEST}\\"`,
+          `for i in 1 2 3 4 5; do [ -e '${SOCKET_PATH}' ] && break; sleep 1; done`,
+          `chmod 666 '${SOCKET_PATH}' 2>/dev/null || true`,
+        ].join('; ')
         execSync(
-          `osascript -e 'do shell script "launchctl bootout system/${HELPER_LABEL} 2>/dev/null || true; launchctl bootstrap system \\"${PLIST_DEST}\\"" with administrator privileges'`,
+          `osascript -e 'do shell script "${reloadScript}" with administrator privileges'`,
           { timeout: 30_000, stdio: 'pipe' },
         )
         await this.waitForHelper(5000)

@@ -13,6 +13,8 @@
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>Umask</key>
+  <integer>0</integer>
   <key>StandardOutPath</key>
   <string>/var/log/inkess-ccp-helper.log</string>
   <key>StandardErrorPath</key>
