@@ -379,6 +379,7 @@ function parseInlineYaml(str: string): Record<string, string> {
 
 /** Fetch and parse a subscription URL */
 export async function fetchSubscription(url: string, timeout = 15000): Promise<ProxyNode[]> {
+  log.info(`[subscription] fetching — url=${url.slice(0, 50)}..., timeout=${timeout}ms`)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeout)
 
@@ -391,11 +392,17 @@ export async function fetchSubscription(url: string, timeout = 15000): Promise<P
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const buffer = await res.arrayBuffer()
+    log.info(`[subscription] response size=${buffer.byteLength} bytes`)
     if (buffer.byteLength > 2 * 1024 * 1024) {
       throw new Error('Subscription response too large (>2MB)')
     }
     const text = new TextDecoder().decode(buffer)
-    return parseSubscription(text)
+    const nodes = parseSubscription(text)
+    log.info(`[subscription] parsed ${nodes.length} nodes: ${nodes.map(n => `${n.name}(${n.type})`).join(', ')}`)
+    return nodes
+  } catch (err) {
+    log.error(`[subscription] fetch failed: ${(err as Error).message}`)
+    throw err
   } finally {
     clearTimeout(timer)
   }

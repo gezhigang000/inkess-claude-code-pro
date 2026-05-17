@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, writeFileSync, unlinkSync, chmodSync, readFileSy
 import { execSync, execFile, spawn, type ChildProcess } from 'child_process'
 import { promisify } from 'util'
 import * as os from 'os'
+import * as https from 'https'
 import log from '../logger'
 import { buildTunConfig, buildLocalProxyConfig, type SingBoxConfig, type SingBoxOutbound, type TunConfigOptions } from './sing-box-config'
 import {
@@ -16,6 +17,29 @@ import { HelperClient, type HelperEvent } from './helper-client'
 import { HelperInstaller } from './helper-installer'
 
 const execFileAsync = promisify(execFile)
+
+// ---------------------------------------------------------------------------
+// Keep-alive HTTP agent for connectivity probes.
+// Reuses TCP+TLS connections so measured latency reflects real-world usage
+// (warm connections) rather than cold-start handshake overhead (~200ms vs ~1800ms).
+// ---------------------------------------------------------------------------
+let probeAgent = createProbeAgent()
+
+function createProbeAgent(): https.Agent {
+  return new https.Agent({
+    keepAlive: true,
+    keepAliveMsecs: 60_000, // keep idle connections for 60s (probe interval is ~60s)
+    maxSockets: 5,
+  })
+}
+
+/** Destroy all probe connections and create a fresh agent.
+ *  Call when TUN stops/restarts so stale sockets don't poison the next cycle. */
+function resetProbeAgent(): void {
+  probeAgent.destroy()
+  probeAgent = createProbeAgent()
+  log.info('[probe] connection pool reset')
+}
 
 // DNS server to set via scutil — any routable IP works because sing-box
 // hijack-dns intercepts ALL DNS queries (UDP 53) at the route level.
@@ -141,6 +165,7 @@ export class SingBoxManager {
       error: error ?? this._lastError,
       lastTestAt: Date.now(),
     }
+    log.info(`[sing-box] emitStatus → running=${update.tunRunning}, latency=${update.latencyMs}ms, actualIp=${update.actualIp}, error=${update.error ? update.error.slice(0, 80) : 'none'} (${this._statusListeners.length} listeners)`)
     for (const listener of this._statusListeners) {
       try { listener(update) } catch (err) {
         log.warn(`[sing-box] status listener threw: ${(err as Error).message}`)
@@ -417,6 +442,7 @@ export class SingBoxManager {
    * Windows: uses PowerShell UAC.
    */
   private async cleanupStaleNetworkState(): Promise<void> {
+    log.info('[sing-box] cleanupStaleNetworkState — starting (20s timeout)')
     const CLEANUP_TIMEOUT_MS = 20_000
     try {
       await Promise.race([
@@ -525,10 +551,12 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
    *   true: used by app quit, tun:stop IPC, logout (restore DNS to system default)
    */
   async stop(restoreDns = true): Promise<void> {
+    log.info(`[sing-box] stop() entry — restoreDns=${restoreDns}, mode=${this._mode}, status=${this._status}, hasMutex=${!!this._stopPromise}`)
     // Signal any in-progress startTun to abort after its internal stop()
     if (restoreDns) this._stopRequested = true
     // Mutex: if already stopping, wait for that to finish
     if (this._stopPromise) {
+      log.info('[sing-box] stop() — waiting for existing stop to finish')
       await this._stopPromise
       return
     }
@@ -546,6 +574,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
   /** Restore macOS system DNS to default. Awaits helper, falls back to osascript. */
   private async restoreSystemDns(): Promise<void> {
     if (os.platform() !== 'darwin') return
+    log.info(`[sing-box] restoreSystemDns — helperAuthoritative=${this._helperAuthoritative}`)
     try {
       await this._helperClient.restoreDns()
     } catch (err) {
@@ -573,10 +602,18 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
 
     // macOS with helper: delegate stop + DNS restore to the helper daemon (no sudo prompt)
     // Retry once after 500ms — helper may be mid-restart (launchd KeepAlive bounce)
+    let helperAvail1 = false
+    if (os.platform() === 'darwin') {
+      helperAvail1 = await this._helperClient.isAvailable()
+      if (!helperAvail1) {
+        log.info('[sing-box] _stopImpl: helper not available on first try, waiting 500ms...')
+      }
+    }
     const helperReady = os.platform() === 'darwin' && (
-      await this._helperClient.isAvailable() ||
+      helperAvail1 ||
       await new Promise<boolean>(r => setTimeout(async () => r(await this._helperClient.isAvailable()), 500))
     )
+    log.info(`[sing-box] _stopImpl: helperReady=${helperReady}`)
     if (helperReady) {
       try {
         // Restore DNS first (while sing-box is still routing), then stop sing-box
@@ -600,6 +637,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       this._latencyMs = null
       this._lastActualIp = null
       this._lastSeenHealthyAt = 0
+      resetProbeAgent()
       this.emitStatus(null, null)
       return
     }
@@ -653,6 +691,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     this._latencyMs = null
     this._lastActualIp = null
     this._lastSeenHealthyAt = 0
+    resetProbeAgent()
     this.emitStatus(null, null)
   }
 
@@ -694,6 +733,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
   }
 
   private async _startTunImpl(proxyUrl: string, opts?: { useHelper?: boolean }): Promise<{ success?: boolean; error?: string }> {
+    log.info(`[sing-box] _startTunImpl entry — useHelper=${opts?.useHelper}, mode=${this._mode}, status=${this._status}, helperAuthoritative=${this._helperAuthoritative}`)
     try {
       await this.reconcileStatus()
 
@@ -749,9 +789,10 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
 
       if (os.platform() === 'darwin') {
         if (opts?.useHelper === false) {
-          log.info('[sing-box] useHelper=false, using osascript sudo directly')
+          log.info('[sing-box] useHelper=false (explicit), using osascript sudo directly')
           await this.startWithSudoFallback()
         } else {
+          log.info(`[sing-box] useHelper=${opts?.useHelper ?? 'undefined (default→helper)'}, starting via helper`)
           await this.startViaHelper()
         }
       } else if (os.platform() === 'win32') {
@@ -761,6 +802,9 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
       }
 
       // DNS override is handled inside startViaHelper / startWithSudoFallback.
+      // Reset probe connections — old sockets went through previous TUN routes
+      // and would fail or give stale results on the new tunnel.
+      resetProbeAgent()
       // Emit a status update so renderer knows TUN is up. Latency/IP remain
       // null until the caller runs a connectivity test.
       this._internetReachable = null
@@ -831,14 +875,12 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
   }
 
   private async _reconcileStatusImpl(): Promise<void> {
-    // Prefer the helper as source of truth on macOS once it's been confirmed
-    // reachable. We probe `isAvailable` lazily — first probe gates the latch;
-    // subsequent reconciles trust the latch even across transient socket
-    // errors (a single failed getStatus does not flip us back to PID-file mode).
     if (os.platform() === 'darwin') {
       if (!this._helperAuthoritative) {
         try {
-          if (await this._helperClient.isAvailable()) {
+          const avail = await this._helperClient.isAvailable()
+          if (avail) {
+            log.info('[sing-box] reconcile: helper became authoritative (first successful contact)')
             this._helperAuthoritative = true
             this.ensureHelperSubscription()
           }
@@ -1436,10 +1478,12 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
    * Falls back to osascript if helper is not available.
    */
   private async startViaHelper(): Promise<void> {
+    log.info(`[sing-box] startViaHelper entry — helperInstaller=${!!this._helperInstaller}, helperAuthoritative=${this._helperAuthoritative}`)
     // Ensure the helper daemon is installed and running
     if (this._helperInstaller) {
       try {
         this._helperJustInstalled = await this._helperInstaller.ensureReady()
+        log.info(`[sing-box] startViaHelper — ensureReady done, justInstalled=${this._helperJustInstalled}`)
       } catch (err) {
         const msg = (err as Error).message
         if (msg.includes('AUTH_DENIED')) {
@@ -1472,6 +1516,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
     }
 
     // Start sing-box via helper RPC
+    log.info(`[sing-box] startViaHelper — calling helper.start(binary=${this.binaryPath}, appPid=${process.pid})`)
     try {
       await this._helperClient.start(this.binaryPath, this.configPath, process.pid)
     } catch (err) {
@@ -1527,6 +1572,7 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
    * This is the legacy path — each start requires a password prompt.
    */
   private startWithSudoFallback(): Promise<void> {
+    log.info('[sing-box] startWithSudoFallback entry — will prompt for password via osascript')
     return new Promise((resolve, reject) => {
       const safeBin = this.binaryPath.replace(/'/g, "'\\''")
       const safeCfg = this.configPath.replace(/'/g, "'\\''")
@@ -1728,12 +1774,16 @@ dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null`
 // ---------------------------------------------------------------------------
 
 /**
- * Single connectivity probe. Resolves with status code on completion,
- * rejects on network/timeout error. Doesn't retry — callers race multiple
- * probes via Promise.allSettled and decide based on the aggregate.
+ * Single connectivity probe. Uses the shared keep-alive agent so that
+ * subsequent probes reuse the TCP+TLS connection — measured latency then
+ * reflects real-world usage (~200ms) instead of cold-start handshake
+ * overhead (~1800ms).
  *
  * `wantBody=true` reads the response text (used for cloudflare trace);
- * otherwise we close the body immediately to free the socket.
+ * otherwise we drain & discard the body so the connection can be reused.
+ *
+ * Redirects are NOT followed — a 301/302 still proves the network is
+ * up, and we measure latency to first response, not the full chain.
  */
 async function probeOne(
   url: string,
@@ -1741,25 +1791,48 @@ async function probeOne(
   wantBody: boolean
 ): Promise<{ url: string; status: number; ms: number; trace?: string }> {
   const start = Date.now()
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const res = await fetch(url, {
-      method: wantBody ? 'GET' : 'HEAD',
-      signal: controller.signal,
-      redirect: 'follow',
+  const parsed = new URL(url)
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port ? Number(parsed.port) : 443,
+        path: parsed.pathname + parsed.search,
+        method: wantBody ? 'GET' : 'HEAD',
+        agent: probeAgent,
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const ms = Date.now() - start
+        const reused = !!(req as any).reusedSocket
+        if (wantBody) {
+          let body = ''
+          res.setEncoding('utf8')
+          res.on('data', (chunk) => { body += chunk })
+          res.on('end', () => {
+            log.info(`[probe] ${parsed.hostname} → ${res.statusCode} ${ms}ms (reused=${reused})`)
+            resolve({ url, status: res.statusCode!, ms, trace: body })
+          })
+          res.on('error', (err) => reject(err))
+        } else {
+          // Drain body so the keep-alive connection can be reused
+          res.resume()
+          res.on('end', () => {
+            log.info(`[probe] ${parsed.hostname} → ${res.statusCode} ${ms}ms (reused=${reused})`)
+            resolve({ url, status: res.statusCode!, ms })
+          })
+          res.on('error', (err) => reject(err))
+        }
+      },
+    )
+
+    req.on('timeout', () => {
+      req.destroy(new Error(`probe ${parsed.hostname} timed out (${timeoutMs}ms)`))
     })
-    let trace: string | undefined
-    if (wantBody) {
-      try { trace = await res.text() } catch { /* body read failed but status is what matters */ }
-    } else {
-      // Drain & discard so the socket can be reused.
-      try { await res.arrayBuffer() } catch { /* ignore */ }
-    }
-    return { url, status: res.status, ms: Date.now() - start, trace }
-  } finally {
-    clearTimeout(timer)
-  }
+    req.on('error', (err) => reject(err))
+    req.end()
+  })
 }
 
 /**

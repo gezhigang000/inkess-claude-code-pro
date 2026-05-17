@@ -529,6 +529,7 @@ async function probeDirectProxy(proxyUrl: string): Promise<boolean> {
  * so callers can do their own error reporting / IPC return value.
  */
 async function startTunInternal(proxyUrl: string, tunnelUrl?: string, useHelper?: boolean): Promise<void> {
+  log.info(`[startTun] entry — useHelper=${useHelper}, lastUseHelper=${lastUseHelper}, hasTunnel=${!!tunnelUrl}`)
   if (typeof useHelper === 'boolean') lastUseHelper = useHelper
   if (typeof proxyUrl !== 'string' || proxyUrl.length > 500 || proxyUrl.length < 5) {
     log.error(`[startTun] invalid proxy URL (len=${proxyUrl?.length})`)
@@ -593,6 +594,7 @@ async function startTunInternal(proxyUrl: string, tunnelUrl?: string, useHelper?
 }
 
 ipcMain.handle('tun:startTun', async (_event, proxyUrl: string, tunnelUrl?: string, useHelper?: boolean) => {
+  log.info(`[IPC tun:startTun] called — useHelper=${useHelper}, hasTunnel=${!!tunnelUrl}`)
   if (MOCK_MODE) return { success: true }
   proxyUrl = typeof proxyUrl === 'string' ? proxyUrl.trim() : proxyUrl
   try {
@@ -620,7 +622,7 @@ ipcMain.handle('tun:reconnect', async () => {
   if (!session?.proxyUrl) {
     return { success: false, error: 'No active subscription session' }
   }
-  log.info('[reconnect] manual reconnect requested')
+  log.info(`[reconnect] manual reconnect requested — lastUseHelper=${lastUseHelper}`)
   try {
     // stop(false) = skip DNS restore; we're about to re-hijack immediately
     await singBoxManager.stop(false)
@@ -641,10 +643,12 @@ ipcMain.handle('tun:reconnect', async () => {
 })
 
 ipcMain.handle('tun:stop', async () => {
+  log.info('[IPC tun:stop] called')
   await singBoxManager.stop()
   statsCollector.logEvent('tun:stop')
   // Close all browser windows when TUN stops
   closeAllBrowserWindows()
+  log.info('[IPC tun:stop] done')
   return { success: true }
 })
 

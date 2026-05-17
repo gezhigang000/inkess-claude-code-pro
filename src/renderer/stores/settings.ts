@@ -115,6 +115,7 @@ export function applyTheme(theme: ThemeChoice) {
 }
 
 const saved = loadSettings()
+console.log(`[Settings] loaded from localStorage — useHelper=${(saved as any).useHelper}, keys=${Object.keys(saved).join(',')}`)
 
 const validatedTheme: ThemeChoice = VALID_THEMES.includes((saved as any).theme) ? (saved as any).theme : 'auto'
 const validatedLanguage: LanguageChoice = VALID_LANGUAGES.includes((saved as any).language) ? (saved as any).language : 'auto'
@@ -192,7 +193,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ proxyRegion: v })
     const s = get(); persistSettings(s); syncProxyToMain(s)
   },
-  setUseHelper: (v) => { set({ useHelper: v }); persistSettings(get()) },
+  setUseHelper: (v) => {
+    console.log(`[Settings] setUseHelper: ${get().useHelper} → ${v}`)
+    set({ useHelper: v }); persistSettings(get())
+    // Verify persistence
+    try {
+      const raw = localStorage.getItem('inkess-settings')
+      const parsed = raw ? JSON.parse(raw) : {}
+      console.log(`[Settings] useHelper persisted to localStorage: ${parsed.useHelper}`)
+    } catch { /* ignore */ }
+  },
   setServerUrl: (v) => {
     set({ serverUrl: v })
     persistSettings(get())

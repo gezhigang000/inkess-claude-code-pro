@@ -190,15 +190,22 @@ export class HelperInstaller {
    * Wait for the helper to become available after installation/reload.
    */
   async waitForHelper(timeoutMs: number): Promise<void> {
+    log.info(`[helper-installer] waitForHelper — timeout=${timeoutMs}ms, socketExists=${existsSync(SOCKET_PATH)}`)
     const start = Date.now()
+    let attempts = 0
     while (Date.now() - start < timeoutMs) {
-      if (await this.client.isAvailable()) return
+      attempts++
+      if (await this.client.isAvailable()) {
+        log.info(`[helper-installer] waitForHelper — available after ${attempts} attempts (${Date.now() - start}ms)`)
+        return
+      }
       // Socket may exist but have wrong permissions — try fixing (no sudo)
       if (existsSync(SOCKET_PATH)) {
         this.fixSocketPermissionsSync()
       }
       await new Promise(r => setTimeout(r, 300))
     }
+    log.error(`[helper-installer] waitForHelper — timed out after ${attempts} attempts (${timeoutMs}ms), socketExists=${existsSync(SOCKET_PATH)}`)
     throw new Error(`Helper did not become available within ${timeoutMs}ms`)
   }
 
@@ -209,10 +216,14 @@ export class HelperInstaller {
    * Returns true if the helper was freshly installed (user saw a password prompt).
    */
   async ensureReady(): Promise<boolean> {
+    log.info(`[helper-installer] ensureReady — isInstalled=${this.isInstalled()}`)
     // Already running and reachable?
-    if (await this.client.isAvailable()) {
+    const avail = await this.client.isAvailable()
+    log.info(`[helper-installer] ensureReady — isAvailable=${avail}`)
+    if (avail) {
       // Check version
-      await this.ensureUpToDate()
+      const upgraded = await this.ensureUpToDate()
+      log.info(`[helper-installer] ensureReady — already available, upgraded=${upgraded}`)
       return false
     }
 

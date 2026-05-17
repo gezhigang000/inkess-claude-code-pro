@@ -138,7 +138,7 @@ export function TunGate({ proxyUrl, tunnelUrl, exitIp, onReady, isReconnect, onR
       // Start TUN (blocks until tunnel confirmed running or fails)
       setPhase('starting')
       const helperPref = useSettingsStore.getState().useHelper
-      console.log(`[TunGate:${id}] starting TUN... (useHelper=${helperPref})`)
+      console.log(`[TunGate:${id}] starting TUN — useHelper=${helperPref} (from store.getState())`)
       const startResult = await window.api.tun.startTun(resolveResult.resolved, tunnelUrlRef.current || undefined, helperPref)
       console.log(`[TunGate:${id}] startTun result: success=${startResult.success}, error=${startResult.error}`)
       if (!startResult.success) {
@@ -336,6 +336,7 @@ export function TunGate({ proxyUrl, tunnelUrl, exitIp, onReady, isReconnect, onR
           {isFailed && isAuthDenied && useHelper && (
             <button
               onClick={() => {
+                console.log(`[TunGate] switching to password mode: setUseHelper(false)`)
                 setUseHelper(false)
                 connect(true)
               }}

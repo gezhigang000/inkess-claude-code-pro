@@ -99,7 +99,9 @@ export class HelperClient {
     let lastError: Error | null = null
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
-        return await this.send(request)
+        const resp = await this.send(request)
+        if (attempt > 1) log.info(`[helper] ${request.op} succeeded on attempt ${attempt}/${retries}`)
+        return resp
       } catch (err) {
         lastError = err as Error
         const msg = lastError.message
@@ -108,8 +110,11 @@ export class HelperClient {
           msg.includes('ENOENT') ||
           msg.includes('socket error') ||
           msg.includes('closed connection without response')
-        if (!isTransient || attempt === retries) break
-        log.debug(`[helper] ${request.op} attempt ${attempt}/${retries} failed (${msg}), retrying in ${delayMs}ms...`)
+        if (!isTransient || attempt === retries) {
+          log.warn(`[helper] ${request.op} attempt ${attempt}/${retries} failed (non-transient or final): ${msg}`)
+          break
+        }
+        log.info(`[helper] ${request.op} attempt ${attempt}/${retries} failed (transient: ${msg}), retrying in ${delayMs}ms...`)
         await new Promise(r => setTimeout(r, delayMs))
       }
     }
@@ -286,6 +291,7 @@ export class HelperClient {
       socket.on('connect', () => {
         // Socket connected — helper is listening. Cap backoff to reduce
         // blind time if we disconnect again before receiving the ack.
+        log.info(`[helper] subscribe: socket connected, sending subscribe request (backoff was ${backoffMs}ms)`)
         backoffMs = Math.min(backoffMs, 2000)
         socket!.write(JSON.stringify({ op: 'subscribe' }) + '\n')
       })
@@ -321,6 +327,7 @@ export class HelperClient {
           }
           // Subsequent lines are event pushes.
           if (resp.event === 'singbox_started' || resp.event === 'singbox_exited') {
+            log.info(`[helper] subscribe event: ${resp.event}, pid=${resp.singbox_pid}, running=${resp.singbox_running}, exit_code=${resp.exit_code}, signal=${resp.signal}`)
             try {
               opts.onEvent({
                 event: resp.event,
